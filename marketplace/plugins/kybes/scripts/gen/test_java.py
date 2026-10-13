@@ -447,7 +447,11 @@ def test_file(pkg: str, t: Table, cat: Catalog, tables: Dict[str, Table], defaul
             o += [f"        {n} parent = {b}(em);", f"        {r.target} child = build{r.target}(em, x -> x.{_set(r.foreign_key)}(parent.{pk}()));",
                   f"        List<{r.target}> items = new {repo}(em).{method_name(L, 'list_rel:' + r.name)}(parent.{pk}(), Paging.PageRequest.of({ct.pagination.max_limit})).items();",
                   f"        assertTrue(items.stream().anyMatch(x -> Objects.equals(x.{cpk}(), child.{cpk}())));",
-                  f"        assertTrue(items.stream().allMatch(x -> Objects.equals(x.{fk}(), parent.{pk}())));"]
+                  f"        assertTrue(items.stream().allMatch(x -> Objects.equals(x.{fk}(), parent.{pk}())));",
+                  "        // anche navigando la relazione dall'entità caricata",
+                  "        em.flush();", "        em.clear();",
+                  f"        assertTrue(new {repo}(em).getById(parent.{pk}()).orElseThrow().get{_cap(member(L, r.name))}().stream()"
+                  f".anyMatch(x -> Objects.equals(x.{cpk}(), child.{cpk}())));"]
         elif k == "page_walk":
             sort = tc.args.get("sort")
             sort_expr = _jstr(",".join(("-" if x.startswith("-") else "") + member("typescript", x.lstrip("-")) for x in sort)) if sort else "null"
