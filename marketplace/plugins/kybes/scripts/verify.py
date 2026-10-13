@@ -241,7 +241,7 @@ def run_typescript(proj: Path, tg: dict, report: Path, quiet: bool, out: Outcome
         return
     tmp = report.parent / ".c8-typescript"
     rc = _run([str(bins / "c8"), "--reporter=cobertura", "--report-dir", str(tmp), "--exclude", "**/tests/**",
-               "node", "--enable-source-maps", "--test", *[str(Path(f).relative_to(pkg)) for f in files]], pkg, quiet)
+               "node", "--enable-source-maps", "--test", "--test-concurrency=1", *[str(Path(f).relative_to(pkg)) for f in files]], pkg, quiet)
     if (tmp / "cobertura-coverage.xml").exists():
         shutil.move(str(tmp / "cobertura-coverage.xml"), report)
     shutil.rmtree(tmp, ignore_errors=True)
