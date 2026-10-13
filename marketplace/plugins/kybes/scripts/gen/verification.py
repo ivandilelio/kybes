@@ -231,7 +231,7 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B", tenant_id_t
                                  "il record non è nel risultato: la condizione determina da sola l'esito",
                                  {"query": q.name, "flip": i}))
     _runtime(reqs, tests, max((table_asil(t, default_asil) for t in tables.values()), key=ASIL.index, default=default_asil))
-    return Catalog(reqs, tests)
+    return Catalog(reqs, tests, tenant_id_type)
 
 
 RUNTIME = "_runtime"

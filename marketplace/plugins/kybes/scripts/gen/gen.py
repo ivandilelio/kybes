@@ -153,6 +153,8 @@ def model_dirs(cfg: dict) -> List[Tuple[str, str]]:
 def json_schema(t: Table) -> str:
     props, req = {}, []
     for c in t.columns:
+        if c.tenant:
+            continue  # il tenant viene dall'autenticazione, non dal contenuto della richiesta
         base = {"uuid": {"type": "string", "format": "uuid"}, "string": {"type": "string", "maxLength": c.length},
                 "text": {"type": "string"}, "int": {"type": "integer"}, "bigint": {"type": "integer"},
                 "decimal": {"type": "number"}, "bool": {"type": "boolean"},
@@ -193,6 +195,11 @@ def build_index(tables: Dict[str, Table], targets: List[dict], customs: Dict[Tup
         if t.description:
             o += [t.description, ""]
         o += [f"Tabella `{t.db_name}` · schema `{mc['schema_dir']}/{n}.yaml` · JSON Schema `{mc['json_schema_dir']}/{n}.schema.json`", ""]
+        ten = {"none": "condivisa da tutte le Organization",
+               "column": "per tenant con colonna `TenantId`: ogni metodo filtra per il tenant legato alla sessione",
+               "schema": "per tenant nello schema `tenant_<chiave>`: la sessione va aperta con il search_path del tenant",
+               "database": "per tenant in un database dedicato: la sessione va aperta sul database del tenant"}[t.tenancy or "none"]
+        o += [f"Multi-tenant: **{t.tenancy or 'none'}**, {ten}.", ""]
         o += ["| Colonna | Tipo | Obbligatoria | Note |", "|---|---|---|---|"]
         for c in t.columns:
             notes = []

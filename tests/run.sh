@@ -26,7 +26,7 @@ make_project() {  # $1 cartella, $2 dialetto TS
 P="$WORK/proj"; make_project "$P" sqlite
 # progetto con tabelle per schema e per database (tests/fixtures/tenancy), Python e TypeScript su SQLite
 FIX="$WORK/fix"; mkdir -p "$FIX" && (cd "$FIX" && git init -q)
-"$KIT/install.sh" --target "$FIX" --scaffold --no-plugin --model-langs python,typescript --ci none >/dev/null
+"$KIT/install.sh" --target "$FIX" --scaffold --no-plugin --model-langs python,typescript --tenant-id string --ci none >/dev/null
 cp "$KIT"/tests/fixtures/tenancy/*.yaml "$FIX/schemas/db/"
 sed -i.bak 's/"dialect": "postgres"/"dialect": "sqlite"/' "$FIX/.claude/kybes.config.json" && rm -f "$FIX/.claude/kybes.config.json.bak"
 python3 -B "$FIX/tools/kybes/plugins/kybes/scripts/gen/gen.py" "$FIX" --quiet

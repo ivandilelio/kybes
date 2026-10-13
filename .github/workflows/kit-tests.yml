@@ -63,7 +63,7 @@ jobs:
       - name: Stesso controllo con tabelle per schema e per database (tests/fixtures/tenancy)
         run: |
           mkdir -p "$RUNNER_TEMP/fix" && cd "$RUNNER_TEMP/fix" && git init -q
-          "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs java --ci none
+          "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs java --tenant-id string --ci none
           cp "$GITHUB_WORKSPACE"/tests/fixtures/tenancy/*.yaml schemas/db/ && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
           python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" java-fix --reports libs/db-models/java/target/surefire-reports -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=java
       - name: Report dei test
@@ -113,7 +113,7 @@ jobs:
       - name: Stesso controllo con tabelle per schema e per database (tests/fixtures/tenancy)
         run: |
           mkdir -p "$RUNNER_TEMP/fix" && cd "$RUNNER_TEMP/fix" && git init -q
-          "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs csharp --ci none
+          "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs csharp --tenant-id string --ci none
           cp "$GITHUB_WORKSPACE"/tests/fixtures/tenancy/*.yaml schemas/db/ && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
           python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" csharp-fix -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=csharp
 
@@ -151,7 +151,7 @@ jobs:
       - name: Stesso controllo con tabelle per schema e per database (tests/fixtures/tenancy)
         run: |
           mkdir -p "$RUNNER_TEMP/fix" && cd "$RUNNER_TEMP/fix" && git init -q
-          "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs python,typescript --ci none
+          "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs python,typescript --tenant-id string --ci none
           cp "$GITHUB_WORKSPACE"/tests/fixtures/tenancy/*.yaml schemas/db/ && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
           pip install -e "libs/db-models/python[test,postgres]"
           (cd libs/db-models/typescript && npm install --no-audit --no-fund)
