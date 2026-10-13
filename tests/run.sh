@@ -24,6 +24,7 @@ make_project() {  # $1 cartella, $2 dialetto TS
   fi
 }
 P="$WORK/proj"; make_project "$P" sqlite
+VERIFY="$P/tools/kybes/plugins/kybes/scripts/verify.py"
 PG="$WORK/proj-pg"; make_project "$PG" postgres
 
 if python3 -B "$P/tools/kybes/plugins/kybes/scripts/gen/gen.py" "$P" --check >/dev/null; then pass "generatore idempotente (gen --check)"; else fail "gen --check"; fi
@@ -33,6 +34,9 @@ if want python; then
   if python3 -c "import sqlalchemy" 2>/dev/null; then
     if python3 -B "$KIT/tests/python/test_model.py" "$P"; then pass "python: CRUD e relazioni su SQLite"; else fail "python"; fi
     if python3 -B "$KIT/tests/python/test_access.py" "$P"; then pass "python: paginazione keyset, query dichiarate, Unit of Work"; else fail "python access"; fi
+    if python3 -c "import pytest, pytest_cov" 2>/dev/null; then
+      if python3 -B "$VERIFY" "$P" --lang=python --quiet; then pass "python: test ISO 26262-6 generati nel progetto, copertura entro le soglie ASIL"; else fail "python: test generati o copertura"; fi
+    else skip "python: test generati non eseguiti (pip install pytest pytest-cov)"; fi
   else skip "python: SQLAlchemy non installato (pip install sqlalchemy)"; fi
 fi
 
@@ -47,8 +51,13 @@ if want typescript; then
       # cursore prodotto da TypeScript letto da Python
       TSCUR=$(cd "$T" && node -e 'const {encodeCursor}=require("./dist/model/generated/_paging");const {PAGING_ORDINI}=require("./dist/model/generated/Ordini");console.log(encodeCursor(PAGING_ORDINI.defaultOrder,{data:"2026-01-02",id:"00000000-0000-0000-0000-000000000002"}))')
       if (cd "$P" && python3 -B -c "import sys; sys.path.insert(0,'libs/db-models/python/src'); from model.generated._paging import decode_cursor; from model.generated import PAGING_ORDINI as S; v=decode_cursor(S,S.default_order,sys.argv[1]); assert str(v[0])=='2026-01-02' and str(v[1]).endswith('2')" "$TSCUR"); then pass "cursore compatibile TypeScript → Python"; else fail "cursore TS→Python"; fi
-      rm -rf "$T/src/model" "$T/dist"; cp -R "$PG/libs/db-models/typescript/src/model" "$T/src/model"; rm -f "$T/src/model.test.ts" "$T/src/access.test.ts"
-      if (cd "$T" && npx tsc -p . --noEmit); then pass "typescript: compilazione strict dialetto postgres"; else fail "typescript postgres"; fi
+      # test generati nel progetto: stesso pacchetto e stessi strumenti di un progetto reale (tsc, c8, node --test)
+      ln -s "$T/node_modules" "$P/libs/db-models/typescript/node_modules"
+      if python3 -B "$VERIFY" "$P" --lang=typescript --quiet; then pass "typescript: test ISO 26262-6 generati nel progetto, copertura entro le soglie ASIL"; else fail "typescript: test generati o copertura"; fi
+      rm -f "$P/libs/db-models/typescript/node_modules"
+      ln -s "$T/node_modules" "$PG/libs/db-models/typescript/node_modules"
+      if (cd "$PG/libs/db-models/typescript" && "$T/node_modules/.bin/tsc" -p . --noEmit); then pass "typescript: compilazione strict dialetto postgres (model e test generati)"; else fail "typescript postgres"; fi
+      rm -f "$PG/libs/db-models/typescript/node_modules"
     else skip "typescript: npm install non riuscito"; fi
   else skip "typescript: npm non disponibile"; fi
 fi

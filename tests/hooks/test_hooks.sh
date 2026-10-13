@@ -58,6 +58,17 @@ dup_out=$(python3 -B "$SC/arch_check.py" "$P" || true)
 if echo "$dup_out" | grep -q duplicate_code; then echo "  ok   blocco duplicato rilevato"; else echo "  ERR  duplicati"; FAIL=1; fi
 rm -rf "$P/services/a" "$P/services/b"
 
+echo "arch_check (test dei metodi custom):"
+cp "$P/$M/Clienti.py" "$P/$M/Clienti.py.orig"
+printf '\n    def conta_attivi(self) -> int:\n        return self.count()\n' >> "$P/$M/Clienti.py"
+out=$(python3 -B "$SC/arch_check.py" "$P" || true)
+if echo "$out" | grep -q "custom_tests.*conta_attivi"; then echo "  ok   metodo custom senza test rilevato"; else echo "  ERR  custom_tests"; FAIL=1; fi
+CT="$P/libs/db-models/python/tests/custom/test_clienti_custom.py"
+printf '"""TC-Clienti-CONTA-ATTIVI · REQ-Clienti-CONTA"""\nfrom model.Clienti import ClientiRepository\n\n\ndef test_conta_attivi(session):\n    assert ClientiRepository(session).conta_attivi() == 0\n' > "$CT"
+out=$(python3 -B "$SC/arch_check.py" "$P" || true)
+if echo "$out" | grep -q "custom_tests"; then echo "  ERR  test custom non riconosciuto"; FAIL=1; else echo "  ok   test custom con id TC riconosciuto"; fi
+rm -f "$CT"; mv "$P/$M/Clienti.py.orig" "$P/$M/Clienti.py"
+
 echo "stop_gate (file generato manomesso):"
 echo "# manomesso" >> "$P/$M/generated/Ordini.py"
 out=$(echo "{\"hook_event_name\":\"Stop\",\"session_id\":\"kittest$$\",\"cwd\":\"$P\"}" | CLAUDE_PROJECT_DIR="$P" python3 -B "$SC/stop_gate.py")

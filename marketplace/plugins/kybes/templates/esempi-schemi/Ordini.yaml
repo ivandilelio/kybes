@@ -68,3 +68,5 @@ pagination:
   max_limit: 200
 transactions:
   isolation: repeatable_read
+verification:
+  asil: C

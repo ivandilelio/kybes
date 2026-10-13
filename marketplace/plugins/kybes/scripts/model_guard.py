@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -108,4 +109,39 @@ def check_repo(proj: Path, cfg: dict) -> List[Finding]:
             if rel.startswith(f"{d}/{GEN_DIR}/"):
                 continue
             out += [f for f in check_write(rel, [], cfg, proj) if f.rule == "model_layout"]
+    return out + check_custom_tests(proj, cfg)
+
+
+TEST_EXT = {"python": ".py", "typescript": ".ts", "csharp": ".cs", "java": ".java"}
+
+
+def check_custom_tests(proj: Path, cfg: dict) -> List[Finding]:
+    """Ogni metodo custom del model ha un test in <tests>/custom/ che lo chiama e porta un id TC-<Tabella>-...
+
+    I metodi generati hanno i test generati; quelli scritti a mano devono avere test scritti a mano,
+    tracciati con lo stesso schema di identificativi (ISO 26262-6: ogni unità è verificata).
+    """
+    sev = rules._sev(cfg, "custom_tests")
+    tbs = tables(proj, cfg) if sev else None
+    if not tbs:
+        return []
+    out: List[Finding] = []
+    for tg in G.model_config(cfg)["targets"]:
+        lang, d = tg["lang"], tg["dir"].rstrip("/")
+        td, mdir = G.tests_dir(tg), proj / d
+        if not td or not mdir.is_dir():
+            continue
+        cdir = proj / td / "custom"
+        tests = [p.read_text(encoding="utf-8", errors="replace") for p in sorted(cdir.rglob("*" + TEST_EXT[lang]))] if cdir.is_dir() else []
+        for f in sorted(mdir.iterdir()):
+            tn = G.custom_table_of(lang, f.name)
+            if not f.is_file() or tn not in tbs:
+                continue
+            for m in G.scan_methods(lang, f.read_text(encoding="utf-8", errors="replace"), f"{tn}Repository"):
+                if any(f"TC-{tn}-" in t and re.search(rf"\b{re.escape(m)}\b", t) for t in tests):
+                    continue
+                out.append(Finding("custom_tests", sev, f"{d}/{f.name}", 0,
+                                   f"il metodo custom '{m}' di {tn} non ha un test: scrivilo in {td}/custom/ "
+                                   f"con un identificativo TC-{tn}-<CASO> e il requisito REQ-{tn}-<CHIAVE> che verifica "
+                                   "(vedi docs/generated/verification/ per i metodi di derivazione)."))
     return out

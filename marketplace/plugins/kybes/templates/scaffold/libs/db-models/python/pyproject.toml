@@ -1,0 +1,27 @@
+# Libreria DB-Models (Python): il codice in src/model è generato da kybes dagli schemi in schemas/db.
+# Le function e i microservizi la importano a build time con versione/tag.
+[project]
+name = "db-models"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["sqlalchemy>=2.0"]
+
+[project.optional-dependencies]
+# test di unità generati (tests/generated) e custom (tests/custom), copertura per le soglie ASIL
+test = ["pytest>=8", "pytest-cov>=5"]
+postgres = ["psycopg[binary]>=3.1"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+
+[tool.coverage.run]
+branch = true
+source = ["src/model"]

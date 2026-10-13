@@ -23,12 +23,16 @@ sys.path.insert(0, str(HERE.parent))
 
 import emit_csharp  # noqa: E402
 import emit_db  # noqa: E402
+import test_python  # noqa: E402
+import test_typescript  # noqa: E402
+import verification  # noqa: E402
 import emit_java  # noqa: E402
 import emit_python  # noqa: E402
 import emit_typescript  # noqa: E402
 import rules  # noqa: E402
 from naming import EXT, GEN_DIR, LANGS, MARKER, custom_file, gen_options, method_name, member  # noqa: E402
 from schema import SchemaError, Table, load_schemas, methods_of  # noqa: E402
+from schema import snake as snake_name  # noqa: E402
 
 EMITTERS = {"python": emit_python, "typescript": emit_typescript, "csharp": emit_csharp, "java": emit_java}
 
@@ -40,6 +44,39 @@ DEFAULT_MODEL = {
     "ddl_dialects": ["postgres"],
     "targets": [],
 }
+
+DEFAULT_VERIFICATION = {
+    "asil": "B",
+    "generate_tests": True,
+    "docs_dir": "docs/generated/verification",
+    "coverage_reports": [],
+    # soglie di copertura strutturale per ASIL (percentuali); politica del progetto ispirata a ISO 26262-6 tab. 9
+    "thresholds": {"QM": {}, "A": {"statement": 90}, "B": {"statement": 95, "branch": 90},
+                   "C": {"statement": 100, "branch": 95}, "D": {"statement": 100, "branch": 100}},
+}
+
+TEST_EMITTERS = {"python": test_python, "typescript": test_typescript}
+TEST_FILE = {"python": lambda n: f"test_{snake_name(n)}.py", "typescript": lambda n: f"{n}.test.ts"}
+
+
+def verification_config(cfg: dict) -> dict:
+    out = dict(DEFAULT_VERIFICATION)
+    out.update(cfg.get("verification") or {})
+    if out["asil"] not in ("QM", "A", "B", "C", "D"):
+        raise SystemExit(f"gen: verification.asil non valido: {out['asil']!r}")
+    return out
+
+
+def tests_dir(tg: dict) -> Optional[str]:
+    """Cartella dei test del pacchetto del linguaggio: <pacchetto>/tests (personalizzabile con tests_dir)."""
+    if tg.get("tests_dir"):
+        return tg["tests_dir"].rstrip("/")
+    d = tg["dir"].rstrip("/")
+    if d.endswith("/src/model"):
+        return d[: -len("/src/model")] + "/tests"
+    if "/src/main/java/" in d:
+        return d.replace("/src/main/java/", "/src/test/java/", 1)
+    return None
 
 # --------------------------------------------------------------------------- metodi nei file custom
 
@@ -231,6 +268,32 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
             desired[f"{d}/{rel}"] = text
         for rel, text in custom.items():
             customs_to_create[f"{d}/{rel}"] = text
+    vc = verification_config(cfg)
+    if not index_only and tables:
+        cycles = verification.builder_cycles(tables)
+        if cycles:
+            res.problems.append("cicli di chiavi esterne obbligatorie, impossibili da popolare nei test: " + "; ".join(cycles))
+        cat = verification.build_catalog(tables, vc["asil"])
+        test_files: Dict[str, Dict[str, str]] = {}
+        if vc.get("generate_tests", True):
+            for tg in mc["targets"]:
+                em = TEST_EMITTERS.get(tg["lang"])
+                td = tests_dir(tg)
+                if not em or not td:
+                    continue
+                managed_dirs.append(proj / td / GEN_DIR)
+                if tg["lang"] == "typescript":
+                    files = em.emit(cat, tables, vc["asil"], tg.get("dialect", "postgres"))
+                else:
+                    files = em.emit(cat, tables, vc["asil"])
+                for rel, text in files.items():
+                    desired[f"{td}/{rel}"] = text
+                for rel, make in getattr(em, "CUSTOM_ONCE", {}).items():
+                    customs_to_create[f"{td}/{rel}"] = make()
+                test_files[tg["lang"]] = {n: f"{td}/{GEN_DIR}/{TEST_FILE[tg['lang']](n)}" for n in tables}
+        managed_dirs.append(proj / vc["docs_dir"])
+        for rel, text in verification.verification_docs(cat, tables, test_files, vc["asil"], vc["thresholds"]).items():
+            desired[f"{vc['docs_dir']}/{rel}"] = text
     if not index_only:
         for n, t in tables.items():
             desired[f"{mc['json_schema_dir']}/{n}.schema.json"] = json_schema(t)

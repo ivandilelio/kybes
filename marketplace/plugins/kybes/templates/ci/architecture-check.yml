@@ -17,3 +17,21 @@ jobs:
         run: python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --check
       - name: Regole architetturali, struttura e duplicati
         run: python3 -B tools/kybes/plugins/kybes/scripts/arch_check.py . --strict
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Dipendenze dei test del modello
+        run: |
+          if [ -f libs/db-models/python/pyproject.toml ]; then pip install -e "libs/db-models/python[test]"; fi
+          if [ -f libs/db-models/typescript/package.json ]; then (cd libs/db-models/typescript && npm install --no-audit --no-fund); fi
+      - name: Test di unità del modello e copertura per ASIL (ISO 26262-6)
+        run: python3 -B tools/kybes/plugins/kybes/scripts/verify.py .
+      - name: Evidenze di verifica (report di copertura e specifiche dei test)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-evidence
+          path: |
+            coverage/*.cobertura.xml
+            docs/generated/verification/
+          if-no-files-found: ignore

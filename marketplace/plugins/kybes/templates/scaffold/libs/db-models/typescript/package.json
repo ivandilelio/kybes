@@ -1,0 +1,23 @@
+{
+  "name": "db-models",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Libreria DB-Models (TypeScript): il codice in src/model è generato da kybes dagli schemi in schemas/db",
+  "main": "dist/src/model/generated/index.js",
+  "types": "dist/src/model/generated/index.d.ts",
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "python3 -B ../../../tools/kybes/plugins/kybes/scripts/verify.py ../../.. --lang=typescript"
+  },
+  "dependencies": {
+    "reflect-metadata": "^0.2.2",
+    "typeorm": "^1.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "c8": "^10.1.0",
+    "pg": "^8.12.0",
+    "sql.js": "^1.11.0",
+    "typescript": "^5.6.0"
+  }
+}

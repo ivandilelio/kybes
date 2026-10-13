@@ -42,6 +42,7 @@ DEFAULT_CONFIG = {
         "generated_files": "block",
         "model_layout": "block",
         "custom_method_collision": "block",
+        "custom_tests": "block",
         "duplicate_code": "block",
     },
     "duplicates": {"min_lines": 8, "include_tests": False, "ignore": []},
