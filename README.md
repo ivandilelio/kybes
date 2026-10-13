@@ -116,7 +116,7 @@ The generator also creates the index `(ClienteId, Data)` that covers both `listB
 | **Transactions** | Unit of Work with per-table isolation level and automatic retry on serialization failures and deadlocks | ✅ available |
 | **PostgreSQL DDL** | complete schema with constraints and indexes, validated by the PostgreSQL parser | ✅ available |
 | **Guardrail hooks** | data access outside the model, generated files, folder layout, method collisions, secrets, duplicates | ✅ available |
-| **Unit tests to ISO 26262-6** | requirement IDs and test cases derived from each schema (requirements analysis, equivalence classes, boundary values, error guessing, MC/DC for ASIL C/D); runnable pytest and node:test suites; traceability matrix; coverage gate per table ASIL; mandatory traced tests for custom methods | ✅ Python, TypeScript · 🗺️ Java, C# |
+| **Unit tests to ISO 26262-6** | requirement IDs and test cases derived from each schema (requirements analysis, equivalence classes, boundary values, error guessing, MC/DC for ASIL C/D); runnable pytest and node:test suites; traceability matrix; coverage gate per table ASIL; mandatory traced tests for custom methods | ✅ available |
 | **Multi-tenancy** | per table: tenant column with row-level security, schema per tenant, or database per tenant | 🗺️ planned |
 | **Hot/cold archive** | Parquet on S3/Azure Blob partitioned by tenant and date, queryable from Athena; TTL jobs as CronJob, Job+KEDA or 24/7 engine | 🗺️ planned |
 | **MongoDB** | same repository interface over MongoDB in all four languages | 🗺️ planned |
@@ -188,7 +188,7 @@ The installer is idempotent. Teammates run `tools/kybes/setup.sh` once after clo
 | C# | `net8.0`, Microsoft.EntityFrameworkCore 8 and a provider (e.g. Npgsql) |
 | Python | Python 3.9+, SQLAlchemy 2 |
 | TypeScript | TypeORM, `reflect-metadata`, `experimentalDecorators` and `emitDecoratorMetadata` |
-| Java | Jakarta Persistence 3.1, Hibernate 6.2+ |
+| Java | Jakarta Persistence 3.1, Hibernate 6.2+, Jackson for `json` columns |
 | hooks and generator | `python3` (standard library only) |
 
 ## How kybes itself is verified
@@ -199,14 +199,13 @@ The installer is idempotent. Teammates run `tools/kybes/setup.sh` once after clo
 |---|---|
 | Python | real CRUD, relations, cascades, unique constraints, pagination edge cases (ties, tampered cursors, disallowed sorts), every query operator, and Unit of Work commit, rollback and retry, on SQLite |
 | TypeScript | the same scenarios on sql.js; `strict` + `noUnusedLocals` compilation for the PostgreSQL dialect |
-| Generated tests | the ISO 26262-6 suites generated into the sample project run green in Python and TypeScript, with 100% statement and branch coverage of the model; mutants (dropped query condition, off-by-one length or page limit, flipped keyset comparator, retry off-by-one) are killed |
-| Java | `javac -Xlint:all -Werror` against faithful JPA/Hibernate stubs; paging and Unit of Work logic executed against a recording `EntityManager` |
-| C# | syntax check with the tree-sitter C# grammar; EF Core 8 translation reviewed against EF Core sources |
+| Generated tests | the ISO 26262-6 suites generated into the sample project run green in all four languages (Python and TypeScript also on PostgreSQL), within the ASIL coverage thresholds; mutants (dropped query condition, off-by-one length or page limit, flipped keyset comparator, retry off-by-one) are killed |
+| Java | `javac -Xlint:all -Werror` against faithful JPA/Hibernate stubs locally; in CI the generated JUnit 5 suite runs on Hibernate 6 and PostgreSQL 16, with JaCoCo coverage within the ASIL thresholds |
+| C# | tree-sitter syntax check locally; in CI the model builds with `-warnaserror` and the generated xUnit suite runs on EF Core 8 and PostgreSQL 16, with coverlet coverage within the ASIL thresholds |
 | SQL | generated DDL parsed by the PostgreSQL parser (`pglast`) |
 | Cross-language | a cursor produced by TypeScript, Python or Java is accepted by the others |
 | Hooks | every rule with its expected outcome (deny/allow), auto-regeneration, duplicate detection, stop gate |
 
-C# is not yet compiled in CI. Compile it in your `net8.0` project before production use.
 
 ## Documentation
 

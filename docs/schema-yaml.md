@@ -92,7 +92,7 @@ retention:
 | `auto` | `true`/`false` | solo sulla chiave: valore generato dal sistema; default `true` per `uuid`, `int`, `bigint` |
 | `required` | `true`/`false` | NOT NULL e validazione in tutti i linguaggi |
 | `unique` | `true` | vincolo univoco con nome `ux_<tabella>_<colonna>` e metodo `findBy<Colonna>` |
-| `default` | valore semplice | non ammesso per `uuid`, `date`, `datetime`, `json` |
+| `default` | valore semplice | non ammesso per `uuid`, `date`, `datetime`, `json`. Su una colonna obbligatoria: se il valore manca vale il default, un nullo esplicito è rifiutato come `obbligatorio` |
 | `generated` | `on_create`, `on_update` | solo `datetime`: data di creazione o di ultima modifica, impostata dal model |
 | `db_name` | nome colonna nel DB | default snake_case |
 | `description` | testo | finisce nel JSON Schema e nella documentazione |

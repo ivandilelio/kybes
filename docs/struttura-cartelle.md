@@ -37,14 +37,14 @@ Nella mappa `<T>` è il nome di una tabella in PascalCase (es. `Clienti`), `<t>`
 
 | Linguaggio | Punto d'ingresso (tuo) | Generato | Test generati | Test tuoi |
 |---|---|---|---|---|
-| C# | `libs/db-models/csharp/src/model/<T>.cs` | `libs/db-models/csharp/src/model/generated/<T>.cs`, `AppDbContext.cs` | `libs/db-models/csharp/tests/generated/<T>Tests.cs` (fase 3b) | `libs/db-models/csharp/tests/custom/<T>CustomTests.cs` |
+| C# | `libs/db-models/csharp/src/model/<T>.cs` | `libs/db-models/csharp/src/model/generated/<T>.cs`, `AppDbContext.cs` | `libs/db-models/csharp/tests/generated/<T>Tests.cs` | `libs/db-models/csharp/tests/custom/<T>CustomTests.cs` |
 | Python | `libs/db-models/python/src/model/<T>.py` | `libs/db-models/python/src/model/generated/<T>.py` | `libs/db-models/python/tests/generated/test_<t>.py` | `libs/db-models/python/tests/custom/test_<t>_custom.py` |
 | TypeScript | `libs/db-models/typescript/src/model/<T>.ts` | `libs/db-models/typescript/src/model/generated/<T>.ts`, `index.ts` | `libs/db-models/typescript/tests/generated/<T>.test.ts` | `libs/db-models/typescript/tests/custom/<T>.custom.test.ts` |
-| Java | `libs/db-models/java/src/main/java/<pkg>/<T>Repository.java` | `libs/db-models/java/src/main/java/<pkg>/generated/<T>.java`, `<T>RepositoryBase.java` | `libs/db-models/java/src/test/java/<pkg>/generated/<T>Test.java` (fase 3b) | `libs/db-models/java/src/test/java/<pkg>/custom/<T>CustomTest.java` |
+| Java | `libs/db-models/java/src/main/java/<pkg>/<T>Repository.java` | `libs/db-models/java/src/main/java/<pkg>/generated/<T>.java`, `<T>RepositoryBase.java` | `libs/db-models/java/src/test/java/<pkg>/generated/<T>Test.java` | `libs/db-models/java/src/test/java/<pkg>/custom/<T>CustomTest.java` |
 
 Lo stato è questo:
 - **Model:** disponibile.
-- **Test generati:** disponibili in Python e TypeScript, con fixture e builder condivisi (`conftest.py`/`kybes_fixtures.py`/`kybes_builders.py`, `_db.ts`/`kybes_builders.ts`); Java e C# nella fase 3b.
+- **Test generati:** disponibili nei quattro linguaggi, con database e builder condivisi dai test custom: `kybes_fixtures.py`/`kybes_builders.py` (Python), `_db.ts`/`kybes_builders.ts` (TypeScript), `KybesDb`/`KybesBuilders` (Java e C#).
 - **Test dei metodi custom:** tuoi, in `tests/custom/`, obbligatori per ogni metodo custom (regola `custom_tests`). In Python il generatore crea una volta `tests/custom/conftest.py` con le stesse fixture.
 - **Unit of Work e paginazione:** disponibili, come file aggiuntivi nella stessa cartella `generated/` del linguaggio: `_paging` e `_uow` in Python e TypeScript, `Paging` e `UnitOfWork` in C# e Java.
 - **Accesso a MongoDB:** fase 6. Per le tabelle con `storage: mongo` i file sono negli stessi percorsi e con gli stessi nomi; cambia solo l'implementazione.

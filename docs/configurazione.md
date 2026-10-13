@@ -33,7 +33,7 @@ La configurazione di un progetto sta in `.claude/kybes.config.json`. L'installer
     "asil": "B",
     "generate_tests": true,
     "docs_dir": "docs/generated/verification",
-    "coverage_reports": ["coverage/*.cobertura.xml"],
+    "coverage_reports": ["coverage/*.cobertura.xml", "coverage/*.jacoco.xml"],
     "thresholds": { "A": { "statement": 90 }, "B": { "statement": 95, "branch": 90 }, "C": { "statement": 100, "branch": 95 }, "D": { "statement": 100, "branch": 100 } }
   },
   "duplicates": { "min_lines": 8, "include_tests": false, "ignore": [] },
@@ -78,7 +78,7 @@ Dalla riga di comando, con il repository clonato:
 | `--model-langs` | function + microservizi | linguaggi in cui generare il modello |
 | `--namespace`, `--java-package` | `App.Model`, `app.model` | namespace C# e package Java del modello |
 | `--asil` | `B` | ASIL predefinito delle tabelle (`QM`, `A`, `B`, `C`, `D`) |
-| `--scaffold` | no | struttura delle cartelle, modulo errori, `schemas/openapi.yaml`, pacchetti DB-Models (`pyproject.toml`, `package.json`, `tsconfig.json`) |
+| `--scaffold` | no | struttura delle cartelle, modulo errori, `schemas/openapi.yaml`, pacchetti DB-Models (`pyproject.toml`, `package.json` e `tsconfig.json`, `pom.xml`, `src/DbModels.csproj` e `tests/DbModels.Tests.csproj`) |
 | `--examples` | no | 5 schemi di esempio e generazione |
 | `--ci` | `github` | workflow di controllo |
 | `--scope` | `local` | dove registrare il plugin in Claude Code |

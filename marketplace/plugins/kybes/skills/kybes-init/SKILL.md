@@ -27,7 +27,7 @@ kybes needs a small amount of project configuration before its hooks and generat
    - `MODEL_INDEX.md`, if schemas exist;
    - the generated unit tests in `libs/db-models/<lang>/tests/generated/` and the verification docs in `docs/generated/verification/`.
 
-   To run the model tests, the DB-models packages need their test tools: `pip install -e "libs/db-models/python[test]"` and `npm install` in `libs/db-models/typescript` (the scaffold creates both package files). Then `python3 -B tools/kybes/plugins/kybes/scripts/verify.py .` runs the tests and checks coverage per ASIL.
+   To run the model tests, the DB-models packages need their test tools (the scaffold creates the package files): `pip install -e "libs/db-models/python[test]"`, `npm install` in `libs/db-models/typescript`, Maven for `libs/db-models/java/pom.xml`, the .NET 8 SDK for `libs/db-models/csharp`. Java and C# tests run on PostgreSQL: set `KYBES_TEST_DATABASE_URL=postgresql://user:password@host:5432/db` (a local `postgres:16` container is enough). Then `python3 -B tools/kybes/plugins/kybes/scripts/verify.py .` runs the tests and checks coverage per ASIL.
 
    Then suggest the next step: describe a table in `schemas/db/<Table>.yaml`; the model is generated automatically when the schema is saved.
 

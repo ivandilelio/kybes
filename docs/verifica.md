@@ -15,10 +15,12 @@ Dallo schema `schemas/db/<T>.yaml` il generatore ricava requisiti e casi di test
 | soglie di copertura per ASIL e limiti noti | `docs/generated/verification/coverage.md` | generato |
 | test Python (pytest) | `libs/db-models/python/tests/generated/` | generato |
 | test TypeScript (node:test) | `libs/db-models/typescript/tests/generated/` | generato |
-| test dei metodi custom | `libs/db-models/<lingua>/tests/custom/` | tuo |
-| report di copertura (Cobertura) | `coverage/<lingua>.cobertura.xml` | prodotto da `verify.py` |
+| test Java (JUnit 5, Hibernate) | `libs/db-models/java/src/test/java/<package>/generated/` | generato |
+| test C# (xUnit, EF Core) | `libs/db-models/csharp/tests/generated/` | generato |
+| test dei metodi custom | `libs/db-models/<lingua>/tests/custom/` (Java: `src/test/java/<package>/custom/`) | tuo |
+| report di copertura | `coverage/<lingua>.cobertura.xml`, `coverage/java.jacoco.xml` | prodotto da `verify.py` |
 
-I test Java (JUnit 5) e C# (xUnit) seguiranno lo stesso catalogo. Oggi, per quei linguaggi, `verify.py --gate-only` controlla le soglie su report Cobertura prodotti dalla CI (coverlet per C#, JaCoCo convertito per Java).
+I quattro linguaggi rendono lo stesso catalogo: stessi identificativi, stessi casi, adattati all'API del linguaggio. Per esempio, l'aggiornamento di un record inesistente in Python e TypeScript non restituisce nulla, in Java e C# solleva un errore «record inesistente»; la specifica di ogni caso lo dice.
 
 ## Identificativi
 
@@ -28,7 +30,7 @@ I test Java (JUnit 5) e C# (xUnit) seguiranno lo stesso catalogo. Oggi, per quei
 | requisito dei moduli comuni | `REQ-KYBES-<CHIAVE>` | `REQ-KYBES-UOW-RETRY` |
 | caso di test | `TC-<Tabella>-<CASO>` | `TC-Ordini-Q-ApertiDelCliente-MCDC-2` |
 
-Ogni test generato porta l'identificativo nel nome (Python), o nel titolo e nel docstring (TypeScript), insieme ai requisiti che verifica e al metodo con cui è stato derivato. Gli identificativi sono stabili: dipendono dai nomi nello schema, non dall'ordine.
+Ogni test generato porta l'identificativo nel nome (Python), nel titolo (TypeScript), in `@DisplayName` (Java) o in `DisplayName` di `[Fact]` (C#), insieme ai requisiti che verifica e al metodo con cui è stato derivato. Gli identificativi sono stabili: dipendono dai nomi nello schema, non dall'ordine.
 
 ## Metodi di derivazione
 
@@ -93,6 +95,58 @@ test("TC-Clienti-CONTA-ATTIVI · REQ-Clienti-CONTA · analisi dei requisiti: con
   }));
 ```
 
+Java: `KybesDb.open()` dà un `EntityManager` con le tabelle vuote e una transazione annullata alla fine; i builder sono in `KybesBuilders`.
+
+```java
+package app.model.custom;
+
+import static app.model.generated.KybesBuilders.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+import app.model.ClientiRepository;
+import app.model.generated.KybesDb;
+import jakarta.persistence.EntityManager;
+import org.junit.jupiter.api.*;
+
+class ClientiCustomTest {
+    private EntityManager em;
+
+    @BeforeEach void open() { em = KybesDb.open(); }
+    @AfterEach void close() { KybesDb.close(em); }
+
+    @Test
+    @DisplayName("TC-Clienti-CONTA-ATTIVI · REQ-Clienti-CONTA · analisi dei requisiti: conteggio dei clienti attivi")
+    void contaAttivi() {
+        buildClienti(em, x -> x.setAttivo(true));
+        buildClienti(em, x -> x.setAttivo(false));
+        assertEquals(1, new ClientiRepository(em).contaAttivi());
+    }
+}
+```
+
+C#: `KybesDb.Open()` dà un contesto con le tabelle vuote; i builder sono in `KybesBuilders`.
+
+```csharp
+using App.Model;
+using App.Model.Tests;
+using Xunit;
+using static App.Model.Tests.KybesBuilders;
+
+public sealed class ClientiCustomTests : IDisposable
+{
+    private readonly AppDbContext db = KybesDb.Open();
+    public void Dispose() => db.Dispose();
+
+    [Fact(DisplayName = "TC-Clienti-CONTA-ATTIVI · REQ-Clienti-CONTA · analisi dei requisiti: conteggio dei clienti attivi")]
+    public async Task ContaAttivi()
+    {
+        await BuildClienti(db, x => x.Attivo = true);
+        await BuildClienti(db, x => x.Attivo = false);
+        Assert.Equal(1, await new ClientiRepository(db).ContaAttiviAsync());
+    }
+}
+```
+
 Il requisito di un metodo custom si scrive nel commento del metodo con lo stesso formato (`REQ-<Tabella>-<CHIAVE>`), così la tabella e il codice restano collegati.
 
 ## Esecuzione
@@ -105,10 +159,21 @@ python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --gate-only        # so
 
 | Linguaggio | Esegue | Serve |
 |---|---|---|
-| Python | `pytest` con `pytest-cov` nella cartella del pacchetto | `pip install -e "libs/db-models/python[test]"` |
-| TypeScript | `tsc`, poi `c8` con `node --test` | `npm install` in `libs/db-models/typescript` (tsconfig con `sourceMap: true`) |
+| Python | `pytest` con `pytest-cov` nella cartella del pacchetto | `pip install -e "libs/db-models/python[test]"` (con `[test,postgres]` per PostgreSQL) |
+| TypeScript | `tsc`, poi `c8` con `node --test`, un file alla volta | `npm install` in `libs/db-models/typescript` (tsconfig con `sourceMap: true`) |
+| Java | `mvn test` con JaCoCo | Maven, `libs/db-models/java/pom.xml`, PostgreSQL |
+| C# | `dotnet test` con coverlet | .NET 8 SDK, `libs/db-models/csharp/tests/*.csproj`, PostgreSQL |
 
-I test girano su SQLite in memoria (Python) o su sql.js (TypeScript, dialetto `sqlite`). Con `KYBES_TEST_DATABASE_URL` girano sul database indicato, per esempio un PostgreSQL di CI.
+L'installer con `--scaffold` crea i file dei pacchetti (`pyproject.toml`, `package.json` e `tsconfig.json`, `pom.xml`, i due `.csproj`) per i linguaggi del modello.
+
+Il database dei test è `KYBES_TEST_DATABASE_URL`, nello stesso formato per tutti i linguaggi: `postgresql://utente:password@host:5432/database`. Java e C# lo richiedono: lo schema viene creato da Hibernate o da EF Core e le tabelle svuotate prima di ogni test. Python e TypeScript, se la variabile manca, usano SQLite in memoria e sql.js (dialetto `sqlite`). In locale basta un container:
+
+```bash
+docker run -d --name kybes-pg -e POSTGRES_USER=kybes -e POSTGRES_PASSWORD=kybes -e POSTGRES_DB=kybes -p 5432:5432 postgres:16
+export KYBES_TEST_DATABASE_URL=postgresql://kybes:kybes@localhost:5432/kybes
+```
+
+Quando una soglia non è raggiunta, `verify.py` indica il file, la soglia dell'ASIL e le righe non eseguite o con rami non percorsi: si aggiunge il test che le esercita.
 
 `verify.py` esce con 1 se un test fallisce o una soglia non è raggiunta. Un linguaggio senza strumenti installati viene segnalato e saltato. L'installer lo mette in `stop_gate.commands`, quindi Claude non chiude un lavoro con test rotti o copertura insufficiente. Lo aggiunge anche al workflow di CI, che conserva report e specifiche come artefatto `verification-evidence`.
 

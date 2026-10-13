@@ -121,7 +121,8 @@ Inoltre `schemas/generated/json/<Tabella>.schema.json` (validazione di API Gatew
 - **Ogni metodo custom ha un test custom** in `libs/db-models/<lang>/tests/custom/`, scritto insieme al metodo:
   - l'identificativo del caso `TC-<Tabella>-<CASO>` e il requisito `REQ-<Tabella>-<CHIAVE>` nel nome o nel docstring/titolo del test, il requisito anche nel commento del metodo;
   - casi derivati con i metodi della norma: analisi dei requisiti (il caso nominale), classi di equivalenza (un record dentro e uno fuori dal filtro), valori limite (vuoto, uno, massimo), stima degli errori (record inesistente, input non valido);
-  - le fixture e i builder dei test generati: in Python `session`/`session_factory` e `kybes_builders.build_<tabella>`; in TypeScript `withDb` da `../generated/_db` e `build<Tabella>` da `../generated/kybes_builders`.
+  - le fixture e i builder dei test generati: in Python `session`/`session_factory` e `kybes_builders.build_<tabella>`; in TypeScript `withDb` da `../generated/_db` e `build<Tabella>` da `../generated/kybes_builders`; in Java `KybesDb.open()`/`KybesDb.close(em)` e `KybesBuilders.build<Tabella>(em, x -> ...)` (test in `src/test/java/<package>/custom/`); in C# `KybesDb.Open()` e `KybesBuilders.Build<Tabella>(db, x => ...)`.
+  - Java e C# girano su PostgreSQL (`KYBES_TEST_DATABASE_URL=postgresql://utente:password@host:5432/db`); Python e TypeScript usano lo stesso URL se impostato, altrimenti SQLite in memoria.
   La regola `custom_tests` blocca la chiusura se un metodo custom non compare in un test con un id `TC-<Tabella>-`.
 - `verify.py` (in `stop_gate.commands` e in CI) esegue test generati e custom e confronta la copertura di ogni file del modello con la soglia della sua tabella. Una soglia mancata si risolve con un test, mai abbassando la soglia o escludendo file.
 
