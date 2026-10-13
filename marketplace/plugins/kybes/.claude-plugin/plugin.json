@@ -1,6 +1,6 @@
 {
   "name": "kybes",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Regole architetturali, agenti (architect, implementer, reviewer) e hook di controllo per generare gestionali cloud coerenti.",
   "author": { "name": "Ivan Di Lelio", "email": "ivan.dilelio@metainnovation.it" },
   "license": "UNLICENSED",

@@ -41,7 +41,8 @@ def _is_generated_on_disk(p: Path) -> bool:
 
 def is_generated_zone(rel: str, cfg: dict) -> bool:
     mc = G.model_config(cfg)
-    if rel == mc["index_file"] or rel.startswith(mc["json_schema_dir"].rstrip("/") + "/"):
+    if rel == mc["index_file"] or rel.startswith(mc["json_schema_dir"].rstrip("/") + "/") or \
+            rel.startswith(mc["db_dir"].rstrip("/") + "/"):
         return True
     return any(rel.startswith(f"{d}/{GEN_DIR}/") for _, d in rules.model_target_dirs(cfg))
 

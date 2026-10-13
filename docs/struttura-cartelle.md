@@ -29,7 +29,7 @@ Nella mappa `<T>` è il nome di una tabella in PascalCase (es. `Clienti`), `<t>`
 |---|---|---|---|
 | `schemas/db/<T>.yaml` | tuo | **sorgente di verità** della tabella ([specifica](schema-yaml.md)) | disponibile |
 | `schemas/generated/json/<T>.schema.json` | generato | JSON Schema per API Gateway e middleware di validazione | disponibile |
-| `schemas/generated/json/_page.schema.json` | generato | contratto della pagina (cursore, limite, ordinamento) | fase 2 |
+| `schemas/generated/json/_page.schema.json` | generato | contratto della pagina (cursore, limite, ordinamento) | disponibile |
 | `schemas/openapi.yaml` | tuo | contratto delle API | disponibile |
 | `MODEL_INDEX.md` | generato | indice di tabelle, file, metodi generati e custom, query e indici | disponibile |
 
@@ -45,15 +45,15 @@ Nella mappa `<T>` è il nome di una tabella in PascalCase (es. `Clienti`), `<t>`
 Lo stato è questo:
 - **Model:** disponibile.
 - **Test generati e tuoi:** fase 3.
-- **Unit of Work e paginazione:** fase 2. Arrivano come file aggiuntivi nella stessa cartella `generated/` del linguaggio, ad esempio `generated/_uow.py` e `generated/UnitOfWork.cs`.
+- **Unit of Work e paginazione:** disponibili, come file aggiuntivi nella stessa cartella `generated/` del linguaggio: `_paging` e `_uow` in Python e TypeScript, `Paging` e `UnitOfWork` in C# e Java.
 - **Accesso a MongoDB:** fase 6. Per le tabelle con `storage: mongo` i file sono negli stessi percorsi e con gli stessi nomi; cambia solo l'implementazione.
 
 ### Database, archivio e job
 
 | Percorso | Di chi | Contenuto | Stato |
 |---|---|---|---|
-| `db/generated/ddl/<dialetto>/<T>.sql` | generato | DDL della tabella con indici e vincoli | fase 2 |
-| `db/generated/indexes.md` | generato | analisi indici: query coperte, indici mancanti o ridondanti | fase 2 |
+| `db/generated/ddl/postgres/_all.sql`, `<T>.sql` | generato | DDL PostgreSQL con vincoli e indici | disponibile |
+| `db/generated/indexes.md` | generato | analisi indici: query coperte, indici mancanti o ridondanti | disponibile |
 | `db/generated/tenancy/<T>.sql` | generato | policy di isolamento (row-level security o schema per tenant) | fase 4 |
 | `db/generated/athena/<T>.sql` | generato | tabella esterna Athena sui file Parquet dell'archivio | fase 5 |
 | `db/migrations/` | tuo | migrazioni applicate dalla pipeline | riservato |
@@ -86,6 +86,6 @@ Lo stato è questo:
 | le colonne di una tabella | `schemas/db/<T>.yaml` |
 | come si chiama il metodo che legge i figli di una relazione | `MODEL_INDEX.md`, sezione della tabella |
 | una query specifica di una tabella | il file custom `model/<T>` del linguaggio |
-| perché un indice esiste | `db/generated/indexes.md` (fase 2) |
+| perché un indice esiste | `db/generated/indexes.md` |
 | quali test coprono un requisito | `docs/generated/verification/traceability.md` (fase 3) |
 | quando i dati vecchi lasciano la tabella | sezione `archive` di `schemas/db/<T>.yaml` (fase 5) |

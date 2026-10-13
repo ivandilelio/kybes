@@ -90,13 +90,15 @@ Inoltre `schemas/generated/json/<Tabella>.schema.json` (validazione di API Gatew
 | Neutro | C# | Python | TypeScript / Java |
 |---|---|---|---|
 | leggi per chiave | `GetByIdAsync` | `get_by_id` | `getById` |
-| pagina ordinata | `ListAsync(skip, take)` | `list(offset, limit)` | `list` |
+| pagina a cursore | `ListPageAsync(PageRequest)` | `list_page(PageRequest)` | `listPage` |
 | conteggio / esistenza | `CountAsync`, `ExistsAsync` | `count`, `exists` | `count`, `exists` |
 | inserisci / aggiorna / elimina (con validazione) | `CreateAsync`, `UpdateAsync`, `DeleteAsync` | `create`, `update`, `delete` | `create`, `update`, `delete` |
 | per colonna univoca | `FindBy<Col>Async` | `find_by_<col>` | `findBy<Col>` |
-| per chiave esterna | `ListBy<Fk>Async` | `list_by_<fk>` | `listBy<Fk>` |
+| per chiave esterna (pagina) | `ListBy<Fk>Async` | `list_by_<fk>` | `listBy<Fk>` |
 | padre (many_to_one) | `Get<Relazione>Async` | `get_<relazione>` | `get<Relazione>` |
-| figli (one_to_many) | `List<Relazione>Async` | `list_<relazione>` | `list<Relazione>` |
+| figli (one_to_many, pagina) | `List<Relazione>Async` | `list_<relazione>` | `list<Relazione>` |
+| query dichiarata `page`/`list` | `List<Query>Async` | `list_<query>` | `list<Query>` |
+| query dichiarata `one` | `Find<Query>Async` | `find_<query>` | `find<Query>` |
 
 **Regole operative (verificate dagli hook):**
 1. Prima di cercare nel codice, leggi `MODEL_INDEX.md`: dice in quale file sta ogni metodo di ogni tabella.
@@ -105,7 +107,10 @@ Inoltre `schemas/generated/json/<Tabella>.schema.json` (validazione di API Gatew
 4. I metodi custom di una tabella vanno solo nel suo file `model/<Tabella>` e non possono avere il nome di un metodo generato. Prima di scriverne uno, controlla che non esista già tra i generati.
 5. Nella cartella `model` non si creano altri file né sottocartelle. La logica di business sta nei service, le trasformazioni pure in `libs/utils`.
 6. Fuori dalla cartella model nessun import di ORM o driver DB, in nessun linguaggio.
-7. Le transazioni le gestisce il chiamante (service): Python e Java lasciano commit/rollback al chiamante, TypeScript usa l'`EntityManager` passato al costruttore (anche quello di una transazione), C# usa il `DbContext` (per più operazioni atomiche: `Database.BeginTransactionAsync`).
+7. **Query:** l'accesso abituale (filtri in AND sulla tabella, ordinamento, una o più righe) si dichiara in `queries` nello schema, non si scrive a mano. Il generatore crea il metodo e l'indice che lo copre (`db/generated/indexes.md`). I metodi custom servono solo per join, aggregazioni e logiche non esprimibili come query dichiarata; per loro l'indice va dichiarato in `indexes`.
+8. **Paginazione:** tutte le liste usano il cursore (`PageRequest` → `Page` con `items`, `nextCursor`, `limit`), mai `OFFSET`. Le colonne ordinabili dalla UI sono solo quelle in `pagination.sortable`, e devono essere `required`. L'API espone `limit`, `cursor` e `sort` secondo `schemas/generated/json/_page.schema.json`; un errore su questi campi è un 400.
+9. **Transazioni:** i metodi del model non fanno commit. Il service apre la Unit of Work generata (`run_in_transaction`, `runInTransaction`, `UnitOfWork.RunAsync`, `UnitOfWork.run`) indicando le tabelle scritte: il livello di isolamento è il più severo tra quelli dichiarati in `transactions.isolation`, e sui conflitti (40001, 40P01) il blocco viene ripetuto. Dentro la transazione niente effetti esterni (email, chiamate HTTP): vanno dopo il commit o in outbox.
+10. Il DDL di riferimento è `db/generated/ddl/postgres/_all.sql`: le migrazioni si confrontano con questo, non con la sincronizzazione automatica degli ORM.
 
 **Niente codice duplicato.** Un blocco di 8 o più righe significative uguale in due punti blocca la chiusura del lavoro. La correzione è sempre estrarre: accesso ai dati → metodo custom nel model della tabella; trasformazione pura → `libs/utils`; regola di business → service.
 

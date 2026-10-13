@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from typing import Dict, Tuple
 
-from naming import GEN_DIR, custom_file, header, method_name, repo_class
+import runtime_csharp
+from naming import GEN_DIR, custom_file, header, member, method_name, repo_class
 from schema import Table, index_specs, methods_of
 
 L = "csharp"
@@ -122,6 +123,21 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
     w("        Db = db;")
     w("    }\n")
     w(f"    protected DbSet<{t.name}> Set => Db.Set<{t.name}>();\n")
+
+    def oi(cn, d):
+        return f'new OrderItem("{cn}", "{member("typescript", cn)}", SortType.{_SORT[t.col(cn).type]}, {str(d).lower()})'
+    w("    /// <summary>Contratto di paginazione della tabella: colonne ordinabili, ordine predefinito, limiti.</summary>")
+    w("    public static readonly PagingSpec PageSpec = new(")
+    w(f'        "{t.name}",')
+    w(f"        {oi(pk.name, False)},")
+    sortable = ", ".join(f'["{member("typescript", cn)}"] = {oi(cn, False)}' for cn in t.pagination.sortable)
+    w(f"        new Dictionary<string, OrderItem> {{ {sortable} }},")
+    w(f"        new[] {{ {', '.join(oi(cn, d) for cn, d in t.order())} }},")
+    w(f"        {t.pagination.default_limit},")
+    w(f"        {t.pagination.max_limit});\n")
+    for q in t.queries:
+        if q.returns != "one" or True:
+            w(f"    private static readonly OrderItem[] Order{q.name} = {{ {', '.join(oi(cn, d) for cn, d in t.order(q.order_by or None))} }};\n")
     for meth in methods_of(t):
         k, _, arg = meth.key.partition(":")
         name = method_name(L, meth.key)
@@ -129,9 +145,9 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
         if k == "get_by_id":
             w(f"    public Task<{t.name}?> {name}({pkt} id, CancellationToken ct = default) =>")
             w(f"        Set.FirstOrDefaultAsync(x => x.{pk.name} == id, ct);")
-        elif k == "list":
-            w(f"    public Task<List<{t.name}>> {name}(int skip = 0, int take = 100, CancellationToken ct = default) =>")
-            w(f"        Set.AsNoTracking().OrderBy(x => x.{pk.name}).Skip(skip).Take(take).ToListAsync(ct);")
+        elif k == "list_page":
+            w(f"    public Task<Page<{t.name}>> {name}(PageRequest? page = null, CancellationToken ct = default) =>")
+            w(f"        Paging.RunPageAsync(Set.AsNoTracking(), PageSpec, page, null, ct);")
         elif k == "count":
             w(f"    public Task<int> {name}(CancellationToken ct = default) => Set.CountAsync(ct);")
         elif k == "exists":
@@ -175,8 +191,8 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
             w(f"        Set.FirstOrDefaultAsync(x => x.{c.name} == value, ct);")
         elif k == "list_by":
             c = t.col(arg)
-            w(f"    public Task<List<{t.name}>> {name}({CS_TYPE[c.type]} value, int skip = 0, int take = 100, CancellationToken ct = default) =>")
-            w(f"        Set.AsNoTracking().Where(x => x.{c.name} == value).OrderBy(x => x.{pk.name}).Skip(skip).Take(take).ToListAsync(ct);")
+            w(f"    public Task<Page<{t.name}>> {name}({CS_TYPE[c.type]} value, PageRequest? page = null, CancellationToken ct = default) =>")
+            w(f"        Paging.RunPageAsync(Set.AsNoTracking().Where(x => x.{c.name} == value), PageSpec, page, null, ct);")
         elif k == "get_rel":
             r = next(x for x in t.relations if x.name == arg)
             w(f"    public async Task<{r.target}?> {name}({pkt} id, CancellationToken ct = default)")
@@ -186,9 +202,44 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
             w("    }")
         elif k == "list_rel":
             r = next(x for x in t.relations if x.name == arg)
-            tg = tables[r.target]
-            w(f"    public Task<List<{r.target}>> {name}({pkt} id, int skip = 0, int take = 100, CancellationToken ct = default) =>")
-            w(f"        Db.Set<{r.target}>().AsNoTracking().Where(x => x.{r.foreign_key} == id).OrderBy(x => x.{tg.pk.name}).Skip(skip).Take(take).ToListAsync(ct);")
+            w(f"    public Task<Page<{r.target}>> {name}({pkt} id, PageRequest? page = null, CancellationToken ct = default) =>")
+            w(f"        Paging.RunPageAsync(Db.Set<{r.target}>().AsNoTracking().Where(x => x.{r.foreign_key} == id), {repo_class(L, r.target)}.PageSpec, page, null, ct);")
+        elif k in ("query_page", "query_list", "query_one"):
+            q = next(x for x in t.queries if x.name == arg)
+            params, conds, guards = [], [], []
+            for c in q.where:
+                col = t.col(c.column)
+                ct_ = CS_TYPE[col.type]
+                if c.param:
+                    pn = c.param[:1].lower() + c.param[1:]
+                    params.append(f"IReadOnlyCollection<{ct_}> {pn}" if c.op == "in" else f"{ct_} {pn}")
+                    val = pn
+                    if c.op == "in":
+                        guards.append(pn)
+                else:
+                    val = _cs_value(col, c.value) if c.has_value else None
+                conds.append(_cs_cond(f"x.{c.column}", col.type, c.op, val))
+            where = " && ".join(conds)
+            ret = {"query_page": f"Page<{t.name}>", "query_list": f"List<{t.name}>", "query_one": f"{t.name}?"}[k]
+            extra = ["PageRequest? page = null"] if k == "query_page" else []
+            w(f"    public async Task<{ret}> {name}({', '.join(params + extra + ['CancellationToken ct = default'])})")
+            w("    {")
+            for g in guards:
+                empty = {"query_page": f"Paging.EmptyPage<{t.name}>(PageSpec, page)", "query_list": f"new List<{t.name}>()", "query_one": "null"}[k]
+                w(f"        if ({g}.Count == 0) return {empty};")
+            for c in q.where:
+                if c.param and c.op == "in":
+                    pn = c.param[:1].lower() + c.param[1:]
+                    ct_ = CS_TYPE[t.col(c.column).type]
+                    w(f"        var {pn}Array = {pn} as {ct_}[] ?? {pn}.ToArray(); // array: tradotto come = ANY(@p)")
+            w(f"        var query = Set.AsNoTracking().Where(x => {where});")
+            if k == "query_page":
+                w(f"        return await Paging.RunPageAsync(query, PageSpec, page, Order{q.name}, ct);")
+            elif k == "query_list":
+                w(f"        return await Paging.OrderRows(query, Order{q.name}).Take(PageSpec.MaxLimit).ToListAsync(ct);")
+            else:
+                w(f"        return await Paging.OrderRows(query, Order{q.name}).FirstOrDefaultAsync(ct);")
+            w("    }")
         w("")
     out[-1] = out[-1].rstrip("\n")
     w("}")
@@ -280,8 +331,47 @@ def custom_stub(t: Table, ns: str) -> str:
 
 def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tuple[Dict[str, str], Dict[str, str]]:
     ns, dialect = opts["namespace"], opts.get("dialect", "postgres")
-    gen = {f"{GEN_DIR}/AppDbContext.cs": _context_file(tables, ns), f"{GEN_DIR}/ModelValidationException.cs": _common_file(ns)}
+    gen = {f"{GEN_DIR}/AppDbContext.cs": _context_file(tables, ns), f"{GEN_DIR}/ModelValidationException.cs": _common_file(ns),
+           f"{GEN_DIR}/Paging.cs": runtime_csharp.paging_file(ns), f"{GEN_DIR}/UnitOfWork.cs": runtime_csharp.uow_file(ns, tables)}
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.cs"] = _table_file(t, tables, schema_rel[n], ns, dialect)
     custom = {custom_file(L, n): custom_stub(t, ns) for n, t in tables.items()}
     return gen, custom
+
+
+_SORT = {"uuid": "Uuid", "string": "String", "int": "Int", "bigint": "BigInt", "decimal": "Decimal", "date": "Date", "datetime": "DateTime"}
+
+
+def _cs_value(col, v) -> str:
+    if isinstance(v, list):
+        return "new[] { " + ", ".join(_cs_value(col, x) for x in v) + " }"
+    if col.type == "uuid":
+        return f'Guid.Parse("{v}")'
+    if col.type == "decimal":
+        return f"{v}m"
+    if col.type == "bigint":
+        return f"{int(v)}L"
+    if col.type == "int":
+        return str(int(v))
+    if col.type == "bool":
+        return "true" if v else "false"
+    if col.type == "date":
+        return f'DateOnly.Parse("{v}", System.Globalization.CultureInfo.InvariantCulture)'
+    if col.type == "datetime":
+        return f'DateTimeOffset.Parse("{v}", System.Globalization.CultureInfo.InvariantCulture)'
+    return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _cs_cond(prop: str, typ: str, op: str, val) -> str:
+    if op == "is_null":
+        return f"{prop} == null"
+    if op == "not_null":
+        return f"{prop} != null"
+    if op == "in":
+        return f"{val}Array.Contains({prop})"
+    if op == "prefix":
+        return f'EF.Functions.Like({prop}, Paging.LikePrefix({val}), "\\\\")'
+    sym = {"eq": "==", "ne": "!=", "lt": "<", "lte": "<=", "gt": ">", "gte": ">="}[op]
+    if op in ("lt", "lte", "gt", "gte") and typ in ("string", "uuid"):
+        return f"{prop}.CompareTo({val}) {sym} 0"
+    return f"{prop} {sym} {val}"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Tuple
 
+import runtime_python
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
 from schema import Table, index_specs, methods_of, snake
 
@@ -36,11 +37,12 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
     w("import uuid")
     w("from datetime import date, datetime, timezone")
     w("from decimal import Decimal")
-    w("from typing import TYPE_CHECKING, Any, Dict, List, Optional\n")
+    w("from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence\n")
     w("from sqlalchemy import (JSON, BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric,")
     w("                        String, Text, UniqueConstraint, Uuid, func, select)")
     w("from sqlalchemy.orm import Mapped, Session, mapped_column, relationship\n")
     w("from ._base import Base, ModelValidationError")
+    w("from ._paging import Page, PageRequest, PagingSpec, like_prefix, order_rows, run_page")
     if targets:
         w("\nif TYPE_CHECKING:")
         for tg in targets:
@@ -115,11 +117,25 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
     w(f'        raise ModelValidationError("{t.name}", errors)')
     w("\n")
 
+    # ---- paginazione
+    w(f"PAGING_{snake(t.name).upper()} = PagingSpec(")
+    w(f'    table="{t.name}",')
+    w(f'    entity={t.name},')
+    w(f'    pk=("{pkm}", "{member("typescript", pk.name)}", "{pk.type}"),')
+    sortable = ", ".join(f'"{member("typescript", cn)}": ("{m[cn]}", "{t.col(cn).type}")' for cn in t.pagination.sortable)
+    w(f"    sortable={{{sortable}}},")
+    order = ", ".join(f'("{m[cn]}", "{member("typescript", cn)}", "{t.col(cn).type}", {d})' for cn, d in t.order())
+    w(f"    default_order=[{order}],")
+    w(f"    default_limit={t.pagination.default_limit},")
+    w(f"    max_limit={t.pagination.max_limit},")
+    w(")\n\n")
+
     # ---- repository
     cols_updatable = [m[c.name] for c in t.columns if not c.primary_key and not c.generated]
     w(f"class {base_class(L, t.name)}:")
-    w(f'    """CRUD e relazioni di {t.name}. La transazione (commit/rollback) la gestisce il chiamante."""\n')
-    w(f"    UPDATABLE = frozenset({{{', '.join(repr(x) for x in cols_updatable)}}})\n")
+    w(f'    """CRUD, relazioni e query di {t.name}. La transazione la gestisce il chiamante (vedi _uow.py)."""\n')
+    w(f"    UPDATABLE = frozenset({{{', '.join(repr(x) for x in cols_updatable)}}})")
+    w(f"    PAGING = PAGING_{snake(t.name).upper()}\n")
     w("    def __init__(self, session: Session) -> None:")
     w("        self.session = session\n")
     for meth in methods_of(t):
@@ -129,10 +145,9 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
         if k == "get_by_id":
             w(f"    def {name}(self, id: {pkt}) -> Optional[{t.name}]:")
             w(f"        return self.session.get({t.name}, id)\n")
-        elif k == "list":
-            w(f"    def {name}(self, offset: int = 0, limit: int = 100) -> List[{t.name}]:")
-            w(f"        stmt = select({t.name}).order_by({t.name}.{pkm}).offset(offset).limit(limit)")
-            w("        return list(self.session.scalars(stmt))\n")
+        elif k == "list_page":
+            w(f"    def {name}(self, page: PageRequest = PageRequest()) -> Page[{t.name}]:")
+            w(f"        return run_page(self.session, select({t.name}), self.PAGING, page)\n")
         elif k == "count":
             w(f"    def {name}(self) -> int:")
             w(f"        return int(self.session.scalar(select(func.count()).select_from({t.name})) or 0)\n")
@@ -172,10 +187,8 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
             w(f"        return self.session.scalars(select({t.name}).where({t.name}.{m[arg]} == value)).first()\n")
         elif k == "list_by":
             c = t.col(arg)
-            w(f"    def {name}(self, value: {PY_TYPE[c.type]}, offset: int = 0, limit: int = 100) -> List[{t.name}]:")
-            w(f"        stmt = (select({t.name}).where({t.name}.{m[arg]} == value)")
-            w(f"                .order_by({t.name}.{pkm}).offset(offset).limit(limit))")
-            w("        return list(self.session.scalars(stmt))\n")
+            w(f"    def {name}(self, value: {PY_TYPE[c.type]}, page: PageRequest = PageRequest()) -> Page[{t.name}]:")
+            w(f"        return run_page(self.session, select({t.name}).where({t.name}.{m[arg]} == value), self.PAGING, page)\n")
         elif k == "get_rel":
             r = next(x for x in t.relations if x.name == arg)
             w(f'    def {name}(self, id: {pkt}) -> "Optional[{r.target}]":')
@@ -183,14 +196,67 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
             w(f"        return entity.{member(L, r.name)} if entity is not None else None\n")
         elif k == "list_rel":
             r = next(x for x in t.relations if x.name == arg)
-            tg = tables[r.target]
-            w(f'    def {name}(self, id: {pkt}, offset: int = 0, limit: int = 100) -> "List[{r.target}]":')
+            w(f'    def {name}(self, id: {pkt}, page: PageRequest = PageRequest()) -> "Page[{r.target}]":')
             if r.target != t.name:
-                w(f"        from .{r.target} import {r.target}")
-            w(f"        stmt = (select({r.target}).where({r.target}.{member(L, r.foreign_key)} == id)")
-            w(f"                .order_by({r.target}.{member(L, tg.pk.name)}).offset(offset).limit(limit))")
-            w("        return list(self.session.scalars(stmt))\n")
+                w(f"        from .{r.target} import {r.target}, PAGING_{snake(r.target).upper()}")
+            w(f"        stmt = select({r.target}).where({r.target}.{member(L, r.foreign_key)} == id)")
+            w(f"        return run_page(self.session, stmt, PAGING_{snake(r.target).upper()}, page)\n")
+        elif k in ("query_page", "query_list", "query_one"):
+            q = next(x for x in t.queries if x.name == arg)
+            params = []
+            conds = []
+            for c in q.where:
+                col = t.col(c.column)
+                attr = f"{t.name}.{m[c.column]}"
+                if c.param:
+                    pn = snake(c.param)
+                    pt = f"Sequence[{PY_TYPE[col.type]}]" if c.op == "in" else PY_TYPE[col.type]
+                    params.append(f"{pn}: {pt}")
+                    val = pn
+                else:
+                    val = _py_value(col, c.value) if c.has_value else None
+                conds.append(_py_cond(attr, c.op, val))
+            sig = ", ".join(["self"] + params)
+            where = ", ".join(conds)
+            order = [(m[cn], member("typescript", cn), t.col(cn).type, d) for cn, d in t.order(q.order_by or None)]
+            order_lit = "[" + ", ".join(f'("{a}", "{j}", "{ty}", {d})' for a, j, ty, d in order) + "]"
+            if k == "query_page":
+                w(f"    def {name}({sig}, page: PageRequest = PageRequest()) -> Page[{t.name}]:")
+                w(f"        stmt = select({t.name}).where({where})")
+                w(f"        return run_page(self.session, stmt, self.PAGING, page, fixed_order={order_lit})\n")
+            elif k == "query_list":
+                w(f"    def {name}({sig}) -> List[{t.name}]:")
+                w(f"        stmt = select({t.name}).where({where})")
+                w(f"        stmt = order_rows(stmt, self.PAGING, {order_lit}).limit(self.PAGING.max_limit)")
+                w("        return list(self.session.scalars(stmt))\n")
+            else:
+                w(f"    def {name}({sig}) -> Optional[{t.name}]:")
+                w(f"        stmt = select({t.name}).where({where})")
+                w(f"        return self.session.scalars(order_rows(stmt, self.PAGING, {order_lit}).limit(1)).first()\n")
     return "\n".join(L_).rstrip() + "\n"
+
+
+def _py_value(col, v) -> str:
+    if v is None:
+        return "None"
+    if col.type == "uuid":
+        return f"uuid.UUID({str(v)!r})"
+    if col.type == "decimal":
+        return f"Decimal({str(v)!r})"
+    if col.type == "date":
+        return f"date.fromisoformat({str(v)!r})"
+    if col.type == "datetime":
+        return f"datetime.fromisoformat({str(v)!r})"
+    if isinstance(v, list):
+        return "[" + ", ".join(_py_value(col, x) for x in v) + "]"
+    return repr(v)
+
+
+def _py_cond(attr: str, op: str, val) -> str:
+    return {"eq": f"{attr} == {val}", "ne": f"{attr} != {val}", "lt": f"{attr} < {val}", "lte": f"{attr} <= {val}",
+            "gt": f"{attr} > {val}", "gte": f"{attr} >= {val}", "in": f"{attr}.in_({val})",
+            "prefix": f"{attr}.like(like_prefix({val}), escape=\"\\\\\")",
+            "is_null": f"{attr}.is_(None)", "not_null": f"{attr}.is_not(None)"}[op]
 
 
 def _base_file() -> str:
@@ -211,10 +277,13 @@ def _base_file() -> str:
 
 def _init_file(tables: Dict[str, Table]) -> str:
     lines = [header(L, "kit") + "# ruff: noqa\n" + '"""Registra tutti i modelli generati (necessario per le relazioni)."""',
-             "from ._base import Base, ModelValidationError"]
+             "from ._base import Base, ModelValidationError",
+             "from ._paging import Page, PageRequest",
+             "from ._uow import isolation_for, run_in_transaction, transaction"]
     for n in tables:
-        lines.append(f"from .{n} import {n}, {base_class(L, n)}, validate_{snake(n)}")
-    names = ["Base", "ModelValidationError"] + [x for n in tables for x in (n, base_class(L, n), f"validate_{snake(n)}")]
+        lines.append(f"from .{n} import {n}, {base_class(L, n)}, validate_{snake(n)}, PAGING_{snake(n).upper()}")
+    names = ["Base", "ModelValidationError", "Page", "PageRequest", "isolation_for", "run_in_transaction", "transaction"] + \
+        [x for n in tables for x in (n, base_class(L, n), f"validate_{snake(n)}", f"PAGING_{snake(n).upper()}")]
     lines.append("\n__all__ = [" + ", ".join(repr(x) for x in names) + "]")
     return "\n".join(lines) + "\n"
 
@@ -233,7 +302,8 @@ def custom_stub(t: Table) -> str:
 
 def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Restituisce (file generati, file custom da creare se mancano) con percorsi relativi alla cartella model."""
-    gen = {f"{GEN_DIR}/_base.py": _base_file(), f"{GEN_DIR}/__init__.py": _init_file(tables)}
+    gen = {f"{GEN_DIR}/_base.py": _base_file(), f"{GEN_DIR}/__init__.py": _init_file(tables),
+           f"{GEN_DIR}/_paging.py": runtime_python.paging_file(), f"{GEN_DIR}/_uow.py": runtime_python.uow_file(tables)}
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.py"] = _table_file(t, tables, schema_rel[n])
     custom = {custom_file(L, n): custom_stub(t) for n, t in tables.items()}

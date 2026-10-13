@@ -22,6 +22,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
 import emit_csharp  # noqa: E402
+import emit_db  # noqa: E402
 import emit_java  # noqa: E402
 import emit_python  # noqa: E402
 import emit_typescript  # noqa: E402
@@ -35,6 +36,8 @@ DEFAULT_MODEL = {
     "schema_dir": "schemas/db",
     "json_schema_dir": "schemas/generated/json",
     "index_file": "MODEL_INDEX.md",
+    "db_dir": "db/generated",
+    "ddl_dialects": ["postgres"],
     "targets": [],
 }
 
@@ -165,6 +168,19 @@ def build_index(tables: Dict[str, Table], targets: List[dict], customs: Dict[Tup
             o += ["", "| Metodo generato | " + " | ".join(title[x] for x in langs) + " |", "|---" * (len(langs) + 1) + "|"]
             for meth in methods_of(t):
                 o.append(f"| {meth.summary} | " + " | ".join(f"`{method_name(x, meth.key)}`" for x in langs) + " |")
+            if t.queries:
+                o += ["", "Query dichiarate:", "", "| Query | Condizioni | Restituisce | " + " | ".join(title[x] for x in langs) + " |",
+                      "|---|---|---|" + "---|" * len(langs)]
+                for q in t.queries:
+                    kind = {"page": "query_page", "list": "query_list", "one": "query_one"}[q.returns]
+                    from schema import _describe
+                    o.append(f"| {q.name} | {_describe(q)} | {q.returns} | " +
+                             " | ".join(f"`{method_name(x, kind + ':' + q.name)}`" for x in langs) + " |")
+            pg = t.pagination
+            order_desc = ", ".join(f"{c}{' desc' if d else ''}" for c, d in t.order())
+            sortable = ", ".join(member("typescript", c) for c in pg.sortable) or "solo chiave"
+            o += ["", f"Paginazione: ordine predefinito {order_desc} · ordinabili per `sort`: {sortable} · "
+                      f"limite predefinito {pg.default_limit}, massimo {pg.max_limit} · isolamento delle scritture: {t.isolation}"]
             any_custom = False
             for tg in targets:
                 names = customs.get((tg["lang"], n), [])
@@ -203,7 +219,7 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
     tables = load_schemas(proj / mc["schema_dir"])  # solleva SchemaError
     schema_rel = {n: f"{mc['schema_dir']}/{n}.yaml" for n in tables}
     desired: Dict[str, str] = {}
-    managed_dirs: List[Path] = [proj / mc["json_schema_dir"]]
+    managed_dirs: List[Path] = [proj / mc["json_schema_dir"], proj / mc["db_dir"]]
     customs_to_create: Dict[str, str] = {}
     for tg in mc["targets"]:
         lang, d = tg["lang"], tg["dir"].rstrip("/")
@@ -218,6 +234,12 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
     if not index_only:
         for n, t in tables.items():
             desired[f"{mc['json_schema_dir']}/{n}.schema.json"] = json_schema(t)
+        if tables:
+            desired[f"{mc['json_schema_dir']}/_page.schema.json"] = emit_db.page_schema()
+            desired[f"{mc['db_dir']}/indexes.md"] = emit_db.index_report(tables)
+            if "postgres" in mc.get("ddl_dialects", []):
+                for rel, text in emit_db.ddl_files(tables, mc["schema_dir"]).items():
+                    desired[f"{mc['db_dir']}/ddl/postgres/{rel}"] = text
 
     # file custom: si creano una volta sola, poi sono del progetto
     for rel, text in customs_to_create.items():

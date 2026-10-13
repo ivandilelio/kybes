@@ -17,7 +17,10 @@ Prima di tutto:
 Il piano DEVE seguire il "Formato obbligatorio del piano" della skill:
 - tabella per ogni endpoint o Job con runtime e motivo (albero decisionale sez. 2);
 - modifiche agli schemi `schemas/db/<Tabella>.yaml` scritte per esteso (colonne, relazioni, indici): il CRUD lo genera il generatore, non va pianificato;
-- metodi generati che verranno riusati (nomi presi da `MODEL_INDEX.md`) e metodi custom nuovi, ciascuno con il file `model/<Tabella>` di destinazione;
+- query nuove come voci `queries` dello schema (condizioni, ordinamento, returns) e, solo per ciò che non è dichiarabile, metodi custom con file di destinazione e indice;
+- metodi generati che verranno riusati (nomi presi da `MODEL_INDEX.md`);
+- per ogni lista esposta alla UI: colonne ordinabili (`pagination.sortable`) e limite massimo;
+- per ogni operazione che scrive su più tabelle: Unit of Work, tabelle coinvolte e isolamento richiesto;
 - logica che rischia di ripetersi in più punti e dove verrà estratta (model, `libs/utils` o service);
 - test da scrivere (unitari, contract test DB-Models, test di errore che verificano l'assenza di dettagli interni);
 - impatti su IaC.

@@ -38,6 +38,9 @@ Rilanciarlo aggiorna il kit senza toccare i tuoi file. Ogni collega, dopo il clo
 | [Struttura delle cartelle](docs/struttura-cartelle.md) | dove finisce ogni file, generato o tuo |
 | [Schema delle tabelle](docs/schema-yaml.md) | specifica completa di `schemas/db/<Tabella>.yaml` |
 | [Generatore](docs/generatore.md) | cosa produce e con quali nomi |
+| [Query e indici](docs/query-e-indici.md) | query dichiarate, indici automatici, DDL |
+| [Paginazione](docs/paginazione.md) | contratto a cursore dalla UI al DB |
+| [Transazioni](docs/transazioni.md) | Unit of Work con isolamento e retry |
 | [Controlli](docs/controlli.md) | regole e momenti in cui scattano |
 | [Configurazione](docs/configurazione.md) | `kybes.config.json` e opzioni dell'installer |
 | [Roadmap](docs/roadmap.md) | fasi completate e in arrivo |
@@ -45,8 +48,12 @@ Rilanciarlo aggiorna il kit senza toccare i tuoi file. Ogni collega, dopo il clo
 
 ## Stato
 
-Il generatore del modello, i controlli e l'installer sono disponibili. La [roadmap](docs/roadmap.md) indica le fasi in arrivo:
-- query e indici, paginazione a cursore, transazioni;
+Sono disponibili:
+- il generatore del modello, con query dichiarate, indici automatici, DDL, paginazione a cursore e Unit of Work;
+- i controlli;
+- l'installer.
+
+La [roadmap](docs/roadmap.md) indica le fasi in arrivo:
 - test ISO 26262-6;
 - multi-tenant;
 - archivio hot/cold con job;

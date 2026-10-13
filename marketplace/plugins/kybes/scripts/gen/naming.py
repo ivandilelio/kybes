@@ -28,14 +28,18 @@ def base_class(lang: str, table: str) -> str:
 def method_name(lang: str, key: str) -> str:
     kind, _, arg = key.partition(":")
     if lang == "python":
-        return {"get_by_id": "get_by_id", "list": "list", "count": "count", "exists": "exists",
+        return {"get_by_id": "get_by_id", "count": "count", "exists": "exists",
                 "create": "create", "update": "update", "delete": "delete",
                 "find_by": f"find_by_{snake(arg)}", "list_by": f"list_by_{snake(arg)}",
-                "get_rel": f"get_{snake(arg)}", "list_rel": f"list_{snake(arg)}"}[kind]
-    base = {"get_by_id": "getById", "list": "list", "count": "count", "exists": "exists",
+                "get_rel": f"get_{snake(arg)}", "list_rel": f"list_{snake(arg)}",
+                "list_page": "list_page", "query_page": f"list_{snake(arg)}", "query_list": f"list_{snake(arg)}",
+                "query_one": f"find_{snake(arg)}"}[kind]
+    base = {"get_by_id": "getById", "count": "count", "exists": "exists",
             "create": "create", "update": "update", "delete": "delete",
             "find_by": f"findBy{arg}", "list_by": f"listBy{arg}",
-            "get_rel": f"get{arg}", "list_rel": f"list{arg}"}[kind]
+            "get_rel": f"get{arg}", "list_rel": f"list{arg}",
+            "list_page": "listPage", "query_page": f"list{arg}", "query_list": f"list{arg}",
+            "query_one": f"find{arg}"}[kind]
     if lang == "csharp":
         return base[:1].upper() + base[1:] + "Async"
     return base

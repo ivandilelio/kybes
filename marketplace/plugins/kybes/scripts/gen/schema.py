@@ -1,6 +1,7 @@
 """Caricamento e validazione degli schemi tabella (schemas/db/<Tabella>.yaml)."""
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,6 +13,14 @@ TYPES = {"uuid", "string", "text", "int", "bigint", "decimal", "bool", "date", "
 KINDS = {"many_to_one", "one_to_many"}
 ON_DELETE = {"restrict", "cascade", "set_null"}
 GENERATED = {"on_create", "on_update"}
+OPS = {"eq", "ne", "lt", "lte", "gt", "gte", "in", "prefix", "is_null", "not_null"}
+RETURNS = {"page", "list", "one"}
+ISOLATION = {"read_committed", "repeatable_read", "serializable"}
+ISOLATION_RANK = {"read_committed": 0, "repeatable_read": 1, "serializable": 2}
+SORTABLE_TYPES = {"uuid", "string", "int", "bigint", "decimal", "date", "datetime"}
+RESERVED_KEYS = {"verification": 3, "tenancy": 4, "archive": 5, "retention": 5, "storage": 6}
+DEFAULT_LIMIT = 50
+DEFAULT_MAX_LIMIT = 100
 IDENT = re.compile(r"^[A-Z][A-Za-z0-9]*$")
 RESERVED = {"Id"}  # usabile solo come nome colonna, non come relazione
 
@@ -70,6 +79,31 @@ class Index:
 
 
 @dataclass
+class Cond:
+    column: str
+    op: str = "eq"
+    param: Optional[str] = None          # None per is_null/not_null e per i valori costanti
+    value: Any = None
+    has_value: bool = False
+
+
+@dataclass
+class Query:
+    name: str
+    where: List[Cond]
+    order_by: List[tuple]                # [(colonna, desc)]
+    returns: str = "page"
+
+
+@dataclass
+class Pagination:
+    default_order: List[tuple] = field(default_factory=list)   # [(colonna, desc)], vuoto = chiave
+    sortable: List[str] = field(default_factory=list)
+    max_limit: int = DEFAULT_MAX_LIMIT
+    default_limit: int = DEFAULT_LIMIT
+
+
+@dataclass
 class Table:
     name: str
     db_name: str
@@ -78,6 +112,9 @@ class Table:
     relations: List[Relation] = field(default_factory=list)
     indexes: List[Index] = field(default_factory=list)
     source: str = ""
+    queries: List[Query] = field(default_factory=list)
+    pagination: Pagination = field(default_factory=Pagination)
+    isolation: str = "read_committed"
 
     @property
     def pk(self) -> Column:
@@ -88,6 +125,13 @@ class Table:
 
     def fk_columns(self) -> List[str]:
         return [r.foreign_key for r in self.relations if r.kind == "many_to_one"]
+
+    def order(self, explicit: Optional[List[tuple]] = None) -> List[tuple]:
+        """Ordine completo e stabile: quello richiesto (o il default) più la chiave in coda."""
+        base = list(explicit) if explicit else list(self.pagination.default_order)
+        if not any(c == self.pk.name for c, _ in base):
+            base.append((self.pk.name, False))
+        return base
 
 
 def _bool(v, where, errs) -> bool:
@@ -104,9 +148,11 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
     f = path.name
     if not isinstance(data, dict):
         return None, [f"{f}: il file deve contenere una mappa con 'table' e 'columns'"]
-    allowed = {"table", "db_name", "description", "columns", "relations", "indexes"}
+    allowed = {"table", "db_name", "description", "columns", "relations", "indexes", "queries", "pagination", "transactions"}
     for k in data:
-        if k not in allowed:
+        if k in RESERVED_KEYS:
+            errs.append(f"{f}: la chiave '{k}' è prevista nella fase {RESERVED_KEYS[k]} della roadmap e non è ancora supportata")
+        elif k not in allowed:
             errs.append(f"{f}: chiave sconosciuta '{k}' (ammesse: {', '.join(sorted(allowed))})")
     name = data.get("table")
     if not isinstance(name, str) or not IDENT.match(name):
@@ -232,9 +278,140 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
                 errs.append(f"{w}: colonna {cn} inesistente")
         idx.append(Index(list(ix["columns"]), _bool(ix.get("unique"), w, errs)))
 
+    queries = _parse_queries(f, data.get("queries"), errs)
+    pagination = _parse_pagination(f, data.get("pagination"), errs)
+    isolation = "read_committed"
+    tx = data.get("transactions")
+    if tx is not None:
+        if not isinstance(tx, dict) or set(tx) - {"isolation"}:
+            errs.append(f"{f}: 'transactions' ammette solo 'isolation'")
+        elif tx.get("isolation") not in ISOLATION:
+            errs.append(f"{f}: transactions.isolation ammette {', '.join(sorted(ISOLATION))}")
+        else:
+            isolation = tx["isolation"]
+
     t = Table(name=name, db_name=data.get("db_name") or snake(name), description=str(data.get("description") or ""),
-              columns=cols, relations=rels, indexes=idx, source=str(path))
+              columns=cols, relations=rels, indexes=idx, source=str(path), queries=queries,
+              pagination=pagination, isolation=isolation)
     return t, errs
+
+
+def _parse_order(where: str, raw: Any, errs: List[str]) -> List[tuple]:
+    out = []
+    if raw is None:
+        return out
+    if not isinstance(raw, list):
+        errs.append(f"{where}: atteso un elenco di colonne")
+        return out
+    for item in raw:
+        if isinstance(item, str):
+            out.append((item, False))
+        elif isinstance(item, dict) and isinstance(item.get("column"), str) and set(item) <= {"column", "dir"}:
+            d = item.get("dir", "asc")
+            if d not in ("asc", "desc"):
+                errs.append(f"{where}: dir ammette asc o desc")
+            out.append((item["column"], d == "desc"))
+        else:
+            errs.append(f"{where}: ogni elemento è una colonna o {{column, dir}}")
+    return out
+
+
+def _parse_queries(f: str, raw: Any, errs: List[str]) -> List[Query]:
+    out: List[Query] = []
+    if raw is None:
+        return out
+    if not isinstance(raw, list):
+        errs.append(f"{f}: 'queries' deve essere una lista")
+        return out
+    for i, q in enumerate(raw):
+        w = f"{f}: query #{i + 1}"
+        if not isinstance(q, dict):
+            errs.append(f"{w}: deve essere una mappa")
+            continue
+        for k in q:
+            if k not in {"name", "where", "order_by", "returns"}:
+                errs.append(f"{w}: chiave sconosciuta '{k}'")
+        qn = q.get("name")
+        if not isinstance(qn, str) or not IDENT.match(qn):
+            errs.append(f"{w}: 'name' deve essere PascalCase")
+            continue
+        w = f"{f}: query {qn}"
+        conds: List[Cond] = []
+        raw_where = q.get("where") or []
+        if not isinstance(raw_where, list) or not raw_where:
+            errs.append(f"{w}: 'where' deve essere una lista non vuota di condizioni")
+            raw_where = []
+        for c in raw_where:
+            if isinstance(c, str):
+                conds.append(Cond(column=c, op="eq", param=c))
+                continue
+            if not isinstance(c, dict) or not isinstance(c.get("column"), str):
+                errs.append(f"{w}: ogni condizione è una colonna o {{column, op, param|value}}")
+                continue
+            for k in c:
+                if k not in {"column", "op", "param", "value"}:
+                    errs.append(f"{w}: chiave sconosciuta '{k}' in una condizione")
+            op = c.get("op", "eq")
+            if op not in OPS:
+                errs.append(f"{w}: op '{op}' non valido (ammessi: {', '.join(sorted(OPS))})")
+                continue
+            if "value" in c and "param" in c:
+                errs.append(f"{w}: una condizione ha 'param' oppure 'value', non entrambi")
+            if op in ("is_null", "not_null"):
+                conds.append(Cond(column=c["column"], op=op))
+            elif "value" in c:
+                if op == "in" and not isinstance(c["value"], list):
+                    errs.append(f"{w}: con op in, 'value' deve essere una lista")
+                conds.append(Cond(column=c["column"], op=op, value=c["value"], has_value=True))
+            else:
+                pn = c.get("param", c["column"])
+                if not isinstance(pn, str) or not IDENT.match(pn):
+                    errs.append(f"{w}: 'param' deve essere PascalCase")
+                    pn = c["column"]
+                conds.append(Cond(column=c["column"], op=op, param=pn))
+        params = [x.param for x in conds if x.param]
+        for p in set(params):
+            if params.count(p) > 1:
+                errs.append(f"{w}: parametro {p} ripetuto: usa 'param' per distinguerli")
+        ret = q.get("returns", "page")
+        if ret not in RETURNS:
+            errs.append(f"{w}: returns ammette page, list, one")
+        out.append(Query(qn, conds, _parse_order(f"{w}.order_by", q.get("order_by"), errs), ret))
+    names = [q.name for q in out]
+    for n in set(names):
+        if names.count(n) > 1:
+            errs.append(f"{f}: query {n} ripetuta")
+    return out
+
+
+def _parse_pagination(f: str, raw: Any, errs: List[str]) -> Pagination:
+    p = Pagination()
+    if raw is None:
+        return p
+    if not isinstance(raw, dict):
+        errs.append(f"{f}: 'pagination' deve essere una mappa")
+        return p
+    for k in raw:
+        if k not in {"default_order", "sortable", "max_limit", "default_limit"}:
+            errs.append(f"{f}: pagination: chiave sconosciuta '{k}'")
+    p.default_order = _parse_order(f"{f}: pagination.default_order", raw.get("default_order"), errs)
+    s = raw.get("sortable") or []
+    if not isinstance(s, list) or not all(isinstance(x, str) for x in s):
+        errs.append(f"{f}: pagination.sortable deve essere un elenco di colonne")
+        s = []
+    p.sortable = list(s)
+    for key in ("max_limit", "default_limit"):
+        if key in raw:
+            v = raw[key]
+            if not isinstance(v, int) or isinstance(v, bool) or v < 1 or v > 10000:
+                errs.append(f"{f}: pagination.{key} deve essere un intero tra 1 e 10000")
+            else:
+                setattr(p, key, v)
+    if "default_limit" not in raw:
+        p.default_limit = min(DEFAULT_LIMIT, p.max_limit)
+    if p.default_limit > p.max_limit:
+        errs.append(f"{f}: pagination.default_limit non può superare max_limit")
+    return p
 
 
 def _cross_check(tables: Dict[str, Table]) -> List[str]:
@@ -275,6 +452,57 @@ def _cross_check(tables: Dict[str, Table]) -> List[str]:
                     continue
                 r.inverse = back[0].name
                 r.on_delete = back[0].on_delete
+    for t in tables.values():
+        errs += _check_access(t)
+    return errs
+
+
+def _check_sort_col(t: Table, cn: str, where: str) -> List[str]:
+    c = t.col(cn)
+    if not c:
+        return [f"{where}: colonna {cn} inesistente"]
+    if c.type not in SORTABLE_TYPES:
+        return [f"{where}: {cn} è di tipo {c.type}, non ordinabile (ammessi: {', '.join(sorted(SORTABLE_TYPES))})"]
+    if c.nullable:
+        return [f"{where}: {cn} deve essere required per essere usata nell'ordinamento a cursore"]
+    return []
+
+
+def _check_access(t: Table) -> List[str]:
+    errs: List[str] = []
+    p = t.pagination
+    for cn, _ in p.default_order:
+        errs += _check_sort_col(t, cn, f"{t.name}.pagination.default_order")
+    for cn in p.sortable:
+        errs += _check_sort_col(t, cn, f"{t.name}.pagination.sortable")
+    for q in t.queries:
+        w = f"{t.name}.queries.{q.name}"
+        for c in q.where:
+            col = t.col(c.column)
+            if not col:
+                errs.append(f"{w}: colonna {c.column} inesistente")
+                continue
+            if c.op == "prefix" and col.type not in ("string", "text"):
+                errs.append(f"{w}: prefix vale solo per colonne string/text")
+            if c.op in ("is_null", "not_null") and not col.nullable:
+                errs.append(f"{w}: {c.column} è obbligatoria, {c.op} non ha senso")
+            if c.op in ("lt", "lte", "gt", "gte") and col.type not in SORTABLE_TYPES:
+                errs.append(f"{w}: {c.op} non vale per colonne {col.type}")
+            if col.type == "json":
+                errs.append(f"{w}: le colonne json non si filtrano con le query dichiarate")
+        for cn, _ in q.order_by:
+            errs += _check_sort_col(t, cn, f"{w}.order_by")
+    # nomi dei metodi univoci: query, relazioni e metodi generati condividono lo stesso spazio di nomi
+    def neutral(key: str) -> str:
+        kind, _, arg = key.partition(":")
+        return {"list_rel": "list", "query_page": "list", "query_list": "list", "list_by": "listBy",
+                "query_one": "find", "find_by": "findBy", "get_rel": "get"}.get(kind, kind) + arg
+    seen: Dict[str, str] = {}
+    for m in methods_of(t, dedupe=False):
+        n = neutral(m.key)
+        if n in seen and seen[n] != m.key:
+            errs.append(f"{t.name}: {m.key} e {seen[n]} genererebbero lo stesso metodo ({n}): rinomina la query o la relazione")
+        seen.setdefault(n, m.key)
     return errs
 
 
@@ -302,33 +530,6 @@ def load_schemas(schema_dir: Path) -> Dict[str, Table]:
     return dict(sorted(tables.items()))
 
 
-# ------------------------------------------------------------------ indici (stessi nomi in tutti i linguaggi)
-
-@dataclass
-class IndexSpec:
-    name: str
-    columns: List[str]
-    unique: bool
-
-
-def index_specs(t: Table) -> List[IndexSpec]:
-    """Indici dichiarati, vincoli univoci di colonna e indici sulle FK, con nomi deterministici."""
-    out: List[IndexSpec] = []
-
-    def nm(prefix: str, cols: List[str]) -> str:
-        return f"{prefix}_{t.db_name}_" + "_".join(t.col(c).db_name for c in cols)
-
-    for ix in t.indexes:
-        out.append(IndexSpec(nm("ux" if ix.unique else "ix", ix.columns), list(ix.columns), ix.unique))
-    for c in t.columns:
-        if c.unique and not c.primary_key and not any(s.columns == [c.name] for s in out):
-            out.append(IndexSpec(nm("ux", [c.name]), [c.name], True))
-    for fk in t.fk_columns():
-        if not any(s.columns[0] == fk for s in out):
-            out.append(IndexSpec(nm("ix", [fk]), [fk], False))
-    return out
-
-
 # ------------------------------------------------------------------ API generata (nomi neutri)
 
 @dataclass
@@ -337,11 +538,11 @@ class Method:
     summary: str
 
 
-def methods_of(t: Table) -> List[Method]:
+def methods_of(t: Table, dedupe: bool = True) -> List[Method]:
     """Elenco ordinato dei metodi generati per una tabella, identico in tutti i linguaggi."""
     ms = [
         Method("get_by_id", f"legge un record di {t.name} per chiave"),
-        Method("list", "pagina di record ordinati per chiave"),
+        Method("list_page", "pagina di record con cursore e ordinamento ammesso"),
         Method("count", "numero di record"),
         Method("exists", "verifica l'esistenza per chiave"),
         Method("create", "valida e inserisce"),
@@ -356,13 +557,166 @@ def methods_of(t: Table) -> List[Method]:
             ms.append(Method(f"find_by:{ix.columns[0]}", f"cerca per {ix.columns[0]} (univoco)"))
     for r in t.relations:
         if r.kind == "many_to_one":
-            ms.append(Method(f"list_by:{r.foreign_key}", f"record con {r.foreign_key} dato"))
+            ms.append(Method(f"list_by:{r.foreign_key}", f"pagina di record con {r.foreign_key} dato"))
             ms.append(Method(f"get_rel:{r.name}", f"{r.target} collegato a un record di {t.name}"))
         else:
-            ms.append(Method(f"list_rel:{r.name}", f"{r.target} collegati a un record di {t.name}"))
+            ms.append(Method(f"list_rel:{r.name}", f"pagina di {r.target} collegati a un record di {t.name}"))
+    for q in t.queries:
+        kind = "query_one" if q.returns == "one" else ("query_list" if q.returns == "list" else "query_page")
+        what = {"query_one": "primo record", "query_list": f"elenco (max {t.pagination.max_limit})", "query_page": "pagina"}[kind]
+        ms.append(Method(f"{kind}:{q.name}", f"query {q.name}: {what} con {_describe(q)}"))
+    if not dedupe:
+        return ms
     seen, out = set(), []
     for m in ms:
         if m.key not in seen:
             seen.add(m.key)
             out.append(m)
     return out
+
+
+def _describe(q: Query) -> str:
+    sym = {"eq": "=", "ne": "≠", "lt": "<", "lte": "≤", "gt": ">", "gte": "≥", "in": "in", "prefix": "inizia con",
+           "is_null": "è vuota", "not_null": "non è vuota"}
+    parts = []
+    for c in q.where:
+        if c.op in ("is_null", "not_null"):
+            parts.append(f"{c.column} {sym[c.op]}")
+        elif c.has_value:
+            parts.append(f"{c.column} {sym[c.op]} {json.dumps(c.value, ensure_ascii=False)}")
+        else:
+            parts.append(f"{c.column} {sym[c.op]} {c.param}")
+    s = ", ".join(parts)
+    if q.order_by:
+        s += "; ordine " + ", ".join(f"{c}{' desc' if d else ''}" for c, d in q.order_by)
+    return s
+
+
+# ------------------------------------------------------------------ piano degli indici
+
+@dataclass
+class AccessPath:
+    kind: str            # find_by | list_by | sort | query
+    label: str
+    ideal: List[str]
+    covered_by: Optional[str] = None
+    created: Optional[str] = None
+
+
+def _covers(index_cols: List[str], eq: List[str], rest: List[str]) -> bool:
+    """Un indice copre se inizia con tutte le colonne di uguaglianza (in qualunque ordine)
+    e prosegue con le colonne di ordinamento/intervallo nell'ordine richiesto."""
+    n = len(eq)
+    if sorted(index_cols[:n]) != sorted(eq):
+        return False
+    return index_cols[n:n + len(rest)] == rest
+
+
+def access_paths(t: Table, tables: Dict[str, "Table"]) -> List[AccessPath]:
+    paths: List[AccessPath] = []
+    pk = t.pk.name
+
+    def order_cols(order):
+        return [c for c, _ in order if c != pk]
+
+    for c in t.columns:
+        if c.unique and not c.primary_key:
+            paths.append(AccessPath("find_by", f"findBy {c.name}", [c.name]))
+    default = order_cols(t.order())
+    for r in t.relations:
+        if r.kind == "many_to_one":
+            paths.append(AccessPath("list_by", f"listBy {r.foreign_key}", [r.foreign_key] + default))
+    # i figli di una relazione one_to_many sono letti con la FK della tabella figlia: li copre listBy di quella tabella
+    if default:
+        paths.append(AccessPath("sort", f"ordine predefinito ({', '.join(default)})", default))
+    for cn in t.pagination.sortable:
+        if [cn] != default[:1]:
+            paths.append(AccessPath("sort", f"ordinamento per {cn}", [cn]))
+    for q in t.queries:
+        eq = [c.column for c in q.where if c.op in ("eq", "is_null")]
+        eq = list(dict.fromkeys(eq))
+        rng = [c.column for c in q.where if c.op in ("lt", "lte", "gt", "gte", "prefix", "in")]
+        ordc = order_cols(q.order_by) if q.order_by else (order_cols(t.order()) if q.returns != "one" else [])
+        rest = ordc if ordc else rng[:1]
+        rest = [c for c in rest if c not in eq]
+        paths.append(AccessPath("query", f"query {q.name}", eq + rest))
+    return paths
+
+
+@dataclass
+class IndexSpec:
+    name: str
+    columns: List[str]
+    unique: bool
+    origin: str = "dichiarato"      # dichiarato | univoco | fk | query | ordinamento | prefisso
+    pattern: List[str] = field(default_factory=list)   # colonne con operator class per LIKE 'x%' (PostgreSQL)
+    ddl_only: bool = False          # solo nel DDL: gli ORM non sanno dichiarare l'operator class
+
+
+@dataclass
+class IndexPlan:
+    specs: List[IndexSpec]
+    paths: List[AccessPath]
+    redundant: List[str]
+
+
+def index_plan(t: Table, tables: Optional[Dict[str, "Table"]] = None) -> IndexPlan:
+    """Indici dichiarati, vincoli univoci, indici creati per coprire query e ordinamenti, indici su FK."""
+    specs: List[IndexSpec] = []
+
+    def nm(prefix: str, cols: List[str]) -> str:
+        return f"{prefix}_{t.db_name}_" + "_".join(t.col(c).db_name for c in cols)
+
+    for ix in t.indexes:
+        specs.append(IndexSpec(nm("ux" if ix.unique else "ix", ix.columns), list(ix.columns), ix.unique))
+    for c in t.columns:
+        if c.unique and not c.primary_key and not any(s.columns == [c.name] for s in specs):
+            specs.append(IndexSpec(nm("ux", [c.name]), [c.name], True, "univoco"))
+    paths = access_paths(t, tables or {})
+    for p in paths:
+        if not p.ideal:
+            continue
+        eq_n = 1 if p.kind == "list_by" else 0
+        if p.kind == "query":
+            q = next(q for q in t.queries if f"query {q.name}" == p.label)
+            eq_n = len(list(dict.fromkeys(c.column for c in q.where if c.op in ("eq", "is_null"))))
+        hit = next((s for s in specs if _covers(s.columns, p.ideal[:eq_n], p.ideal[eq_n:])), None)
+        if hit is None and p.ideal == [t.pk.name]:
+            continue
+        if hit:
+            p.covered_by = hit.name
+        else:
+            if p.kind == "query":
+                name = f"qx_{t.db_name}_{snake(p.label.split(' ', 1)[1])}"
+                origin = "query"
+            elif p.kind == "list_by":
+                name, origin = nm("ix", p.ideal), "fk"
+            else:
+                name, origin = nm("ix", p.ideal), "ordinamento"
+            spec = IndexSpec(name, list(p.ideal), False, origin)
+            specs.append(spec)
+            p.created = name
+    # LIKE 'prefisso%': con collation diversa da C PostgreSQL usa solo un indice con varchar/text_pattern_ops
+    for q in t.queries:
+        pref = [c.column for c in q.where if c.op == "prefix"]
+        if not pref:
+            continue
+        eq = list(dict.fromkeys(c.column for c in q.where if c.op in ("eq", "is_null")))
+        cols = eq + [pref[0]]
+        name = f"px_{t.db_name}_{snake(q.name)}"
+        specs.append(IndexSpec(name, cols, False, "prefisso", pattern=[pref[0]], ddl_only=True))
+        paths.append(AccessPath("query", f"query {q.name} (LIKE prefisso, PostgreSQL)", cols, created=name))
+    redundant = []
+    for a in specs:
+        if a.unique or a.ddl_only:
+            continue
+        for b in specs:
+            if a is not b and len(b.columns) > len(a.columns) and b.columns[:len(a.columns)] == a.columns:
+                redundant.append(f"{a.name} è un prefisso di {b.name}: probabilmente superfluo")
+                break
+    return IndexPlan(specs, paths, redundant)
+
+
+def index_specs(t: Table) -> List[IndexSpec]:
+    """Indici da dichiarare negli ORM (gli indici solo-DDL restano nel DDL generato)."""
+    return [s for s in index_plan(t).specs if not s.ddl_only]

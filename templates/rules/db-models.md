@@ -11,6 +11,9 @@ paths:
 - `model/generated/`, `schemas/generated/json/` e `MODEL_INDEX.md` non si modificano mai a mano.
 - Ogni tabella ha un solo file custom: `model/<Tabella>.cs|.py|.ts` oppure `model/<Tabella>Repository.java`. Lì vanno solo i metodi custom di quella tabella, con nomi diversi da quelli generati (CRUD, `findBy*`, `listBy*`, `get<Relazione>`, `list<Relazione>`).
 - Prima di aggiungere un metodo leggi `MODEL_INDEX.md`: se esiste già tra i generati, usalo.
+- Una query con filtri in AND sulla tabella si dichiara in `queries` nello schema: il generatore crea metodo e indice. Il metodo custom serve solo per join, aggregazioni e casi non dichiarabili, e il suo indice va in `indexes`.
+- Le liste sono sempre paginate a cursore (`PageRequest`/`Page`); niente `OFFSET`.
+- Il model non apre transazioni: le apre il service con la Unit of Work generata.
 - Niente altri file o sottocartelle nella cartella model.
 - Le transazioni le apre e chiude il service chiamante.
 - Bump di versione semver della libreria DB-Models: patch per fix, minor per tabelle o colonne aggiunte, major per colonne rimosse o rinominate.

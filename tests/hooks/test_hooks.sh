@@ -24,8 +24,9 @@ echo "pre_write:"
 expect "file generato" deny Edit "$M/generated/Clienti.py" "x = 1"
 expect "MODEL_INDEX.md" deny Write "MODEL_INDEX.md" "x"
 expect "JSON Schema generato" deny Write "schemas/generated/json/Clienti.schema.json" "{}"
+expect "DDL generato" deny Write "db/generated/ddl/postgres/Clienti.sql" "DROP TABLE x;"
 expect "metodo custom con nome CRUD (Python)" deny Edit "$M/Clienti.py" $'    def get_by_id(self, id):\n        return None\n'
-expect "metodo custom nuovo (Python)" allow Edit "$M/Clienti.py" $'    def list_attivi(self):\n        return []\n'
+expect "metodo custom nuovo (Python)" allow Edit "$M/Clienti.py" $'    def list_con_email(self):\n        return []\n'
 expect "metodo custom con nome CRUD (C#)" deny Edit "libs/db-models/csharp/src/model/Ordini.cs" $'    public async Task<Ordini?> GetByIdAsync(Guid id, CancellationToken ct = default) => null;\n'
 expect "metodo custom con nome CRUD (Java)" deny Edit "libs/db-models/java/src/main/java/app/model/OrdiniRepository.java" $'    public List<Ordini> listByClienteId(UUID v, int o, int l) { return null; }\n'
 expect "metodo custom con nome CRUD (TypeScript)" deny Edit "libs/db-models/typescript/src/model/Ordini.ts" $'  async getCliente(id: string) {\n    return null;\n  }\n'

@@ -2,7 +2,7 @@
 
 Ogni tabella è descritta da un file `schemas/db/<Tabella>.yaml`. È l'unica sorgente di verità: model, test, DDL, JSON Schema, indice, archivio e job vengono tutti da qui. Chiavi sconosciute o valori non validi fanno fallire la generazione con un messaggio che indica file e campo.
 
-La colonna **Stato** dice se il generatore già usa la chiave o se arriva in una fase della [roadmap](roadmap.md). Le chiavi di una fase futura sono già riservate: il formato non cambierà.
+La colonna **Stato** dice se il generatore già usa la chiave o se arriva in una fase della [roadmap](roadmap.md). Le chiavi di una fase futura sono già riservate: il formato non cambierà, e finché la fase non è completata il generatore le rifiuta con un messaggio esplicito.
 
 ## Esempio completo
 
@@ -71,9 +71,9 @@ retention:
 | `columns` | sì | lista di colonne | — | disponibile |
 | `relations` | no | lista di relazioni | — | disponibile |
 | `indexes` | no | lista di indici | — | disponibile |
-| `queries` | no | query di accesso dichiarate | — | fase 2 |
-| `pagination` | no | ordinamenti ammessi e limiti di pagina | ordine per chiave, `max_limit` 100 | fase 2 |
-| `transactions` | no | livello di isolamento delle scritture | `read_committed` | fase 2 |
+| `queries` | no | query di accesso dichiarate | — | disponibile |
+| `pagination` | no | ordinamenti ammessi e limiti di pagina | ordine per chiave, `max_limit` 100 | disponibile |
+| `transactions` | no | livello di isolamento delle scritture | `read_committed` | disponibile |
 | `verification` | no | livello ASIL della tabella | `asil` della configurazione (B) | fase 3 |
 | `tenancy` | no | `none`, `column`, `schema`, `database` | `tenancy` della configurazione (`none`) | fase 4 |
 | `archive` | no | spostamento dei dati vecchi su cold storage | nessun archivio | fase 5 |
@@ -116,9 +116,9 @@ Per ogni chiave esterna viene creato un indice `ix_<tabella>_<fk>`, salvo che la
 | `columns` | lista di colonne | l'ordine conta |
 | `unique` | `true`/`false` | nome `ux_...` se univoco, `ix_...` altrimenti |
 
-## Query dichiarate (fase 2)
+## Query dichiarate
 
-Le query di accesso abituali si dichiarano nello schema e non si scrivono a mano. Il generatore crea il metodo in tutti i linguaggi e verifica che un indice le copra. Se non c'è, lo crea con nome `qx_<tabella>_<query>` e lo riporta in `db/generated/indexes.md`.
+Le query di accesso abituali si dichiarano nello schema e non si scrivono a mano (dettagli in [query e indici](query-e-indici.md)). Il generatore crea il metodo in tutti i linguaggi e verifica che un indice le copra. Se non c'è, lo crea con nome `qx_<tabella>_<query>` e lo riporta in `db/generated/indexes.md`.
 
 | Chiave | Valori | Note |
 |---|---|---|
@@ -130,25 +130,28 @@ Le query di accesso abituali si dichiarano nello schema e non si scrivono a mano
 | `order_by` | lista di colonne o `{column, dir}` | `dir`: `asc` (default) o `desc`; la chiave primaria viene aggiunta in coda per un ordine stabile |
 | `returns` | `page`, `list`, `one` | `page` usa la paginazione a cursore, `one` restituisce il primo risultato o niente |
 
-## Paginazione (fase 2)
+## Paginazione
 
-Tutte le liste usano la paginazione a cursore (keyset), non `OFFSET`. Il costo resta costante anche alla pagina diecimila, e i risultati non saltano né si ripetono se nel frattempo vengono inseriti record.
+Tutte le liste usano la paginazione a cursore (keyset), non `OFFSET` (dettagli in [paginazione](paginazione.md)). Il costo resta costante anche alla pagina diecimila, e i risultati non saltano né si ripetono se nel frattempo vengono inseriti record.
 
 | Chiave | Valori | Note |
 |---|---|---|
 | `default_order` | come `order_by` | ordinamento quando la UI non ne chiede uno |
 | `sortable` | colonne | le sole colonne ordinabili dalla UI; per ognuna serve un indice (creato se manca) |
-| `max_limit` | intero | limite massimo di righe per pagina accettato dall'API |
+| `max_limit` | intero | limite massimo di righe per pagina accettato dall'API (default 100) |
+| `default_limit` | intero | righe per pagina quando la richiesta non indica `limit` (default 50) |
+
+Le colonne in `default_order` e `sortable` devono essere obbligatorie e di tipo `uuid`, `string`, `int`, `bigint`, `decimal`, `date` o `datetime`.
 
 Il contratto è lo stesso dalla UI al database. La UI invia `limit`, `cursor` e `sort` e riceve `items` e `next_cursor`. Il cursore è opaco: codifica i valori dell'ultima riga. Lo stesso contratto vale per API e DB-Model, ed è descritto in `schemas/generated/json/_page.schema.json`.
 
-## Transazioni (fase 2)
+## Transazioni
 
 | Chiave | Valori | Note |
 |---|---|---|
 | `isolation` | `read_committed`, `repeatable_read`, `serializable` | livello predefinito quando il service apre una Unit of Work che scrive su questa tabella |
 
-Le transazioni si aprono nel service con la Unit of Work generata, mai dentro i metodi del model. Con `serializable`, la Unit of Work ritenta in automatico in caso di conflitto di serializzazione.
+Le transazioni si aprono nel service con la Unit of Work generata, mai dentro i metodi del model (dettagli in [transazioni](transazioni.md)). Con `serializable`, la Unit of Work ritenta in automatico in caso di conflitto di serializzazione.
 
 ## Verifica (fase 3)
 

@@ -23,3 +23,12 @@ relations:
     target: Categorie
     foreign_key: CategoriaId
     on_delete: set_null
+queries:
+  - name: SenzaCategoria
+    where:
+      - { column: CategoriaId, op: is_null }
+    returns: list
+  - name: PerCodici
+    where:
+      - { column: Codice, op: in, param: Codici }
+    returns: list

@@ -34,17 +34,17 @@ with Session(eng) as s:
         cr.update(c.id, {"id": None}); raise SystemExit("update di campo non modificabile")
     except ModelValidationError: pass
     root = kr.create(Categorie(nome="Root")); sub = kr.create(Categorie(nome="Sub", padre_id=root.id))
-    assert [x.nome for x in kr.list_figlie(root.id)] == ["Sub"] and kr.get_padre(sub.id).nome == "Root"
+    assert [x.nome for x in kr.list_figlie(root.id).items] == ["Sub"] and kr.get_padre(sub.id).nome == "Root"
     p = pr.create(Prodotti(codice="P1", descrizione="Bullone", categoria_id=sub.id, attributi={"colore": "rosso"}))
     o = orr.create(Ordini(numero="2026/1", cliente_id=c.id, data=dt.date(2026, 10, 13)))
     assert o.totale == 0
     r = rr.create(RigheOrdine(ordine_id=o.id, prodotto_id=p.id, quantita=3, prezzo_unitario=Decimal("1.5000")))
     assert orr.get_cliente(o.id).ragione_sociale == "ACME Srl"
-    assert [x.numero for x in cr.list_ordini(c.id)] == ["2026/1"]
-    assert [x.id for x in orr.list_by_cliente_id(c.id)] == [o.id]
-    assert [x.quantita for x in orr.list_righe(o.id)] == [3]
+    assert [x.numero for x in cr.list_ordini(c.id).items] == ["2026/1"]
+    assert [x.id for x in orr.list_by_cliente_id(c.id).items] == [o.id]
+    assert [x.quantita for x in orr.list_righe(o.id).items] == [3]
     assert rr.get_prodotto(r.id).codice == "P1" and pr.get_categoria(p.id).nome == "Sub"
-    assert cr.count() == 1 and cr.exists(c.id) and len(cr.list(0, 10)) == 1
+    assert cr.count() == 1 and cr.exists(c.id) and len(cr.list_page().items) == 1
     upd = cr.update(c.id, {"email": "info@acme.it"}); assert upd.email == "info@acme.it"
     s.commit()
     assert orr.delete(o.id) is True; s.commit()

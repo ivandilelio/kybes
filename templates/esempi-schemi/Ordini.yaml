@@ -12,6 +12,11 @@ columns:
   - name: ClienteId
     type: uuid
     required: true
+  - name: Stato
+    type: string
+    length: 12
+    required: true
+    default: aperto
   - name: Data
     type: date
     required: true
@@ -36,3 +41,30 @@ relations:
     kind: one_to_many
     target: RigheOrdine
     foreign_key: OrdineId
+indexes:
+  - columns: [Data]
+queries:
+  - name: DelClienteDal
+    where:
+      - ClienteId
+      - { column: Data, op: gte, param: DaData }
+    order_by: [{ column: Data, dir: desc }]
+  - name: ApertiDelCliente
+    where:
+      - ClienteId
+      - { column: Stato, op: eq, value: aperto }
+    order_by: [{ column: Data, dir: desc }]
+  - name: PerNumero
+    where:
+      - { column: Numero, op: prefix, param: Prefisso }
+    order_by: [Numero]
+  - name: UltimoDelCliente
+    where: [ClienteId]
+    order_by: [{ column: Data, dir: desc }]
+    returns: one
+pagination:
+  default_order: [{ column: Data, dir: desc }]
+  sortable: [Data, Numero, Totale]
+  max_limit: 200
+transactions:
+  isolation: repeatable_read

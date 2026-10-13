@@ -19,7 +19,7 @@
 
 ```bash
 tests/run.sh             # tutto quello che la macchina può eseguire
-tests/run.sh python      # un gruppo: python, typescript, java, hooks
+tests/run.sh python      # un gruppo: python, typescript, java, csharp, sql, hooks
 ```
 
 La suite installa il kit in due progetti temporanei, con i quattro linguaggi e gli schemi di esempio, e poi verifica:
@@ -27,9 +27,12 @@ La suite installa il kit in due progetti temporanei, con i quattro linguaggi e g
 | Gruppo | Verifica | Requisiti |
 |---|---|---|
 | sempre | generatore idempotente, `arch_check` pulito | python3 |
-| `python` | CRUD, relazioni, gerarchie, cascade, vincoli univoci e validazione su SQLite | SQLAlchemy 2 |
-| `typescript` | gli stessi casi su sql.js; compilazione `strict` anche per il dialetto postgres | Node 20+ e npm |
-| `java` | compilazione con `-Xlint:all -Werror` contro stub fedeli di JPA e Hibernate (`tests/java/stubs`) | JDK 17+ |
+| `python` | CRUD, relazioni, gerarchie, cascade, vincoli univoci, validazione; paginazione a cursore (pareggi, ordinamenti, cursori manomessi), ogni operatore delle query, Unit of Work con commit, rollback e retry, su SQLite | SQLAlchemy 2 |
+| `typescript` | gli stessi casi su sql.js; compilazione `strict` con `noUnusedLocals` anche per il dialetto postgres | Node 20+ e npm |
+| `java` | compilazione con `-Xlint:all -Werror` contro stub fedeli di JPA e Hibernate (`tests/java/stubs`); esecuzione della logica di paginazione e Unit of Work con un `EntityManager` finto che registra JPQL e parametri | JDK 17+ |
+| `csharp` | sintassi del codice generato con il parser tree-sitter (non sostituisce il compilatore) | `pip install tree-sitter tree-sitter-c-sharp` |
+| `sql` | DDL PostgreSQL validato dal parser di PostgreSQL | `pip install pglast` |
+| sempre (con i gruppi sopra) | compatibilità del cursore tra TypeScript, Python e Java | |
 | `hooks` | ogni regola con l'esito atteso (rifiuto o consenso), rigenerazione automatica, duplicati, blocco a fine lavoro | python3 |
 
 Il codice C# non ha un test eseguibile nella suite: serve un SDK .NET. Prima di un rilascio va compilato in un progetto `net8.0` con EF Core 8.

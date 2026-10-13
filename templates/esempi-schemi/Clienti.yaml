@@ -33,3 +33,11 @@ relations:
     foreign_key: ClienteId
 indexes:
   - columns: [RagioneSociale]
+queries:
+  - name: Attivi
+    where:
+      - { column: Attivo, op: eq, value: true }
+    order_by: [RagioneSociale]
+pagination:
+  default_order: [RagioneSociale]
+  sortable: [RagioneSociale]

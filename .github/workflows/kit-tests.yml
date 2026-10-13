@@ -21,7 +21,7 @@ jobs:
           distribution: temurin
           java-version: "21"
       - name: Dipendenze di test
-        run: pip install sqlalchemy pyyaml
+        run: pip install sqlalchemy pyyaml pglast tree-sitter tree-sitter-c-sharp
       - name: Validazione del plugin
         run: npx --yes @anthropic-ai/claude-code plugin validate ./marketplace || echo "validazione non disponibile in CI"
       - name: Suite del kit

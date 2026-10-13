@@ -14,7 +14,9 @@ Regole operative:
 3. Accesso ai dati solo tramite DB-Models, con questo ordine:
    - leggi `MODEL_INDEX.md`: se il metodo esiste già tra i generati, usalo;
    - tabella, colonna, vincolo o relazione nuova → modifica solo `schemas/db/<Tabella>.yaml`; il generatore riparte da solo e aggiorna tutti i linguaggi;
-   - query specifica → metodo custom nel file `model/<Tabella>` della tabella principale della query, con un nome che dica cosa fa, in ogni linguaggio configurato che lo usa;
+   - query con filtri in AND sulla tabella, con ordinamento → dichiarala in `queries` nello schema: metodo e indice li genera il generatore;
+   - query non dichiarabile (join, aggregazioni) → metodo custom nel file `model/<Tabella>` della tabella principale, con un nome che dica cosa fa, e indice dichiarato in `indexes`;
+   - liste sempre paginate con `PageRequest`/`Page`; transazioni sempre con la Unit of Work generata, aperta nel service;
    - non scrivere mai nei file `generated/`, in `schemas/generated/json/` o in `MODEL_INDEX.md`.
    Prima di scrivere un blocco di logica, cerca se esiste già: se sì, riusalo o estrailo invece di copiarlo.
 4. Errori solo tramite il modulo in `libs/errors`; mai restituire messaggi di eccezione, stack trace o dettagli interni al client.

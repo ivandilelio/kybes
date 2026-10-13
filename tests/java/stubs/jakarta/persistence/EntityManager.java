@@ -1,2 +1,2 @@
 package jakarta.persistence;
-public interface EntityManager { void persist(Object e); <T> T merge(T e); void remove(Object e); <T> T find(Class<T> c, Object pk); <T> T getReference(Class<T> c, Object pk); void flush(); void refresh(Object e); <T> TypedQuery<T> createQuery(String q, Class<T> c); }
+public interface EntityManager { void persist(Object e); <T> T merge(T e); void remove(Object e); <T> T find(Class<T> c, Object pk); <T> T getReference(Class<T> c, Object pk); void flush(); void refresh(Object e); <T> TypedQuery<T> createQuery(String q, Class<T> c); Query createNativeQuery(String sql); EntityTransaction getTransaction(); void close(); <T> T unwrap(Class<T> cls); }

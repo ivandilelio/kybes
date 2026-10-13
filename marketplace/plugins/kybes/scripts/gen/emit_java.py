@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from typing import Dict, Tuple
 
+import runtime_java
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
-from schema import Table, index_specs, methods_of
+from schema import SORTABLE_TYPES, Table, index_specs, methods_of, snake
 
 L = "java"
 
@@ -138,6 +139,15 @@ def _entity_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str, 
             w(f"        this.{fk} = value == null ? null : value.get{_cap(tpk)}();")
             w("    }")
     w("")
+    sortable_cols = [c for c in t.columns if c.type in SORTABLE_TYPES and not c.nullable]
+    w("    /** Valore di una colonna ordinabile, usato dal cursore di paginazione. */")
+    w("    public Object kybesValue(String field) {")
+    w("        return switch (field) {")
+    for c in sortable_cols:
+        w(f'            case "{m[c.name]}" -> {m[c.name]};')
+    w('            default -> throw new IllegalArgumentException("colonna non ordinabile: " + field);')
+    w("        };")
+    w("    }\n")
     # ---- validazione
     w("    /** Validazione di modello prima della persistenza. */")
     w("    public void validate() {")
@@ -168,11 +178,22 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
     w("import java.math.BigDecimal;")
     w("import java.time.LocalDate;")
     w("import java.time.OffsetDateTime;")
+    w("import java.util.Collection;")
     w("import java.util.List;")
+    w("import java.util.Map;")
+    w("import java.util.Objects;")
     w("import java.util.Optional;")
     w("import java.util.UUID;\n")
     w(f"/** CRUD e relazioni di {t.name}. La transazione la gestisce il chiamante. Metodi custom: model/{custom_file(L, t.name)}. */")
     w(f"public abstract class {base} {{\n")
+    def oi(cn, d):
+        return f'new Paging.OrderItem("{m[cn]}", "{member("typescript", cn)}", Paging.SortType.{t.col(cn).type.upper()}, {str(d).lower()})'
+    w(f'    public static final Paging.Spec PAGING = new Paging.Spec("{t.name}", "{t.name}",')
+    w(f"            {oi(pk.name, False)},")
+    entries = ", ".join(f'Map.entry("{member("typescript", cn)}", {oi(cn, False)})' for cn in t.pagination.sortable)
+    w(f"            Map.ofEntries({entries}),")
+    w(f"            List.of({', '.join(oi(cn, d) for cn, d in t.order())}),")
+    w(f"            {t.pagination.default_limit}, {t.pagination.max_limit});\n")
     w("    protected final EntityManager em;\n")
     w(f"    protected {base}(EntityManager em) {{")
     w("        this.em = em;")
@@ -197,10 +218,12 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
         if k == "get_by_id":
             w(f"    public Optional<{t.name}> {name}({pkt} id) {{")
             w(f"        return Optional.ofNullable(em.find({t.name}.class, id));")
-        elif k == "list":
-            w(f"    public List<{t.name}> {name}(int offset, int limit) {{")
-            w(f'        return em.createQuery("SELECT e FROM {t.name} e ORDER BY e.{pkm}", {t.name}.class)')
-            w("                .setFirstResult(offset).setMaxResults(limit).getResultList();")
+        elif k == "list_page":
+            w(f"    public Paging.Page<{t.name}> {name}() {{")
+            w(f"        return {name}(Paging.PageRequest.first());")
+            w("    }\n")
+            w(f"    public Paging.Page<{t.name}> {name}(Paging.PageRequest page) {{")
+            w(f"        return Paging.runPage(em, {t.name}.class, PAGING, null, Map.of(), page, null, {t.name}::kybesValue);")
         elif k == "count":
             w(f"    public long {name}() {{")
             w(f'        return em.createQuery("SELECT COUNT(e) FROM {t.name} e", Long.class).getSingleResult();')
@@ -241,9 +264,12 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
             w('                .setParameter("value", value).setMaxResults(1).getResultStream().findFirst();')
         elif k == "list_by":
             c = t.col(arg)
-            w(f"    public List<{t.name}> {name}({J_TYPE[c.type]} value, int offset, int limit) {{")
-            w(f'        return em.createQuery("SELECT e FROM {t.name} e WHERE e.{m[arg]} = :value ORDER BY e.{pkm}", {t.name}.class)')
-            w('                .setParameter("value", value).setFirstResult(offset).setMaxResults(limit).getResultList();')
+            w(f"    public Paging.Page<{t.name}> {name}({J_TYPE[c.type]} value) {{")
+            w(f"        return {name}(value, Paging.PageRequest.first());")
+            w("    }\n")
+            w(f"    public Paging.Page<{t.name}> {name}({J_TYPE[c.type]} value, Paging.PageRequest page) {{")
+            w(f'        Objects.requireNonNull(value, "{m[arg]}");')
+            w(f'        return Paging.runPage(em, {t.name}.class, PAGING, "e.{m[arg]} = :value", Map.of("value", value), page, null, {t.name}::kybesValue);')
         elif k == "get_rel":
             r = next(x for x in t.relations if x.name == arg)
             w(f"    public Optional<{r.target}> {name}({pkt} id) {{")
@@ -251,10 +277,59 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
             w('                .setParameter("id", id).setMaxResults(1).getResultStream().findFirst();')
         elif k == "list_rel":
             r = next(x for x in t.relations if x.name == arg)
-            tg = tables[r.target]
-            w(f"    public List<{r.target}> {name}({pkt} id, int offset, int limit) {{")
-            w(f'        return em.createQuery("SELECT e FROM {r.target} e WHERE e.{member(L, r.foreign_key)} = :id ORDER BY e.{member(L, tg.pk.name)}", {r.target}.class)')
-            w('                .setParameter("id", id).setFirstResult(offset).setMaxResults(limit).getResultList();')
+            w(f"    public Paging.Page<{r.target}> {name}({pkt} id) {{")
+            w(f"        return {name}(id, Paging.PageRequest.first());")
+            w("    }\n")
+            w(f"    public Paging.Page<{r.target}> {name}({pkt} id, Paging.PageRequest page) {{")
+            w(f'        return Paging.runPage(em, {r.target}.class, {base_class(L, r.target)}.PAGING, "e.{member(L, r.foreign_key)} = :id", '
+              f'Map.of("id", id), page, null, {r.target}::kybesValue);')
+        elif k in ("query_page", "query_list", "query_one"):
+            q = next(x for x in t.queries if x.name == arg)
+            params, conds, binds, guards = [], [], [], []
+            for i, c in enumerate(q.where):
+                col = t.col(c.column)
+                prop = f"e.{m[c.column]}"
+                jt = J_TYPE[col.type]
+                if c.param:
+                    pn = member(L, c.param)
+                    params.append(f"Collection<{jt}> {pn}" if c.op == "in" else f"{jt} {pn}")
+                    key, val = pn, (f"Paging.likePrefix({pn})" if c.op == "prefix" else pn)
+                    if c.op == "in":
+                        guards.append(pn)
+                else:
+                    key = f"k{i}"
+                    val = _java_value(col, c.value) if c.has_value else None
+                    if c.has_value and c.op == "prefix":
+                        val = f"Paging.likePrefix({val})"
+                conds.append(_java_cond(prop, c.op, key))
+                if val is not None and c.op not in ("is_null", "not_null"):
+                    binds.append(f'Map.entry("{key}", (Object) {val})')
+            order = ", ".join(oi(cn, d) for cn, d in t.order(q.order_by or None))
+            where = " AND ".join(conds)
+            mp = f"Map.ofEntries({', '.join(binds)})" if binds else "Map.of()"
+            ret = {"query_page": f"Paging.Page<{t.name}>", "query_list": f"List<{t.name}>", "query_one": f"Optional<{t.name}>"}[k]
+            if k == "query_page":
+                w(f"    public {ret} {name}({', '.join(params + ['Paging.PageRequest page'])}) {{")
+            else:
+                w(f"    public {ret} {name}({', '.join(params)}) {{")
+            for prm in params:
+                pn = prm.split(" ")[-1]
+                w(f'        Objects.requireNonNull({pn}, "{pn}");')
+            for g in guards:
+                empty = {"query_page": "Paging.emptyPage(PAGING, page)", "query_list": "List.of()", "query_one": "Optional.empty()"}[k]
+                w(f"        if ({g}.isEmpty()) return {empty};")
+            w(f"        List<Paging.OrderItem> order = List.of({order});")
+            if k == "query_page":
+                w(f'        return Paging.runPage(em, {t.name}.class, PAGING, "{where}", {mp}, page, order, {t.name}::kybesValue);')
+            elif k == "query_list":
+                w(f'        return Paging.listRows(em, {t.name}.class, PAGING, "{where}", {mp}, order);')
+            else:
+                w(f'        return Paging.firstRow(em, {t.name}.class, PAGING, "{where}", {mp}, order);')
+            if k == "query_page":
+                w("    }\n")
+                args = ", ".join(p.split(" ")[-1] for p in params)
+                w(f"    public {ret} {name}({', '.join(params)}) {{")
+                w(f"        return {name}({args + ', ' if args else ''}Paging.PageRequest.first());")
         w("    }\n")
     out[-1] = out[-1].rstrip("\n")
     w("}")
@@ -292,9 +367,37 @@ def custom_stub(t: Table, pkg: str) -> str:
 
 def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tuple[Dict[str, str], Dict[str, str]]:
     pkg, dialect = opts["package"], opts.get("dialect", "postgres")
-    gen = {f"{GEN_DIR}/ModelValidationException.java": _common_file(pkg)}
+    gen = {f"{GEN_DIR}/ModelValidationException.java": _common_file(pkg),
+           f"{GEN_DIR}/Paging.java": runtime_java.paging_file(pkg),
+           f"{GEN_DIR}/UnitOfWork.java": runtime_java.uow_file(pkg, tables, dialect)}
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.java"] = _entity_file(t, tables, schema_rel[n], pkg, dialect)
         gen[f"{GEN_DIR}/{base_class(L, n)}.java"] = _repo_file(t, tables, schema_rel[n], pkg)
     custom = {custom_file(L, n): custom_stub(t, pkg) for n, t in tables.items()}
     return gen, custom
+
+
+def _java_value(col, v) -> str:
+    if isinstance(v, list):
+        return "List.of(" + ", ".join(_java_value(col, x) for x in v) + ")"
+    if col.type == "uuid":
+        return f'UUID.fromString("{v}")'
+    if col.type == "decimal":
+        return f'new BigDecimal("{v}")'
+    if col.type == "date":
+        return f'LocalDate.parse("{v}")'
+    if col.type == "datetime":
+        return f'OffsetDateTime.parse("{v}")'
+    if col.type == "bigint":
+        return f"{int(v)}L"
+    if col.type == "int":
+        return str(int(v))
+    if col.type == "bool":
+        return "Boolean.TRUE" if v else "Boolean.FALSE"
+    return '"' + str(v).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _java_cond(prop: str, op: str, key: str) -> str:
+    return {"eq": f"{prop} = :{key}", "ne": f"{prop} <> :{key}", "lt": f"{prop} < :{key}", "lte": f"{prop} <= :{key}",
+            "gt": f"{prop} > :{key}", "gte": f"{prop} >= :{key}", "in": f"{prop} IN :{key}",
+            "prefix": f"{prop} LIKE :{key} ESCAPE '\\\\'", "is_null": f"{prop} IS NULL", "not_null": f"{prop} IS NOT NULL"}[op]

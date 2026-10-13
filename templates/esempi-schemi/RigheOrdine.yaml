@@ -31,3 +31,5 @@ relations:
 indexes:
   - columns: [OrdineId, ProdottoId]
     unique: true
+transactions:
+  isolation: serializable
