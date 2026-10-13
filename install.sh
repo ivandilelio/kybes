@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Installer di gestionale-kit: regole, agenti e controlli automatici di Claude Code per gestionali cloud.
+# Installer di kybes: regole, agenti e controlli automatici di Claude Code per gestionali cloud.
 #
 # Uso:
 #   ./install.sh [--target DIR] [--fn-lang LANG] [--ms-lang LANG] [--model-langs L1,L2,...]
@@ -25,9 +25,9 @@ SCOPE="local"
 NO_PLUGIN=0
 FORCE=0
 UNINSTALL=0
-MARKETPLACE="gestionale-kit"
-PLUGIN="gestionale-cloud"
-KIT_REL="tools/claude-gestionale"
+MARKETPLACE="kybes"
+PLUGIN="kybes"
+KIT_REL="tools/kybes"
 
 die()  { printf '\033[31mErrore:\033[0m %s\n' "$*" >&2; exit 1; }
 info() { printf '\033[36m•\033[0m %s\n' "$*"; }
@@ -83,12 +83,12 @@ if [ "$UNINSTALL" = 1 ]; then
     (cd "$TARGET" && claude plugin uninstall "$PLUGIN@$MARKETPLACE" --scope "$SCOPE" >/dev/null 2>&1) && ok "plugin disinstallato" || warn "plugin non trovato nello scope $SCOPE"
     (cd "$TARGET" && claude plugin marketplace remove "$MARKETPLACE" >/dev/null 2>&1) && ok "marketplace rimosso" || true
   fi
-  rm -rf "$TARGET/$KIT_REL" "$TARGET/.claude/rules/gestionale"
+  rm -rf "$TARGET/$KIT_REL" "$TARGET/.claude/rules/kybes"
   if [ -f "$TARGET/CLAUDE.md" ]; then
     python3 - "$TARGET/CLAUDE.md" <<'PY'
 import re, sys, pathlib
 p = pathlib.Path(sys.argv[1]); t = p.read_text(encoding="utf-8")
-t = re.sub(r"\n*<!-- gestionale-kit:start.*?<!-- gestionale-kit:end -->\n?", "\n", t, flags=re.S).strip()
+t = re.sub(r"\n*<!-- kybes:start.*?<!-- kybes:end -->\n?", "\n", t, flags=re.S).strip()
 p.write_text((t + "\n") if t else "", encoding="utf-8")
 PY
   fi
@@ -97,7 +97,7 @@ PY
 fi
 
 echo
-info "Installo gestionale-kit in $TARGET (function: $FN_LANG, microservizi: $MS_LANG, model: $MODEL_LANGS, scope: $SCOPE)"
+info "Installo kybes in $TARGET (function: $FN_LANG, microservizi: $MS_LANG, model: $MODEL_LANGS, scope: $SCOPE)"
 
 # --------------------------------------------------------------- 1. kit nel repository
 mkdir -p "$TARGET/tools"
@@ -108,8 +108,8 @@ chmod +x "$TARGET/$KIT_REL"/plugins/$PLUGIN/scripts/*.py "$TARGET/$KIT_REL/setup
 ok "kit copiato in $KIT_REL (versionato con il repo, usato anche dalla CI)"
 
 # --------------------------------------------------------------- 2. configurazione
-mkdir -p "$TARGET/.claude/rules/gestionale"
-CFG="$TARGET/.claude/gestionale.config.json"
+mkdir -p "$TARGET/.claude/rules/kybes"
+CFG="$TARGET/.claude/kybes.config.json"
 if [ ! -f "$CFG" ] || [ "$FORCE" = 1 ]; then
   python3 - "$CFG" "$FN_LANG" "$MS_LANG" "$KIT_REL" "$MODEL_LANGS" "$NAMESPACE" "$JAVA_PACKAGE" <<'PY'
 import json, sys
@@ -161,7 +161,7 @@ cfg = {
     },
     "model": {
         "schema_dir": "schemas/db",
-        "json_schema_dir": "schemas/json",
+        "json_schema_dir": "schemas/generated/json",
         "index_file": "MODEL_INDEX.md",
         "targets": targets,
     },
@@ -174,7 +174,7 @@ cfg = {
         "max_blocks": 3,
         "commands": [],
     },
-    "arch_check_command": f"python3 {kit}/plugins/gestionale-cloud/scripts/arch_check.py .",
+    "arch_check_command": f"python3 {kit}/plugins/kybes/scripts/arch_check.py .",
     "_note": {
         "rules": "valori ammessi: block, warn, off",
         "extra_forbidden_modules": "moduli DB aggiuntivi da vietare fuori da DB-Models; prefisso js: per i pacchetti npm",
@@ -188,25 +188,25 @@ with open(cfg_path, "w", encoding="utf-8") as f:
     json.dump(cfg, f, indent=2, ensure_ascii=False)
     f.write("\n")
 PY
-  ok "configurazione scritta in .claude/gestionale.config.json"
+  ok "configurazione scritta in .claude/kybes.config.json"
 else
   info "configurazione esistente lasciata invariata (usa --force per rigenerarla)"
 fi
 
 # --------------------------------------------------------------- 3. regole per percorso
 for f in "$KIT_DIR"/templates/rules/*.md; do
-  dest="$TARGET/.claude/rules/gestionale/$(basename "$f")"
+  dest="$TARGET/.claude/rules/kybes/$(basename "$f")"
   if [ ! -f "$dest" ] || [ "$FORCE" = 1 ]; then cp "$f" "$dest"; fi
 done
-ok "regole per percorso in .claude/rules/gestionale/"
+ok "regole per percorso in .claude/rules/kybes/"
 
 # --------------------------------------------------------------- 4. blocco in CLAUDE.md
-python3 - "$TARGET/CLAUDE.md" "$KIT_DIR/templates/CLAUDE.gestionale.md" <<'PY'
+python3 - "$TARGET/CLAUDE.md" "$KIT_DIR/templates/CLAUDE.kybes.md" <<'PY'
 import re, sys, pathlib
 target, block_file = map(pathlib.Path, sys.argv[1:3])
 block = block_file.read_text(encoding="utf-8").strip()
 text = target.read_text(encoding="utf-8") if target.exists() else ""
-rx = re.compile(r"<!-- gestionale-kit:start.*?<!-- gestionale-kit:end -->", re.S)
+rx = re.compile(r"<!-- kybes:start.*?<!-- kybes:end -->", re.S)
 text = rx.sub(lambda _: block, text) if rx.search(text) else (text.rstrip() + "\n\n" + block if text.strip() else block)
 target.write_text(text.rstrip() + "\n", encoding="utf-8")
 PY
@@ -296,8 +296,8 @@ python3 -B "$TARGET/$KIT_REL/plugins/$PLUGIN/scripts/arch_check.py" "$TARGET" ||
 cat <<EOF
 
 Fatto. Prossimi passi:
-  1. Rivedi .claude/gestionale.config.json (cartelle, linter, comandi di test in stop_gate.commands).
-  2. Fai commit di tools/claude-gestionale, .claude/ e CLAUDE.md. Ogni collega, dopo il clone, esegue:
-       tools/claude-gestionale/setup.sh
-  3. Riavvia Claude Code nel repo e chiedi un piano: verrà usato l'agente gestionale-cloud:architect.
+  1. Rivedi .claude/kybes.config.json (cartelle, linter, comandi di test in stop_gate.commands).
+  2. Fai commit di tools/kybes, .claude/ e CLAUDE.md. Ogni collega, dopo il clone, esegue:
+       tools/kybes/setup.sh
+  3. Riavvia Claude Code nel repo e chiedi un piano: verrà usato l'agente kybes:architect.
 EOF

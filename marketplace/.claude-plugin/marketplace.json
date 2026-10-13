@@ -1,11 +1,11 @@
 {
-  "name": "gestionale-kit",
+  "name": "kybes",
   "owner": { "name": "Meta Innovation" },
   "description": "Kit di regole architetturali e controlli automatici per gestionali cloud.",
   "plugins": [
     {
-      "name": "gestionale-cloud",
-      "source": "./plugins/gestionale-cloud",
+      "name": "kybes",
+      "source": "./plugins/kybes",
       "description": "Regole architetturali, agenti e controlli automatici per generare gestionali cloud (API Gateway, Lambda, Kubernetes/KEDA, DB-Models, SSO)."
     }
   ]

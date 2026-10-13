@@ -1,0 +1,12 @@
+{
+  "name": "kybes-kit-tests",
+  "private": true,
+  "description": "Test del codice TypeScript generato da kybes (TypeORM su sql.js)",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "reflect-metadata": "^0.2.2",
+    "sql.js": "^1.11.0",
+    "typeorm": "^1.1.2",
+    "typescript": "^5.6.0"
+  }
+}
