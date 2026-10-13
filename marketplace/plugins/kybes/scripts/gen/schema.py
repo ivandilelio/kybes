@@ -18,7 +18,8 @@ RETURNS = {"page", "list", "one"}
 ISOLATION = {"read_committed", "repeatable_read", "serializable"}
 ISOLATION_RANK = {"read_committed": 0, "repeatable_read": 1, "serializable": 2}
 SORTABLE_TYPES = {"uuid", "string", "int", "bigint", "decimal", "date", "datetime"}
-RESERVED_KEYS = {"verification": 3, "tenancy": 4, "archive": 5, "retention": 5, "storage": 6}
+RESERVED_KEYS = {"tenancy": 4, "archive": 5, "retention": 5, "storage": 6}
+ASIL = ("QM", "A", "B", "C", "D")
 DEFAULT_LIMIT = 50
 DEFAULT_MAX_LIMIT = 100
 IDENT = re.compile(r"^[A-Z][A-Za-z0-9]*$")
@@ -115,6 +116,7 @@ class Table:
     queries: List[Query] = field(default_factory=list)
     pagination: Pagination = field(default_factory=Pagination)
     isolation: str = "read_committed"
+    asil: Optional[str] = None           # None = livello predefinito della configurazione
 
     @property
     def pk(self) -> Column:
@@ -148,7 +150,8 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
     f = path.name
     if not isinstance(data, dict):
         return None, [f"{f}: il file deve contenere una mappa con 'table' e 'columns'"]
-    allowed = {"table", "db_name", "description", "columns", "relations", "indexes", "queries", "pagination", "transactions"}
+    allowed = {"table", "db_name", "description", "columns", "relations", "indexes", "queries", "pagination", "transactions",
+               "verification"}
     for k in data:
         if k in RESERVED_KEYS:
             errs.append(f"{f}: la chiave '{k}' è prevista nella fase {RESERVED_KEYS[k]} della roadmap e non è ancora supportata")
@@ -290,9 +293,19 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
         else:
             isolation = tx["isolation"]
 
+    asil = None
+    ver = data.get("verification")
+    if ver is not None:
+        if not isinstance(ver, dict) or set(ver) - {"asil"}:
+            errs.append(f"{f}: 'verification' ammette solo 'asil'")
+        elif str(ver.get("asil")) not in ASIL:
+            errs.append(f"{f}: verification.asil ammette {', '.join(ASIL)}")
+        else:
+            asil = str(ver["asil"])
+
     t = Table(name=name, db_name=data.get("db_name") or snake(name), description=str(data.get("description") or ""),
               columns=cols, relations=rels, indexes=idx, source=str(path), queries=queries,
-              pagination=pagination, isolation=isolation)
+              pagination=pagination, isolation=isolation, asil=asil)
     return t, errs
 
 

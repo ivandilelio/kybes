@@ -74,7 +74,7 @@ retention:
 | `queries` | no | query di accesso dichiarate | — | disponibile |
 | `pagination` | no | ordinamenti ammessi e limiti di pagina | ordine per chiave, `max_limit` 100 | disponibile |
 | `transactions` | no | livello di isolamento delle scritture | `read_committed` | disponibile |
-| `verification` | no | livello ASIL della tabella | `asil` della configurazione (B) | fase 3 |
+| `verification` | no | livello ASIL della tabella (accettato e validato; usato dai test generati della fase 3) | `asil` della configurazione (B) | in corso |
 | `tenancy` | no | `none`, `column`, `schema`, `database` | `tenancy` della configurazione (`none`) | fase 4 |
 | `archive` | no | spostamento dei dati vecchi su cold storage | nessun archivio | fase 5 |
 | `retention` | no | cancellazione definitiva dopo un TTL | nessuna | fase 5 |
