@@ -128,7 +128,7 @@ The generator also creates the index `(ClienteId, Data)` that covers both `listB
 | When | Check | Default |
 |---|---|---|
 | before every write | ORM or DB driver imported outside the model (all 4 languages) | block |
-| before every write | edits to generated files, JSON Schemas, DDL, `MODEL_INDEX.md` | block |
+| before every write | edits to generated files, JSON Schemas, DDL, generated jobs, `MODEL_INDEX.md` | block |
 | before every write | a file in `model/` that doesn't map to a table, or a sub-folder | block |
 | before every write | a custom method named like a generated one | block |
 | before every write | secrets in clear text (AWS keys, private keys, tokens, passwords) | block |

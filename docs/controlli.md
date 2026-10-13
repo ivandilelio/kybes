@@ -11,7 +11,7 @@ La scrittura viene rifiutata e l'agente riceve il motivo con la correzione da fa
 | `orm_outside_db_models` | import di ORM o driver di database fuori dal model (Python, TypeScript/JavaScript, C#, Java) | block |
 | `hardcoded_secrets` | chiavi AWS, chiavi private, token, password in chiaro | block |
 | `protected_paths` | modifiche al kit e alla sua configurazione | block |
-| `generated_files` | modifiche ai file generati, ai JSON Schema e a `MODEL_INDEX.md` | block |
+| `generated_files` | modifiche ai file generati, ai JSON Schema, al DDL generato, ai job in `jobs/generated/` e a `MODEL_INDEX.md` | block |
 | `model_layout` | file o sottocartelle nella cartella model che non corrispondono a una tabella | block |
 | `custom_method_collision` | metodi custom con il nome di un metodo generato | block |
 

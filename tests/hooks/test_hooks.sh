@@ -25,6 +25,8 @@ expect "file generato" deny Edit "$M/generated/Clienti.py" "x = 1"
 expect "MODEL_INDEX.md" deny Write "MODEL_INDEX.md" "x"
 expect "JSON Schema generato" deny Write "schemas/generated/json/Clienti.schema.json" "{}"
 expect "DDL generato" deny Write "db/generated/ddl/postgres/Clienti.sql" "DROP TABLE x;"
+expect "job generato" deny Write "jobs/generated/ordini-archive/config.json" "{}"
+expect "job applicativo" allow Write "jobs/fatture-mensili/main.py" "print(1)"
 expect "metodo custom con nome CRUD (Python)" deny Edit "$M/Clienti.py" $'    def get_by_id(self, id):\n        return None\n'
 expect "metodo custom nuovo (Python)" allow Edit "$M/Clienti.py" $'    def list_con_email(self):\n        return []\n'
 expect "metodo custom con nome CRUD (C#)" deny Edit "libs/db-models/csharp/src/model/Ordini.cs" $'    public async Task<Ordini?> GetByIdAsync(Guid id, CancellationToken ct = default) => null;\n'

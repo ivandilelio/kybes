@@ -190,7 +190,7 @@ docker build -f jobs/generated/_engine/Dockerfile -t kybes-jobs:latest jobs/gene
 
 | Risorsa | Contenuto |
 |---|---|
-| segreto `kybes-jobs-db` | `url`: `KYBES_DATABASE_URL`; `keda`: stringa di connessione per il trigger KEDA; `azure-storage` (facoltativo): stringa di connessione dello storage account |
+| segreto `kybes-jobs-db` | `url`: `KYBES_DATABASE_URL`; `keda`: stringa di connessione per il trigger KEDA (con tabelle `column` il suo ruolo deve vedere le righe di tutti i tenant: `BYPASSRLS`); `azure-storage` (facoltativo): stringa di connessione dello storage account |
 | ConfigMap `kybes-jobs` | `tenants` (facoltativo): `KYBES_TENANTS` |
 | service account `kybes-jobs` | IRSA (S3) o workload identity (Blob): il job usa la catena di credenziali standard dell'SDK |
 
