@@ -1,1 +1,1 @@
-package jakarta.persistence; public interface Query { int executeUpdate(); default Object getSingleResult() { throw new UnsupportedOperationException(); } }
+package jakarta.persistence; public interface Query { int executeUpdate(); default Object getSingleResult() { throw new UnsupportedOperationException(); } default Query setParameter(int position, Object value) { return this; } }

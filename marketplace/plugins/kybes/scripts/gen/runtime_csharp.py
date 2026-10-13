@@ -275,7 +275,7 @@ public static class UnitOfWork
     /// <summary>Esegue work in una transazione; la ripete da capo sui conflitti di serializzazione e sui deadlock.</summary>
     public static Task<T> RunAsync<T>(AppDbContext db, Func<AppDbContext, CancellationToken, Task<T>> work,
         IEnumerable<string>? tables = null, IsolationLevel? isolation = null, int maxRetries = 3, int backoffMs = 50,
-        CancellationToken ct = default)
+        object? tenant = null, CancellationToken ct = default)
     {{
         var level = isolation ?? IsolationFor(tables ?? Array.Empty<string>());
         var strategy = db.Database.CreateExecutionStrategy();
@@ -286,6 +286,11 @@ public static class UnitOfWork
                 await using var tx = await db.Database.BeginTransactionAsync(level, ct);
                 try
                 {{
+                    if (tenant is not null)
+                    {{
+                        db.BindTenant(tenant);
+                        await Tenancy.ApplySettingAsync(db, ct); // PostgreSQL: app.tenant_id per la transazione
+                    }}
                     var result = await work(db, ct);
                     await tx.CommitAsync(ct);
                     return result;

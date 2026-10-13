@@ -3,6 +3,8 @@ from decimal import Decimal
 sys.path.insert(0, sys.argv[1] + "/libs/db-models/python/src")
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
+from model.generated import bind_tenant
+TENANT = '00000000-0000-4000-8000-0000000000aa'
 from model.generated import Base, ModelValidationError
 from model.Clienti import Clienti, ClientiRepository
 from model.Ordini import Ordini, OrdiniRepository
@@ -15,6 +17,7 @@ eng = create_engine("sqlite://")
 def fk_on(c, _): c.execute("PRAGMA foreign_keys=ON")
 Base.metadata.create_all(eng)
 with Session(eng) as s:
+    bind_tenant(s, TENANT)
     cr, orr, rr, pr, kr = ClientiRepository(s), OrdiniRepository(s), RigheOrdineRepository(s), ProdottiRepository(s), CategorieRepository(s)
     c = cr.create(Clienti(ragione_sociale="ACME Srl", partita_iva="01234567890"))
     assert c.id is not None and c.attivo is True and c.creato_il is not None, "default/generati"

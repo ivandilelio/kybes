@@ -16,6 +16,13 @@ from verification import METHODS, Catalog, TestCase, table_asil
 L = "java"
 
 
+_TJ = ["UUID"]
+
+
+def _tval(which: str) -> str:
+    return f'UUID.fromString("00000000-0000-4000-8000-00000000000{which}")' if _TJ[0] == "UUID" else f'"tenant-{which}"'
+
+
 def _cap(s: str) -> str:
     return s[:1].upper() + s[1:]
 
@@ -151,6 +158,7 @@ public final class KybesDb {{
     public static EntityManager open() {{
         reset();
         EntityManager em = emf().createEntityManager();
+        Tenancy.bind(em, KybesBuilders.TENANT_A); // le tabelle multi-tenant richiedono un tenant legato
         em.getTransaction().begin();
         return em;
     }}
@@ -188,7 +196,10 @@ def builders_file(pkg: str, tables: Dict[str, Table]) -> str:
           "import java.time.OffsetDateTime;", "import java.time.ZoneOffset;", "import java.util.UUID;",
           "import java.util.concurrent.atomic.AtomicInteger;", "import java.util.function.Consumer;", "",
           "/** Costruttori di dati validi per i test generati e custom: un record per chiamata, valori deterministici. */",
-          "public final class KybesBuilders {", "", "    private static final AtomicInteger SEQ = new AtomicInteger();", "",
+          "public final class KybesBuilders {", "",
+          "    /** Tenant di prova: KybesDb.open() lega TENANT_A. */",
+          f"    public static final {_TJ[0]} TENANT_A = {_tval('a')};", f"    public static final {_TJ[0]} TENANT_B = {_tval('b')};", "",
+          "    private static final AtomicInteger SEQ = new AtomicInteger();", "",
           "    private KybesBuilders() {", "    }", "",
           "    public static int nextN() {", "        return SEQ.incrementAndGet();", "    }", "",
           "    public static String textValue(int n, int length) {", '        String s = "v" + n;',
@@ -251,7 +262,7 @@ def builders_file(pkg: str, tables: Dict[str, Table]) -> str:
               f"    /** Inserisce un {n} valido; over cambia i valori prima dell'inserimento. */",
               f"    public static {n} build{n}(EntityManager em, Consumer<{n}> over) {{", f"        {n} e = new {n}();"]
         for c in t.columns:
-            if (c.primary_key and c.auto) or c.generated or c.default is not None:
+            if (c.primary_key and c.auto) or c.generated or c.default is not None or c.tenant:
                 continue
             rel = next((r for r in t.relations if r.kind == "many_to_one" and r.foreign_key == c.name), None)
             if rel and not c.required:
@@ -471,6 +482,40 @@ def test_file(pkg: str, t: Table, cat: Catalog, tables: Dict[str, Table], defaul
                 for cn, g in cols:
                     op = "== 0" if g == "on_create" else ">= 0"
                     o.append(f'        assertTrue(cmp(after.{_get(cn)}(), before{cols.index((cn, g))}) {op}, "{cn}");')
+        elif k == "tenant_required":
+            o += ["        EntityManager unbound = emf().createEntityManager();", "        try {",
+                  f"            assertThrows(Tenancy.TenantException.class, () -> new {repo}(unbound));",
+                  "        } finally {", "            unbound.close();", "        }"]
+        elif k == "tenant_isolation":
+            o += [f"        {n} e = {b}(em);", f"        {repo} repo = new {repo}(em);"]
+            kids = [r for r in t.relations if r.kind == "one_to_many" and tables[r.target].tenancy == "column"]
+            for r in kids:
+                o.append(f"        build{r.target}(em, x -> x.{_set(r.foreign_key)}(e.{pk}()));")
+            o += ["        em.flush();", "        Tenancy.bind(em, TENANT_B);", f"        assertTrue(repo.getById(e.{pk}()).isEmpty());",
+                  f"        assertFalse(repo.exists(e.{pk}()));", "        assertEquals(0, repo.count());",
+                  f"        assertTrue(repo.listPage().items().stream().noneMatch(x -> Objects.equals(x.{pk}(), e.{pk}())));",
+                  "        assertThrows(EntityNotFoundException.class, () -> repo.update(e));", f"        assertFalse(repo.delete(e.{pk}()));"]
+            for c in t.columns:
+                if c.unique and not c.primary_key:
+                    o.append(f"        assertTrue(repo.{method_name(L, 'find_by:' + c.name)}(e.{_get(c.name)}()).isEmpty());")
+            for r in kids:
+                o.append(f"        assertTrue(repo.{method_name(L, 'list_rel:' + r.name)}(e.{pk}()).items().isEmpty());")
+            o += ["        Tenancy.bind(em, TENANT_A);", f"        assertTrue(repo.getById(e.{pk}()).isPresent());"]
+        elif k == "tenant_assign":
+            tcol = next(c for c in t.columns if c.tenant)
+            o += [f"        {n} e = {b}(em);", f"        assertEquals(TENANT_A, e.{_get(tcol.name)}());",
+                  f'        assertInvalid("TenantId", () -> {b}(em, x -> x.{_set(tcol.name)}(TENANT_B)));']
+        elif k == "tenant_unique":
+            cn = tc.args["column"]
+            o += [f"        {n} e = {b}(em);", "        em.flush();", "        Tenancy.bind(em, TENANT_B);",
+                  f"        {n} other = {b}(em, x -> x.{_set(cn)}(e.{_get(cn)}()));", "        em.flush();",
+                  f"        assertEquals(e.{_get(cn)}(), other.{_get(cn)}());", f"        assertNotEquals(e.{pk}(), other.{pk}());"]
+        elif k == "tenant_parent":
+            r = next(x for x in t.relations if x.name == tc.args["relation"])
+            tpk = _get(tables[r.target].pk.name)
+            o += ["        Tenancy.bind(em, TENANT_B);", f"        {r.target} parent = build{r.target}(em);", "        Tenancy.bind(em, TENANT_A);",
+                  f'        ModelValidationException error = assertInvalid("{r.foreign_key}", () -> {b}(em, x -> x.{_set(r.foreign_key)}(parent.{tpk}())));',
+                  f'        assertEquals("non trovato", error.getFields().get("{r.foreign_key}"));']
         elif k == "optional_null":
             cn = tc.args["column"]
             o += [f"        {n} e = {b}(em, x -> x.{_set(cn)}(null));", "        em.flush();", "        em.clear();",
@@ -530,6 +575,10 @@ def test_file(pkg: str, t: Table, cat: Catalog, tables: Dict[str, Table], defaul
 
 def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
     first = next(iter(tables.values()))
+    bad = "non-un-uuid" if cat.tenant_id_type == "uuid" else "x" * 65
+    extra_names = [] if cat.tenant_id_type == "uuid" else [
+        '        assertEquals("tenant_a", Tenancy.key("Tenant-A"));',
+        '        assertThrows(Tenancy.TenantException.class, () -> Tenancy.key("nome non valido"));']
     n, repo = first.name, repo_class(L, first.name)
     pk = _get(first.pk.name)
     tbl_list = ", ".join(f"{x}.class" for x in tables)
@@ -594,15 +643,31 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
                                  "        for (UnitOfWork.Isolation level : UnitOfWork.Isolation.values()) {",
                                  "            Object got = UnitOfWork.run(emf(), w -> w.createNativeQuery(sql).getSingleResult(), null, level, 0, 0);",
                                  "            assertEquals(level.sql().toLowerCase(Locale.ROOT), got);", "        }"],
-        "rt_commit": [f'        {first.pk and J_TYPE[first.pk.type]} id = UnitOfWork.run(emf(), w -> build{n}(w).{pk}(), List.of("{n}"));',
+        "rt_tenant_bind": ["        EntityManager fresh = emf().createEntityManager();", "        try {",
+                           "            assertThrows(Tenancy.TenantException.class, () -> Tenancy.of(fresh));",
+                           "            Tenancy.bind(fresh, TENANT_A);", "            assertEquals(TENANT_A, Tenancy.of(fresh));",
+                           "            Tenancy.bind(fresh, String.valueOf(TENANT_B));", "            assertEquals(TENANT_B, Tenancy.of(fresh));",
+                           "            Tenancy.bind(fresh, null);", "            assertThrows(Tenancy.TenantException.class, () -> Tenancy.of(fresh));",
+                           f"            assertThrows(Tenancy.TenantException.class, () -> Tenancy.bind(fresh, {_jstr(bad)}));",
+                           "            assertThrows(Tenancy.TenantException.class, () -> Tenancy.coerce(null));",
+                           "        } finally {", "            fresh.close();", "        }"],
+        "rt_tenant_names": ["        String key = Tenancy.key(TENANT_A);", '        assertEquals(String.valueOf(TENANT_A).toLowerCase(Locale.ROOT).replace("-", "_"), key);',
+                            '        assertEquals("tenant_" + key, Tenancy.schemaFor(TENANT_A));',
+                            '        assertEquals("\\"tenant_" + key + "\\", public", Tenancy.searchPathFor(TENANT_A));',
+                            '        assertEquals("jdbc:postgresql://h/app_" + key, Tenancy.databaseUrlFor("jdbc:postgresql://h/app_{tenant}", TENANT_A));',
+                            '        assertThrows(Tenancy.TenantException.class, () -> Tenancy.databaseUrlFor("jdbc:postgresql://h/app", TENANT_A));'] + extra_names,
+        "rt_tenant_uow": ["        assertEquals(TENANT_A, UnitOfWork.run(emf(), Tenancy::of, List.of(), null, 0, 0, TENANT_A));",
+                          "        Object setting = UnitOfWork.run(emf(), w -> w.createNativeQuery(\"SELECT current_setting('app.tenant_id', true)\").getSingleResult(),",
+                          "                List.of(), null, 0, 0, TENANT_A);", "        assertEquals(String.valueOf(TENANT_A), setting);"],
+        "rt_commit": [f'        {first.pk and J_TYPE[first.pk.type]} id = UnitOfWork.run(emf(), w -> build{n}(w).{pk}(), List.of("{n}"), null, 3, 50, TENANT_A);',
                       f"        assertTrue(new {repo}(em).exists(id));"],
         "rt_rollback": ['        RuntimeException error = assertThrows(RuntimeException.class, () -> UnitOfWork.run(emf(), w -> {',
-                        f"            build{n}(w);", '            throw new IllegalStateException("errore applicativo");', "        }, List.of()));",
+                        f"            build{n}(w);", '            throw new IllegalStateException("errore applicativo");', "        }, List.of(), null, 3, 50, TENANT_A));",
                         '        assertEquals("errore applicativo", error.getMessage());', f"        assertEquals(0, new {repo}(em).count());"],
         "rt_retry": ["        AtomicInteger calls = new AtomicInteger();", "        int result = UnitOfWork.run(emf(), w -> {",
                      f"            build{n}(w);",
                      '            if (calls.incrementAndGet() < 3) throw new IllegalStateException(new SQLException("conflitto", "40001"));',
-                     "            return calls.get();", f'        }}, List.of("{n}"), null, 3, 0);', "        assertEquals(3, result);",
+                     "            return calls.get();", f'        }}, List.of("{n}"), null, 3, 0, TENANT_A);', "        assertEquals(3, result);",
                      f"        assertEquals(1, new {repo}(em).count());"],
         "rt_retry_limit": ["        AtomicInteger calls = new AtomicInteger();", "        assertThrows(IllegalStateException.class, () -> UnitOfWork.run(emf(), w -> {",
                            "            calls.incrementAndGet();", '            throw new IllegalStateException(new SQLException("stallo", "40P01"));',
@@ -673,6 +738,7 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
 
 def emit(cat: Catalog, tables: Dict[str, Table], default_asil: str, pkg: str = "app.model") -> Dict[str, str]:
     """File relativi alla cartella dei test Java del pacchetto (es. libs/db-models/java/src/test/java/app/model)."""
+    _TJ[0] = "UUID" if cat.tenant_id_type == "uuid" else "String"
     files = {"generated/KybesDb.java": db_file(pkg, tables), "generated/KybesBuilders.java": builders_file(pkg, tables)}
     for n, t in tables.items():
         files[f"generated/{n}Test.java"] = test_file(pkg, t, cat, tables, default_asil)

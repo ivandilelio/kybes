@@ -4,8 +4,9 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 
 import runtime_python
+import runtime_tenant
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
-from schema import Table, index_specs, methods_of, snake
+from schema import Table, index_specs, methods_of, snake, tenant_column
 
 L = "python"
 
@@ -43,6 +44,10 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
     w("from sqlalchemy.orm import Mapped, Session, mapped_column, relationship\n")
     w("from ._base import Base, ModelValidationError")
     w("from ._paging import Page, PageRequest, PagingSpec, like_prefix, order_rows, run_page")
+    tc = tenant_column(t)
+    tm = m[tc.name] if tc else None
+    if t.tenancy != "none":
+        w("from ._tenant import tenant_of")
     if targets:
         w("\nif TYPE_CHECKING:")
         for tg in targets:
@@ -107,6 +112,8 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
     w("    errors: Dict[str, str] = {}")
     for c in t.columns:
         mm = m[c.name]
+        if c.tenant:
+            continue  # impostata dal repository con il tenant della sessione
         if c.required and not (c.primary_key and c.auto) and not c.generated and c.default is None:
             w(f"    if e.{mm} is None:")
             w(f'        errors["{c.name}"] = "obbligatorio"')
@@ -135,29 +142,67 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
     w(")\n\n")
 
     # ---- repository
-    cols_updatable = [m[c.name] for c in t.columns if not c.primary_key and not c.generated]
+    cols_updatable = [m[c.name] for c in t.columns if not c.primary_key and not c.generated and not c.tenant]
+    T = t.name
+
+    def scoped(expr: str) -> str:
+        """Con tenancy: column ogni lettura filtra per il tenant della sessione."""
+        return f"self._scoped({expr})" if tc else expr
+
+    get_entity = f"self.{method_name(L, 'get_by_id')}(id)" if tc else f"self.session.get({T}, id)"
+    parents = [r for r in t.relations if r.kind == "many_to_one" and tables[r.target].tenancy == "column"] if tc else []
     w(f"class {base_class(L, t.name)}:")
     w(f'    """CRUD, relazioni e query di {t.name}. La transazione la gestisce il chiamante (vedi _uow.py)."""\n')
     w(f"    UPDATABLE = frozenset({{{', '.join(repr(x) for x in cols_updatable)}}})")
     w(f"    PAGING = PAGING_{snake(t.name).upper()}\n")
     w("    def __init__(self, session: Session) -> None:")
-    w("        self.session = session\n")
+    w("        self.session = session")
+    if t.tenancy != "none":
+        w(f"        tenant_of(session)  # tenancy: {t.tenancy}: senza un tenant legato alla sessione il repository non lavora")
+    w("")
+    if tc:
+        w("    def _scoped(self, stmt):")
+        w(f"        return stmt.where({T}.{tm} == tenant_of(self.session))\n")
+        w("    def _check_tenant(self, entity) -> None:")
+        w('        """Il record appartiene al tenant della sessione; i record collegati anche."""')
+        w("        tenant = tenant_of(self.session)")
+        w(f"        if entity.{tm} is not None and entity.{tm} != tenant:")
+        w(f'            raise ModelValidationError("{T}", {{"{tc.name}": "tenant diverso da quello della sessione"}})')
+        w(f"        entity.{tm} = tenant")
+        if parents:
+            w("        errors: Dict[str, str] = {}")
+            w("        with self.session.no_autoflush:  # il record non è ancora nella sessione")
+            for r in parents:
+                tg = tables[r.target]
+                fk = m[r.foreign_key]
+                imp = "" if r.target == T else f"        from .{r.target} import {r.target}\n"
+                if imp:
+                    w("    " + imp.rstrip("\n"))
+                tpk, ttm = member(L, tg.pk.name), member(L, tenant_column(tg).name)
+                w(f"            if entity.{fk} is not None and self.session.scalar(select({r.target}.{tpk}).where({r.target}.{tpk} == entity.{fk}, {r.target}.{ttm} == tenant)) is None:")
+                w(f'                errors["{r.foreign_key}"] = "non trovato"')
+            w("        if errors:")
+            w(f'            raise ModelValidationError("{T}", errors)')
+        w("")
     for meth in methods_of(t):
         k, _, arg = meth.key.partition(":")
         name = method_name(L, meth.key)
         w(f"    # {meth.summary}")
         if k == "get_by_id":
             w(f"    def {name}(self, id: {pkt}) -> Optional[{t.name}]:")
-            w(f"        return self.session.get({t.name}, id)\n")
+            if tc:
+                w(f"        return self.session.scalars(self._scoped(select({T}).where({T}.{pkm} == id))).first()\n")
+            else:
+                w(f"        return self.session.get({t.name}, id)\n")
         elif k == "list_page":
             w(f"    def {name}(self, page: PageRequest = PageRequest()) -> Page[{t.name}]:")
-            w(f"        return run_page(self.session, select({t.name}), self.PAGING, page)\n")
+            w(f"        return run_page(self.session, {scoped(f'select({T})')}, self.PAGING, page)\n")
         elif k == "count":
             w(f"    def {name}(self) -> int:")
-            w(f"        return int(self.session.scalar(select(func.count()).select_from({t.name})) or 0)\n")
+            w(f"        return int(self.session.scalar({scoped(f'select(func.count()).select_from({T})')}) or 0)\n")
         elif k == "exists":
             w(f"    def {name}(self, id: {pkt}) -> bool:")
-            w(f"        return self.session.scalar(select({t.name}.{pkm}).where({t.name}.{pkm} == id)) is not None\n")
+            w(f"        return self.session.scalar({scoped(f'select({T}.{pkm}).where({T}.{pkm} == id)')}) is not None\n")
         elif k == "create":
             w(f"    def {name}(self, entity: {t.name}) -> {t.name}:")
             for r in t.relations:
@@ -166,6 +211,8 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
                     tpk = member(L, tables[r.target].pk.name)
                     w(f"        if entity.{rn} is not None:  # collegato come oggetto: la chiave segue l'oggetto")
                     w(f"            entity.{fk} = entity.{rn}.{tpk}")
+            if tc:
+                w("        self._check_tenant(entity)")
             w(f"        validate_{snake(t.name)}(entity)")
             w("        self.session.add(entity)")
             w("        self.session.flush()")
@@ -175,17 +222,19 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
             w("        unknown = set(changes) - self.UPDATABLE")
             w("        if unknown:")
             w(f'            raise ModelValidationError("{t.name}", {{k: "campo non modificabile" for k in sorted(unknown)}})')
-            w(f"        entity = self.session.get({t.name}, id)")
+            w(f"        entity = {get_entity}")
             w("        if entity is None:")
             w("            return None")
             w("        for key, value in changes.items():")
             w("            setattr(entity, key, value)")
+            if tc:
+                w("        self._check_tenant(entity)")
             w(f"        validate_{snake(t.name)}(entity)")
             w("        self.session.flush()")
             w("        return entity\n")
         elif k == "delete":
             w(f"    def {name}(self, id: {pkt}) -> bool:")
-            w(f"        entity = self.session.get({t.name}, id)")
+            w(f"        entity = {get_entity}")
             w("        if entity is None:")
             w("            return False")
             w("        self.session.delete(entity)")
@@ -194,15 +243,15 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
         elif k == "find_by":
             c = t.col(arg)
             w(f"    def {name}(self, value: {PY_TYPE[c.type]}) -> Optional[{t.name}]:")
-            w(f"        return self.session.scalars(select({t.name}).where({t.name}.{m[arg]} == value)).first()\n")
+            w(f"        return self.session.scalars({scoped(f'select({T}).where({T}.{m[arg]} == value)')}).first()\n")
         elif k == "list_by":
             c = t.col(arg)
             w(f"    def {name}(self, value: {PY_TYPE[c.type]}, page: PageRequest = PageRequest()) -> Page[{t.name}]:")
-            w(f"        return run_page(self.session, select({t.name}).where({t.name}.{m[arg]} == value), self.PAGING, page)\n")
+            w(f"        return run_page(self.session, {scoped(f'select({T}).where({T}.{m[arg]} == value)')}, self.PAGING, page)\n")
         elif k == "get_rel":
             r = next(x for x in t.relations if x.name == arg)
             w(f'    def {name}(self, id: {pkt}) -> "Optional[{r.target}]":')
-            w(f"        entity = self.session.get({t.name}, id)")
+            w(f"        entity = {get_entity}")
             w(f"        return entity.{member(L, r.name)} if entity is not None else None\n")
         elif k == "list_rel":
             r = next(x for x in t.relations if x.name == arg)
@@ -210,6 +259,9 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
             if r.target != t.name:
                 w(f"        from .{r.target} import {r.target}, PAGING_{snake(r.target).upper()}")
             w(f"        stmt = select({r.target}).where({r.target}.{member(L, r.foreign_key)} == id)")
+            ctc = tenant_column(tables[r.target])
+            if ctc:
+                w(f"        stmt = stmt.where({r.target}.{member(L, ctc.name)} == tenant_of(self.session))")
             w(f"        return run_page(self.session, stmt, PAGING_{snake(r.target).upper()}, page)\n")
         elif k in ("query_page", "query_list", "query_one"):
             q = next(x for x in t.queries if x.name == arg)
@@ -232,16 +284,16 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
             order_lit = "[" + ", ".join(f'("{a}", "{j}", "{ty}", {d})' for a, j, ty, d in order) + "]"
             if k == "query_page":
                 w(f"    def {name}({sig}, page: PageRequest = PageRequest()) -> Page[{t.name}]:")
-                w(f"        stmt = select({t.name}).where({where})")
+                w(f"        stmt = {scoped(f'select({T}).where({where})')}")
                 w(f"        return run_page(self.session, stmt, self.PAGING, page, fixed_order={order_lit})\n")
             elif k == "query_list":
                 w(f"    def {name}({sig}) -> List[{t.name}]:")
-                w(f"        stmt = select({t.name}).where({where})")
+                w(f"        stmt = {scoped(f'select({T}).where({where})')}")
                 w(f"        stmt = order_rows(stmt, self.PAGING, {order_lit}).limit(self.PAGING.max_limit)")
                 w("        return list(self.session.scalars(stmt))\n")
             else:
                 w(f"    def {name}({sig}) -> Optional[{t.name}]:")
-                w(f"        stmt = select({t.name}).where({where})")
+                w(f"        stmt = {scoped(f'select({T}).where({where})')}")
                 w(f"        return self.session.scalars(order_rows(stmt, self.PAGING, {order_lit}).limit(1)).first()\n")
     return "\n".join(L_).rstrip() + "\n"
 
@@ -289,10 +341,12 @@ def _init_file(tables: Dict[str, Table]) -> str:
     lines = [header(L, "kit") + "# ruff: noqa\n" + '"""Registra tutti i modelli generati (necessario per le relazioni)."""',
              "from ._base import Base, ModelValidationError",
              "from ._paging import Page, PageRequest",
-             "from ._uow import isolation_for, run_in_transaction, transaction"]
+             "from ._uow import isolation_for, run_in_transaction, transaction",
+             "from ._tenant import TenantError, bind_tenant, database_url_for, schema_for, search_path_for, tenant_of"]
     for n in tables:
         lines.append(f"from .{n} import {n}, {base_class(L, n)}, validate_{snake(n)}, PAGING_{snake(n).upper()}")
-    names = ["Base", "ModelValidationError", "Page", "PageRequest", "isolation_for", "run_in_transaction", "transaction"] + \
+    names = ["Base", "ModelValidationError", "Page", "PageRequest", "isolation_for", "run_in_transaction", "transaction",
+             "TenantError", "bind_tenant", "database_url_for", "schema_for", "search_path_for", "tenant_of"] + \
         [x for n in tables for x in (n, base_class(L, n), f"validate_{snake(n)}", f"PAGING_{snake(n).upper()}")]
     lines.append("\n__all__ = [" + ", ".join(repr(x) for x in names) + "]")
     return "\n".join(lines) + "\n"
@@ -313,7 +367,8 @@ def custom_stub(t: Table) -> str:
 def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Restituisce (file generati, file custom da creare se mancano) con percorsi relativi alla cartella model."""
     gen = {f"{GEN_DIR}/_base.py": _base_file(), f"{GEN_DIR}/__init__.py": _init_file(tables),
-           f"{GEN_DIR}/_paging.py": runtime_python.paging_file(), f"{GEN_DIR}/_uow.py": runtime_python.uow_file(tables)}
+           f"{GEN_DIR}/_paging.py": runtime_python.paging_file(), f"{GEN_DIR}/_uow.py": runtime_python.uow_file(tables),
+           f"{GEN_DIR}/_tenant.py": runtime_tenant.python_file(opts.get("tenant_id_type", "uuid"))}
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.py"] = _table_file(t, tables, schema_rel[n])
     custom = {custom_file(L, n): custom_stub(t) for n, t in tables.items()}

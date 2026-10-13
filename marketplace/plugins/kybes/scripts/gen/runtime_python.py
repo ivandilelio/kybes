@@ -201,6 +201,8 @@ from typing import Any, Callable, Dict, Iterable, Iterator, Optional, TypeVar
 
 from sqlalchemy.orm import Session
 
+from ._tenant import apply_tenant_setting, bind_tenant
+
 R = TypeVar("R")
 
 # livello di isolamento dichiarato negli schemi (transactions.isolation)
@@ -233,13 +235,18 @@ def is_retryable(exc: BaseException) -> bool:
 
 @contextmanager
 def transaction(session_factory: Callable[[], Session], tables: Iterable[str] = (),
-                isolation: Optional[str] = None, levels: Optional[Dict[str, Optional[str]]] = None) -> Iterator[Session]:
-    """Commit se il blocco termina, rollback se solleva. levels permette di adattare i nomi al database."""
+                isolation: Optional[str] = None, levels: Optional[Dict[str, Optional[str]]] = None,
+                tenant: Any = None) -> Iterator[Session]:
+    """Commit se il blocco termina, rollback se solleva. levels permette di adattare i nomi al database.
+    Con tenant la sessione è legata a quel tenant (e su PostgreSQL app.tenant_id vale per la transazione)."""
     level = isolation or isolation_for(tables)
     names = levels or LEVELS
     with session_factory() as session:
         if names.get(level):
             session.connection(execution_options={{"isolation_level": names[level]}})
+        if tenant is not None:
+            bind_tenant(session, tenant)
+            apply_tenant_setting(session)
         try:
             yield session
             session.commit()
@@ -250,13 +257,13 @@ def transaction(session_factory: Callable[[], Session], tables: Iterable[str] = 
 
 def run_in_transaction(session_factory: Callable[[], Session], work: Callable[[Session], R], tables: Iterable[str] = (),
                        isolation: Optional[str] = None, max_retries: int = 3, backoff_s: float = 0.05,
-                       levels: Optional[Dict[str, Optional[str]]] = None) -> R:
+                       levels: Optional[Dict[str, Optional[str]]] = None, tenant: Any = None) -> R:
     """Esegue work in una transazione; la ripete da capo sui conflitti di serializzazione e sui deadlock."""
     tables = list(tables)
     attempt = 0
     while True:
         try:
-            with transaction(session_factory, tables, isolation, levels) as session:
+            with transaction(session_factory, tables, isolation, levels, tenant) as session:
                 return work(session)
         except Exception as exc:  # noqa: BLE001 - si ritenta solo se il database lo indica
             if attempt >= max_retries or not is_retryable(exc):

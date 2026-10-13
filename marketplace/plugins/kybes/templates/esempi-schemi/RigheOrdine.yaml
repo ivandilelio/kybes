@@ -1,5 +1,6 @@
 table: RigheOrdine
 description: Righe degli ordini
+tenancy: column                 # dati di ogni Organization: colonna TenantId, filtro in ogni metodo
 columns:
   - name: Id
     type: bigint

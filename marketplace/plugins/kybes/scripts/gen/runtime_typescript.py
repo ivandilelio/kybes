@@ -178,6 +178,7 @@ def uow_file(tables: Dict[str, Table]) -> str:
 //     ...
 //   }}, {{ tables: ["Ordini", "RigheOrdine"] }});
 import type {{ DataSource, EntityManager }} from "typeorm";
+import {{ applyTenantSetting, bindTenant }} from "./_tenant";
 
 export type Isolation = "read_committed" | "repeatable_read" | "serializable";
 type TypeOrmIsolation = Parameters<EntityManager["transaction"]>[0];
@@ -223,6 +224,8 @@ export interface TransactionOptions {{
   backoffMs?: number;
   /** nomi dei livelli per il database in uso; null = livello predefinito del database */
   levels?: Partial<Record<Isolation, string | null>>;
+  /** tenant da legare all'EntityManager della transazione (su PostgreSQL anche app.tenant_id) */
+  tenant?: unknown;
 }}
 
 /** Esegue work in una transazione; la ripete da capo sui conflitti di serializzazione e sui deadlock. */
@@ -235,11 +238,18 @@ export async function runInTransaction<T>(
   const names = {{ ...LEVELS, ...(options.levels ?? {{}}) }};
   const maxRetries = options.maxRetries ?? 3;
   const backoffMs = options.backoffMs ?? 50;
+  const bound = async (em: EntityManager): Promise<T> => {{
+    if (options.tenant !== undefined && options.tenant !== null) {{
+      bindTenant(em, options.tenant);
+      await applyTenantSetting(em);
+    }}
+    return work(em);
+  }};
   for (let attempt = 0; ; attempt++) {{
     try {{
       const name = names[level];
-      if (name) return await dataSource.transaction(name as TypeOrmIsolation, work);
-      return await dataSource.transaction(work);
+      if (name) return await dataSource.transaction(name as TypeOrmIsolation, bound);
+      return await dataSource.transaction(bound);
     }} catch (error) {{
       if (attempt >= maxRetries || !isRetryable(error)) throw error;
       await new Promise((resolve) => setTimeout(resolve, backoffMs * 2 ** attempt));

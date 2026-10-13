@@ -1,5 +1,6 @@
 table: Categorie
 description: Categorie di prodotto, ad albero
+tenancy: none                   # catalogo condiviso da tutte le Organization
 columns:
   - name: Id
     type: int

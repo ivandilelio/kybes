@@ -4,8 +4,9 @@ from __future__ import annotations
 from typing import Dict, Tuple
 
 import runtime_java
+import runtime_tenant
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
-from schema import SORTABLE_TYPES, Table, index_specs, methods_of, snake
+from schema import SORTABLE_TYPES, Table, index_specs, methods_of, snake, tenant_column
 
 L = "java"
 
@@ -156,6 +157,8 @@ def _entity_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str, 
     w("        java.util.Map<String, String> errors = new java.util.TreeMap<>();")
     for c in t.columns:
         mm = m[c.name]
+        if c.tenant:
+            continue  # impostata dal repository con il tenant dell'EntityManager
         if c.required and not (c.primary_key and c.auto) and not c.generated:
             w(f'        if ({mm} == null) errors.put("{c.name}", "obbligatorio");')
         if c.type == "string":
@@ -200,7 +203,45 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
     w("    protected final EntityManager em;\n")
     w(f"    protected {base}(EntityManager em) {{")
     w("        this.em = em;")
+    if t.tenancy != "none":
+        w(f"        Tenancy.of(em); // tenancy: {t.tenancy}: senza un tenant legato all'EntityManager il repository non lavora")
     w("    }\n")
+    tc = tenant_column(t)
+    tm = m[tc.name] if tc else None
+    T = t.name
+    tq = f" AND e.{tm} = :kybesTenant" if tc else ""                     # condizione JPQL aggiunta
+    tset = '.setParameter("kybesTenant", Tenancy.of(em))' if tc else ""
+
+    def scoped(where):
+        """(clausola where, parametri) per la paginazione, con il filtro sul tenant."""
+        if not tc:
+            return where, None
+        cond = f"e.{tm} = :kybesTenant"
+        return (cond if where is None else f"{cond} AND {where}"), 'Map.entry("kybesTenant", (Object) Tenancy.of(em))'
+
+    def wh(where):
+        return "null" if where is None else f'"{where}"'
+
+    if tc:
+        parents = [r for r in t.relations if r.kind == "many_to_one" and tables[r.target].tenancy == "column"]
+        w("    /** Il record appartiene al tenant dell'EntityManager; i record collegati anche. */")
+        w(f"    protected void checkTenant({T} entity) {{")
+        w(f"        {J_TYPE[tc.type]} tenant = Tenancy.of(em);")
+        w(f"        if (entity.get{_cap(tm)}() != null && !entity.get{_cap(tm)}().equals(tenant)) {{")
+        w(f'            throw new ModelValidationException("{T}", Map.of("{tc.name}", "tenant diverso da quello della sessione"));')
+        w("        }")
+        w(f"        entity.set{_cap(tm)}(tenant);")
+        if parents:
+            w("        Map<String, String> errors = new java.util.TreeMap<>();")
+            for r in parents:
+                tg = tables[r.target]
+                fk, tpk, ttm = _cap(m[r.foreign_key]), member(L, tg.pk.name), member(L, tenant_column(tg).name)
+                w(f'        if (entity.get{fk}() != null && em.createQuery("SELECT COUNT(p) FROM {r.target} p WHERE p.{tpk} = :id AND p.{ttm} = :tenant", Long.class)')
+                w(f'                .setParameter("id", entity.get{fk}()).setParameter("tenant", tenant).getSingleResult() == 0) {{')
+                w(f'            errors.put("{r.foreign_key}", "non trovato");')
+                w("        }")
+            w(f'        if (!errors.isEmpty()) throw new ModelValidationException("{T}", errors);')
+        w("    }\n")
     sync = [r for r in t.relations if r.kind == "many_to_one"]
     if sync:
         w("    /** Allinea chiavi esterne e relazioni: vale sia impostare l'id sia impostare l'oggetto collegato. */")
@@ -220,33 +261,49 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
         w(f"    /** {meth.summary} */")
         if k == "get_by_id":
             w(f"    public Optional<{t.name}> {name}({pkt} id) {{")
-            w(f"        return Optional.ofNullable(em.find({t.name}.class, id));")
+            if tc:
+                w(f'        return em.createQuery("SELECT e FROM {T} e WHERE e.{pkm} = :id{tq}", {T}.class)')
+                w(f'                .setParameter("id", id){tset}.setMaxResults(1).getResultStream().findFirst();')
+            else:
+                w(f"        return Optional.ofNullable(em.find({t.name}.class, id));")
         elif k == "list_page":
             w(f"    public Paging.Page<{t.name}> {name}() {{")
             w(f"        return {name}(Paging.PageRequest.first());")
             w("    }\n")
             w(f"    public Paging.Page<{t.name}> {name}(Paging.PageRequest page) {{")
-            w(f"        return Paging.runPage(em, {t.name}.class, PAGING, null, Map.of(), page, null, {t.name}::kybesValue);")
+            wq, ent = scoped(None)
+            mp = f"Map.ofEntries({ent})" if ent else "Map.of()"
+            w(f"        return Paging.runPage(em, {t.name}.class, PAGING, {wh(wq)}, {mp}, page, null, {t.name}::kybesValue);")
         elif k == "count":
             w(f"    public long {name}() {{")
-            w(f'        return em.createQuery("SELECT COUNT(e) FROM {t.name} e", Long.class).getSingleResult();')
+            if tc:
+                w(f'        return em.createQuery("SELECT COUNT(e) FROM {T} e WHERE e.{tm} = :kybesTenant", Long.class){tset}.getSingleResult();')
+            else:
+                w(f'        return em.createQuery("SELECT COUNT(e) FROM {t.name} e", Long.class).getSingleResult();')
         elif k == "exists":
             w(f"    public boolean {name}({pkt} id) {{")
-            w(f'        return em.createQuery("SELECT COUNT(e) FROM {t.name} e WHERE e.{pkm} = :id", Long.class)')
-            w('                .setParameter("id", id).getSingleResult() > 0;')
+            w(f'        return em.createQuery("SELECT COUNT(e) FROM {t.name} e WHERE e.{pkm} = :id{tq}", Long.class)')
+            w(f'                .setParameter("id", id){tset}.getSingleResult() > 0;')
         elif k == "create":
             w(f"    public {t.name} {name}({t.name} entity) {{")
             if sync:
                 w("        syncRelations(entity);")
+            if tc:
+                w("        checkTenant(entity);")
             w("        entity.validate();")
             w("        em.persist(entity);")
             w("        return entity;")
         elif k == "update":
             w(f"    public {t.name} {name}({t.name} entity) {{")
             w(f'        if (entity.get{_cap(pkm)}() == null) throw new IllegalArgumentException("{t.name}: update senza chiave");')
-            w(f'        if (em.find({t.name}.class, entity.get{_cap(pkm)}()) == null) throw new EntityNotFoundException("{t.name}: record inesistente");')
+            if tc:
+                w(f'        if (!{method_name(L, "exists")}(entity.get{_cap(pkm)}())) throw new EntityNotFoundException("{t.name}: record inesistente");')
+            else:
+                w(f'        if (em.find({t.name}.class, entity.get{_cap(pkm)}()) == null) throw new EntityNotFoundException("{t.name}: record inesistente");')
             if sync:
                 w("        syncRelations(entity);")
+            if tc:
+                w("        checkTenant(entity);")
             w("        entity.validate();")
             if any(c.generated == "on_create" for c in t.columns):
                 w(f"        {t.name} merged = em.merge(entity);")
@@ -257,15 +314,18 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
                 w("        return em.merge(entity);")
         elif k == "delete":
             w(f"    public boolean {name}({pkt} id) {{")
-            w(f"        {t.name} entity = em.find({t.name}.class, id);")
+            if tc:
+                w(f"        {t.name} entity = {method_name(L, 'get_by_id')}(id).orElse(null);")
+            else:
+                w(f"        {t.name} entity = em.find({t.name}.class, id);")
             w("        if (entity == null) return false;")
             w("        em.remove(entity);")
             w("        return true;")
         elif k == "find_by":
             c = t.col(arg)
             w(f"    public Optional<{t.name}> {name}({J_TYPE[c.type]} value) {{")
-            w(f'        return em.createQuery("SELECT e FROM {t.name} e WHERE e.{m[arg]} = :value", {t.name}.class)')
-            w('                .setParameter("value", value).setMaxResults(1).getResultStream().findFirst();')
+            w(f'        return em.createQuery("SELECT e FROM {t.name} e WHERE e.{m[arg]} = :value{tq}", {t.name}.class)')
+            w(f'                .setParameter("value", value){tset}.setMaxResults(1).getResultStream().findFirst();')
         elif k == "list_by":
             c = t.col(arg)
             w(f"    public Paging.Page<{t.name}> {name}({J_TYPE[c.type]} value) {{")
@@ -273,20 +333,28 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
             w("    }\n")
             w(f"    public Paging.Page<{t.name}> {name}({J_TYPE[c.type]} value, Paging.PageRequest page) {{")
             w(f'        Objects.requireNonNull(value, "{m[arg]}");')
-            w(f'        return Paging.runPage(em, {t.name}.class, PAGING, "e.{m[arg]} = :value", Map.of("value", value), page, null, {t.name}::kybesValue);')
+            wq, ent = scoped(f"e.{m[arg]} = :value")
+            mp = f'Map.ofEntries(Map.entry("value", (Object) value), {ent})' if ent else 'Map.of("value", value)'
+            w(f'        return Paging.runPage(em, {t.name}.class, PAGING, {wh(wq)}, {mp}, page, null, {t.name}::kybesValue);')
         elif k == "get_rel":
             r = next(x for x in t.relations if x.name == arg)
             w(f"    public Optional<{r.target}> {name}({pkt} id) {{")
-            w(f'        return em.createQuery("SELECT e.{member(L, r.name)} FROM {t.name} e WHERE e.{pkm} = :id", {r.target}.class)')
-            w('                .setParameter("id", id).setMaxResults(1).getResultStream().findFirst();')
+            w(f'        return em.createQuery("SELECT e.{member(L, r.name)} FROM {t.name} e WHERE e.{pkm} = :id{tq}", {r.target}.class)')
+            w(f'                .setParameter("id", id){tset}.setMaxResults(1).getResultStream().findFirst();')
         elif k == "list_rel":
             r = next(x for x in t.relations if x.name == arg)
             w(f"    public Paging.Page<{r.target}> {name}({pkt} id) {{")
             w(f"        return {name}(id, Paging.PageRequest.first());")
             w("    }\n")
             w(f"    public Paging.Page<{r.target}> {name}({pkt} id, Paging.PageRequest page) {{")
-            w(f'        return Paging.runPage(em, {r.target}.class, {base_class(L, r.target)}.PAGING, "e.{member(L, r.foreign_key)} = :id", '
-              f'Map.of("id", id), page, null, {r.target}::kybesValue);')
+            ctc = tenant_column(tables[r.target])
+            if ctc:
+                w(f'        return Paging.runPage(em, {r.target}.class, {base_class(L, r.target)}.PAGING, '
+                  f'"e.{member(L, r.foreign_key)} = :id AND e.{member(L, ctc.name)} = :kybesTenant", '
+                  f'Map.ofEntries(Map.entry("id", (Object) id), Map.entry("kybesTenant", (Object) Tenancy.of(em))), page, null, {r.target}::kybesValue);')
+            else:
+                w(f'        return Paging.runPage(em, {r.target}.class, {base_class(L, r.target)}.PAGING, "e.{member(L, r.foreign_key)} = :id", '
+                  f'Map.of("id", id), page, null, {r.target}::kybesValue);')
         elif k in ("query_page", "query_list", "query_one"):
             q = next(x for x in t.queries if x.name == arg)
             params, conds, binds, guards = [], [], [], []
@@ -309,7 +377,9 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
                 if val is not None and c.op not in ("is_null", "not_null"):
                     binds.append(f'Map.entry("{key}", (Object) {val})')
             order = ", ".join(oi(cn, d) for cn, d in t.order(q.order_by or None))
-            where = " AND ".join(conds)
+            where, ent = scoped(" AND ".join(conds))
+            if ent:
+                binds.append(ent)
             mp = f"Map.ofEntries({', '.join(binds)})" if binds else "Map.of()"
             ret = {"query_page": f"Paging.Page<{t.name}>", "query_list": f"List<{t.name}>", "query_one": f"Optional<{t.name}>"}[k]
             if k == "query_page":
@@ -373,7 +443,8 @@ def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tu
     pkg, dialect = opts["package"], opts.get("dialect", "postgres")
     gen = {f"{GEN_DIR}/ModelValidationException.java": _common_file(pkg),
            f"{GEN_DIR}/Paging.java": runtime_java.paging_file(pkg),
-           f"{GEN_DIR}/UnitOfWork.java": runtime_java.uow_file(pkg, tables, dialect)}
+           f"{GEN_DIR}/UnitOfWork.java": runtime_java.uow_file(pkg, tables, dialect),
+           f"{GEN_DIR}/Tenancy.java": runtime_tenant.java_file(pkg, opts.get("tenant_id_type", "uuid"))}
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.java"] = _entity_file(t, tables, schema_rel[n], pkg, dialect)
         gen[f"{GEN_DIR}/{base_class(L, n)}.java"] = _repo_file(t, tables, schema_rel[n], pkg)

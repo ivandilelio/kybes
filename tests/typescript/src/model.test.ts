@@ -1,18 +1,21 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
 import { DataSource } from "typeorm";
-import { ENTITIES, ModelValidationError } from "./model/generated";
+import { ENTITIES, ModelValidationError, bindTenant } from "./model/generated";
 import { ClientiRepository } from "./model/Clienti";
 import { OrdiniRepository } from "./model/Ordini";
 import { RigheOrdineRepository } from "./model/RigheOrdine";
 import { ProdottiRepository } from "./model/Prodotti";
 import { CategorieRepository } from "./model/Categorie";
 
+const TENANT = "00000000-0000-4000-8000-0000000000aa";
+
 async function main() {
   const ds = new DataSource({ type: "sqljs", entities: ENTITIES, synchronize: true, logging: false });
   await ds.initialize();
   await ds.query("PRAGMA foreign_keys = ON");
   const em = ds.manager;
+  bindTenant(em, TENANT);
   const cr = new ClientiRepository(em), orr = new OrdiniRepository(em), rr = new RigheOrdineRepository(em);
   const pr = new ProdottiRepository(em), kr = new CategorieRepository(em);
   const c = await cr.create({ ragioneSociale: "ACME Srl", partitaIva: "01234567890" });

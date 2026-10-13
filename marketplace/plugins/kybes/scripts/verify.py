@@ -319,7 +319,7 @@ def main(argv: List[str]) -> int:
         return 0
     mc, vc = G.model_config(cfg), G.verification_config(cfg)
     try:
-        tables = load_schemas(proj / mc["schema_dir"])
+        tables = G.load_tables(proj, cfg)
     except SchemaError as exc:
         print("verify: schemi non validi: " + "; ".join(exc.errors), file=sys.stderr)
         return 1

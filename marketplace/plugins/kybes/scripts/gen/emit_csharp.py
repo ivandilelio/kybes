@@ -4,8 +4,9 @@ from __future__ import annotations
 from typing import Dict, Tuple
 
 import runtime_csharp
+import runtime_tenant
 from naming import GEN_DIR, custom_file, header, member, method_name, repo_class
-from schema import Table, index_specs, methods_of
+from schema import Table, index_specs, methods_of, tenant_column
 
 L = "csharp"
 
@@ -99,7 +100,7 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
     w("    {")
     w("        var errors = new Dictionary<string, string>();")
     for c in t.columns:
-        if c.required and c.type in REF_TYPES and not c.generated:
+        if c.required and c.type in REF_TYPES and not c.generated and not c.tenant:
             w(f'        if (e.{c.name} is null) errors["{c.name}"] = "obbligatorio";')
         if c.type == "string":
             w(f'        if (e.{c.name} is not null && e.{c.name}.Length > {c.length}) errors["{c.name}"] = "lunghezza massima {c.length}";')
@@ -121,8 +122,43 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
     w(f"    public {repo}(AppDbContext db)")
     w("    {")
     w("        Db = db;")
+    if t.tenancy != "none":
+        w(f"        Db.RequireTenant(); // tenancy: {t.tenancy}: senza un tenant legato al contesto il repository non lavora")
     w("    }\n")
     w(f"    protected DbSet<{t.name}> Set => Db.Set<{t.name}>();\n")
+    tc = tenant_column(t)
+    T = t.name
+    S = "Scoped()" if tc else "Set"           # con tenancy: column ogni lettura parte dal filtro sul tenant
+    if tc:
+        w("    /// <summary>I record del tenant legato al contesto.</summary>")
+        w(f"    protected IQueryable<{T}> Scoped()")
+        w("    {")
+        w("        var tenant = Db.RequireTenant();")
+        w(f"        return Set.Where(x => x.{tc.name} == tenant);")
+        w("    }\n")
+        parents = [r for r in t.relations if r.kind == "many_to_one" and tables[r.target].tenancy == "column"]
+        w("    /// <summary>Il record appartiene al tenant del contesto; i record collegati anche.</summary>")
+        w(f"    protected async Task CheckTenantAsync({T} entity, CancellationToken ct)")
+        w("    {")
+        w("        var tenant = Db.RequireTenant();")
+        empty_t = "Guid.Empty" if tc.type == "uuid" else "null"
+        w(f"        if (entity.{tc.name} != {empty_t} && entity.{tc.name} != tenant)")
+        w(f'            throw new ModelValidationException("{T}", new Dictionary<string, string> {{ ["{tc.name}"] = "tenant diverso da quello della sessione" }});')
+        w(f"        entity.{tc.name} = tenant;")
+        if parents:
+            w("        var errors = new Dictionary<string, string>();")
+            for r in parents:
+                tg = tables[r.target]
+                fkc = t.col(r.foreign_key)
+                ttc = tenant_column(tg)
+                tpk = tg.pk.name
+                key_t = CS_TYPE[fkc.type] + ("?" if fkc.nullable else "")
+                w(f"        {key_t} key{r.name} = entity.{r.name} is not null ? entity.{r.name}.{tpk} : entity.{r.foreign_key};")
+                cond = f"key{r.name} is not null" if fkc.nullable else "true"
+                w(f"        if ({cond} && !await Db.Set<{r.target}>().AnyAsync(p => p.{tpk} == key{r.name} && p.{ttc.name} == tenant, ct))")
+                w(f'            errors["{r.foreign_key}"] = "non trovato";')
+            w(f'        if (errors.Count > 0) throw new ModelValidationException("{T}", errors);')
+        w("    }\n")
 
     def oi(cn, d):
         return f'new OrderItem("{cn}", "{member("typescript", cn)}", SortType.{_SORT[t.col(cn).type]}, {str(d).lower()})'
@@ -144,19 +180,21 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
         w(f"    /// <summary>{meth.summary}</summary>")
         if k == "get_by_id":
             w(f"    public Task<{t.name}?> {name}({pkt} id, CancellationToken ct = default) =>")
-            w(f"        Set.FirstOrDefaultAsync(x => x.{pk.name} == id, ct);")
+            w(f"        {S}.FirstOrDefaultAsync(x => x.{pk.name} == id, ct);")
         elif k == "list_page":
             w(f"    public Task<Page<{t.name}>> {name}(PageRequest? page = null, CancellationToken ct = default) =>")
-            w(f"        Paging.RunPageAsync(Set.AsNoTracking(), PageSpec, page, null, ct);")
+            w(f"        Paging.RunPageAsync({S}.AsNoTracking(), PageSpec, page, null, ct);")
         elif k == "count":
-            w(f"    public Task<int> {name}(CancellationToken ct = default) => Set.CountAsync(ct);")
+            w(f"    public Task<int> {name}(CancellationToken ct = default) => {S}.CountAsync(ct);")
         elif k == "exists":
             w(f"    public Task<bool> {name}({pkt} id, CancellationToken ct = default) =>")
-            w(f"        Set.AnyAsync(x => x.{pk.name} == id, ct);")
+            w(f"        {S}.AnyAsync(x => x.{pk.name} == id, ct);")
         elif k == "create":
             w(f"    public async Task<{t.name}> {name}({t.name} entity, CancellationToken ct = default)")
             w("    {")
             w(f"        {t.name}Validation.Validate(entity);")
+            if tc:
+                w("        await CheckTenantAsync(entity, ct);")
             for r in t.relations:
                 if r.kind == "many_to_one":
                     w(f"        if (entity.{r.name} is not null && Db.Entry(entity.{r.name}).State == EntityState.Detached) Db.Attach(entity.{r.name});")
@@ -171,7 +209,9 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
             w(f'        if (entity.{pk.name} == {empty}) throw new ArgumentException("{t.name}: update senza chiave", nameof(entity));')
             w(f"        {t.name}Validation.Validate(entity);")
             w(f"        var key = entity.{pk.name};")
-            w(f'        if (!await Set.AnyAsync(x => x.{pk.name} == key, ct)) throw new KeyNotFoundException("{t.name}: record inesistente");')
+            w(f'        if (!await {S}.AnyAsync(x => x.{pk.name} == key, ct)) throw new KeyNotFoundException("{t.name}: record inesistente");')
+            if tc:
+                w("        await CheckTenantAsync(entity, ct);")
             w("        Db.Entry(entity).State = EntityState.Modified; // solo il record, non il grafo collegato")
             w("        await Db.SaveChangesAsync(ct);")
             if any(c.generated == "on_create" for c in gen_cols):
@@ -181,7 +221,7 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
         elif k == "delete":
             w(f"    public async Task<bool> {name}({pkt} id, CancellationToken ct = default)")
             w("    {")
-            w(f"        var entity = await Set.FirstOrDefaultAsync(x => x.{pk.name} == id, ct);")
+            w(f"        var entity = await {S}.FirstOrDefaultAsync(x => x.{pk.name} == id, ct);")
             w("        if (entity is null) return false;")
             w("        Set.Remove(entity);")
             w("        await Db.SaveChangesAsync(ct);")
@@ -190,22 +230,31 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
         elif k == "find_by":
             c = t.col(arg)
             w(f"    public Task<{t.name}?> {name}({CS_TYPE[c.type]} value, CancellationToken ct = default) =>")
-            w(f"        Set.FirstOrDefaultAsync(x => x.{c.name} == value, ct);")
+            w(f"        {S}.FirstOrDefaultAsync(x => x.{c.name} == value, ct);")
         elif k == "list_by":
             c = t.col(arg)
             w(f"    public Task<Page<{t.name}>> {name}({CS_TYPE[c.type]} value, PageRequest? page = null, CancellationToken ct = default) =>")
-            w(f"        Paging.RunPageAsync(Set.AsNoTracking().Where(x => x.{c.name} == value), PageSpec, page, null, ct);")
+            w(f"        Paging.RunPageAsync({S}.AsNoTracking().Where(x => x.{c.name} == value), PageSpec, page, null, ct);")
         elif k == "get_rel":
             r = next(x for x in t.relations if x.name == arg)
             w(f"    public async Task<{r.target}?> {name}({pkt} id, CancellationToken ct = default)")
             w("    {")
-            w(f"        var entity = await Set.Include(x => x.{r.name}).FirstOrDefaultAsync(x => x.{pk.name} == id, ct);")
+            w(f"        var entity = await {S}.Include(x => x.{r.name}).FirstOrDefaultAsync(x => x.{pk.name} == id, ct);")
             w(f"        return entity?.{r.name};")
             w("    }")
         elif k == "list_rel":
             r = next(x for x in t.relations if x.name == arg)
-            w(f"    public Task<Page<{r.target}>> {name}({pkt} id, PageRequest? page = null, CancellationToken ct = default) =>")
-            w(f"        Paging.RunPageAsync(Db.Set<{r.target}>().AsNoTracking().Where(x => x.{r.foreign_key} == id), {repo_class(L, r.target)}.PageSpec, page, null, ct);")
+            ctc = tenant_column(tables[r.target])
+            if ctc:
+                w(f"    public Task<Page<{r.target}>> {name}({pkt} id, PageRequest? page = null, CancellationToken ct = default)")
+                w("    {")
+                w("        var tenant = Db.RequireTenant();")
+                w(f"        return Paging.RunPageAsync(Db.Set<{r.target}>().AsNoTracking().Where(x => x.{r.foreign_key} == id && x.{ctc.name} == tenant), "
+                  f"{repo_class(L, r.target)}.PageSpec, page, null, ct);")
+                w("    }")
+            else:
+                w(f"    public Task<Page<{r.target}>> {name}({pkt} id, PageRequest? page = null, CancellationToken ct = default) =>")
+                w(f"        Paging.RunPageAsync(Db.Set<{r.target}>().AsNoTracking().Where(x => x.{r.foreign_key} == id), {repo_class(L, r.target)}.PageSpec, page, null, ct);")
         elif k in ("query_page", "query_list", "query_one"):
             q = next(x for x in t.queries if x.name == arg)
             params, conds, guards = [], [], []
@@ -234,7 +283,7 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
                     pn = c.param[:1].lower() + c.param[1:]
                     ct_ = CS_TYPE[t.col(c.column).type]
                     w(f"        var {pn}Array = {pn} as {ct_}[] ?? {pn}.ToArray(); // array: tradotto come = ANY(@p)")
-            w(f"        var query = Set.AsNoTracking().Where(x => {where});")
+            w(f"        var query = {S}.AsNoTracking().Where(x => {where});")
             if k == "query_page":
                 w(f"        return await Paging.RunPageAsync(query, PageSpec, page, Order{q.name}, ct);")
             elif k == "query_list":
@@ -334,7 +383,8 @@ def custom_stub(t: Table, ns: str) -> str:
 def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tuple[Dict[str, str], Dict[str, str]]:
     ns, dialect = opts["namespace"], opts.get("dialect", "postgres")
     gen = {f"{GEN_DIR}/AppDbContext.cs": _context_file(tables, ns), f"{GEN_DIR}/ModelValidationException.cs": _common_file(ns),
-           f"{GEN_DIR}/Paging.cs": runtime_csharp.paging_file(ns), f"{GEN_DIR}/UnitOfWork.cs": runtime_csharp.uow_file(ns, tables)}
+           f"{GEN_DIR}/Paging.cs": runtime_csharp.paging_file(ns), f"{GEN_DIR}/UnitOfWork.cs": runtime_csharp.uow_file(ns, tables),
+           f"{GEN_DIR}/Tenancy.cs": runtime_tenant.csharp_file(ns, opts.get("tenant_id_type", "uuid"))}
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.cs"] = _table_file(t, tables, schema_rel[n], ns, dialect)
     custom = {custom_file(L, n): custom_stub(t, ns) for n, t in tables.items()}

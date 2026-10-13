@@ -2,6 +2,7 @@ import app.model.generated.ModelValidationException;
 import app.model.generated.Ordini;
 import app.model.generated.OrdiniRepositoryBase;
 import app.model.generated.Paging;
+import app.model.generated.Tenancy;
 import app.model.generated.UnitOfWork;
 import jakarta.persistence.*;
 import java.math.BigDecimal;
@@ -11,6 +12,7 @@ import java.util.*;
 
 /** Esegue la logica Java generata con un EntityManager finto che registra JPQL e parametri. */
 public class PagingTest {
+    static final UUID TENANT = UUID.fromString("00000000-0000-4000-8000-0000000000aa");
     static final List<String> jpql = new ArrayList<>();
     static final List<Map<String, Object>> params = new ArrayList<>();
     static List<Object> nextResult = new ArrayList<>();
@@ -49,6 +51,7 @@ public class PagingTest {
                 public boolean isActive() { return active; }
             };
         }
+        public java.util.Map<String, Object> getProperties() { return java.util.Map.of(Tenancy.KEY, TENANT); }
         public void close() {}
         public <T> T unwrap(Class<T> cls) {
             org.hibernate.Session s = work -> {
@@ -86,12 +89,12 @@ public class PagingTest {
         nextResult = List.of(ordine("A", LocalDate.parse("2026-01-03"), id1), ordine("B", LocalDate.parse("2026-01-02"), id2), ordine("C", LocalDate.parse("2026-01-01"), id3));
         Paging.Page<Ordini> p1 = repo.listPage(Paging.PageRequest.of(2));
         check(p1.items().size() == 2 && p1.hasMore(), "prima pagina");
-        check(jpql.get(0).equals("SELECT e FROM Ordini e ORDER BY e.data DESC, e.id ASC"), jpql.get(0));
+        check(jpql.get(0).equals("SELECT e FROM Ordini e WHERE (e.tenantId = :kybesTenant) ORDER BY e.data DESC, e.id ASC"), jpql.get(0));
         repo.listPage(p1.items().isEmpty() ? null : Paging.PageRequest.of(2).next(p1.nextCursor()));
-        check(jpql.get(1).equals("SELECT e FROM Ordini e WHERE ((e.data < :kc0) OR (e.data = :kc0 AND e.id > :kc1)) ORDER BY e.data DESC, e.id ASC"), jpql.get(1));
+        check(jpql.get(1).equals("SELECT e FROM Ordini e WHERE (e.tenantId = :kybesTenant) AND ((e.data < :kc0) OR (e.data = :kc0 AND e.id > :kc1)) ORDER BY e.data DESC, e.id ASC"), jpql.get(1));
         check(params.get(1).get("kc0").equals(LocalDate.parse("2026-01-02")) && params.get(1).get("kc1").equals(id2), "valori del cursore " + params.get(1));
         repo.listDelClienteDal(id1, LocalDate.parse("2026-01-01"), Paging.PageRequest.of(10));
-        check(jpql.get(2).equals("SELECT e FROM Ordini e WHERE (e.clienteId = :clienteId AND e.data >= :daData) ORDER BY e.data DESC, e.id ASC"), jpql.get(2));
+        check(jpql.get(2).equals("SELECT e FROM Ordini e WHERE (e.tenantId = :kybesTenant AND e.clienteId = :clienteId AND e.data >= :daData) ORDER BY e.data DESC, e.id ASC"), jpql.get(2));
         repo.listPerNumero("X%_");
         check(params.get(3).get("prefisso").equals("X\\%\\_%"), "like protetto: " + params.get(3));
         // errori del contratto

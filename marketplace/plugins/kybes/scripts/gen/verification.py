@@ -49,6 +49,7 @@ class TestCase:
 class Catalog:
     requirements: List[Requirement]
     tests: List[TestCase]
+    tenant_id_type: str = "uuid"
 
     def for_table(self, name: str) -> List[TestCase]:
         return [t for t in self.tests if t.table == name]
@@ -87,7 +88,7 @@ def _query_conds(q: Query) -> List[Cond]:
     return list(q.where)
 
 
-def build_catalog(tables: Dict[str, Table], default_asil: str = "B") -> Catalog:
+def build_catalog(tables: Dict[str, Table], default_asil: str = "B", tenant_id_type: str = "uuid") -> Catalog:
     reqs: List[Requirement] = []
     tests: List[TestCase] = []
     for n, t in tables.items():
@@ -105,7 +106,7 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B") -> Catalog:
                      "lettura per chiave, esistenza e conteggio di un record esistente", "il record è restituito, exists è vero, count ≥ 1"))
         add(TestCase(f"TC-{n}-READ-MISSING", n, [r_read], "eg", "read_missing",
                      "lettura per chiave di un record inesistente", "nessun record, exists è falso"))
-        upd = next((c for c in t.columns if not c.primary_key and not c.generated and c.name not in t.fk_columns()
+        upd = next((c for c in t.columns if not c.primary_key and not c.generated and not c.tenant and c.name not in t.fk_columns()
                     and c.type in ("string", "text", "int", "bigint", "decimal") and not c.unique), None)
         if upd:
             add(TestCase(f"TC-{n}-UPDATE-ALLOWED", n, [r_update], "req", "update_allowed",
@@ -130,7 +131,7 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B") -> Catalog:
         add(TestCase(f"TC-{n}-DELETE", n, [r_delete], "req", "delete",
                      "cancellazione di un record esistente e poi inesistente", "prima vero, poi falso; il record non è più leggibile"))
         for c in t.columns:
-            if c.primary_key or c.generated:
+            if c.primary_key or c.generated or c.tenant:
                 continue
             if c.required:
                 text = f"{n}.{c.name} è obbligatorio" + (f" (se assente vale {c.default!r}; un valore nullo esplicito è rifiutato)." if c.default is not None else ".")
@@ -182,6 +183,8 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B") -> Catalog:
                 rid = _req(reqs, t, f"{r.name}-CHILDREN", f"Da {n} si leggono i {r.target} collegati.", f"{src}: relations.{r.name}", asil)
                 add(TestCase(f"TC-{n}-{r.name}-CHILDREN", n, [rid], "req", "rel_children",
                              f"pagina dei {r.target} collegati", "contiene il figlio e solo figli di quel record", {"relation": r.name}))
+        if t.tenancy != "none":
+            _tenancy_cases(t, tables, reqs, add, src, asil)
         add(TestCase(f"TC-{n}-PAGE-WALK", n, [r_page], "req", "page_walk",
                      "scorrimento completo con limite 1", "ogni record una sola volta, ultimo cursore nullo"))
         if t.pagination.sortable:
@@ -232,6 +235,34 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B") -> Catalog:
 RUNTIME = "_runtime"
 
 
+def _tenancy_cases(t: Table, tables: Dict[str, Table], reqs: List[Requirement], add, src: str, asil: str) -> None:
+    n = t.name
+    how = {"column": "ogni metodo filtra per TenantId", "schema": "la tabella vive nello schema del tenant",
+           "database": "la tabella vive nel database del tenant"}[t.tenancy]
+    rid = _req(reqs, t, "TENANT", f"I dati di {n} appartengono a una Organization ({t.tenancy}: {how}): il repository lavora solo con "
+               "un tenant legato alla sessione e non legge né modifica dati di un altro tenant.", f"{src}: tenancy", asil)
+    add(TestCase(f"TC-{n}-TENANT-REQUIRED", n, [rid], "eg", "tenant_required", "repository su una sessione senza tenant",
+                 "errore: tenant mancante, nessuna operazione eseguita"))
+    if t.tenancy != "column":
+        return
+    add(TestCase(f"TC-{n}-TENANT-ISOLATION", n, [rid], "req", "tenant_isolation",
+                 "record del tenant A letto, contato, elencato, modificato e cancellato con il tenant B legato",
+                 "per il tenant B il record non esiste; resta intatto per il tenant A"))
+    add(TestCase(f"TC-{n}-TENANT-ASSIGN", n, [rid], "eq", "tenant_assign",
+                 "inserimento senza TenantId e con il TenantId di un altro tenant",
+                 "il primo prende il tenant della sessione, il secondo è rifiutato (TenantId)"))
+    uniq = [c for c in t.columns if c.unique and not c.primary_key]
+    if uniq:
+        add(TestCase(f"TC-{n}-TENANT-UNIQUE", n, [rid], "eq", "tenant_unique",
+                     f"stesso valore di {uniq[0].name} in due tenant", "accettato: l'univocità vale per tenant",
+                     {"column": uniq[0].name}))
+    for r in t.relations:
+        if r.kind == "many_to_one" and tables[r.target].tenancy == "column":
+            add(TestCase(f"TC-{n}-{r.name}-TENANT-PARENT", n, [rid], "eg", "tenant_parent",
+                         f"collegamento a un {r.target} di un altro tenant", f"errore di validazione su {r.foreign_key}: non trovato",
+                         {"relation": r.name}))
+
+
 def _runtime(reqs: List[Requirement], tests: List[TestCase], asil: str) -> None:
     """Requisiti dei moduli comuni (paginazione e Unit of Work), con l'ASIL più alto del progetto."""
     def req(key, text):
@@ -245,8 +276,16 @@ def _runtime(reqs: List[Requirement], tests: List[TestCase], asil: str) -> None:
     iso = req("UOW-ISOLATION", "La Unit of Work usa il livello di isolamento più severo tra le tabelle coinvolte.")
     tx = req("UOW-COMMIT", "La Unit of Work conferma il lavoro riuscito e annulla quello fallito.")
     api = req("API", "Il modello espone da punti d'ingresso stabili (indice generato e un file per tabella) entità, repository, validatori e specifiche di paginazione.")
+    tenant = req("TENANT", "Il contesto del tenant si lega alla sessione e se ne scollega; i nomi di schema e database derivati "
+                 "dal tenant sono sicuri; la Unit of Work lega il tenant alla transazione.")
     retry = req("UOW-RETRY", "La Unit of Work ripete il lavoro solo sui conflitti di serializzazione e sui deadlock, entro il numero massimo di tentativi.")
     for tid, r, m, kind, title, exp in [
+        ("TC-KYBES-TENANT-BIND", tenant, "eq", "rt_tenant_bind", "tenant legato, cambiato, scollegato, non valido",
+         "la sessione restituisce il tenant legato; senza tenant o con un valore non valido: errore"),
+        ("TC-KYBES-TENANT-NAMES", tenant, "bv", "rt_tenant_names", "schema, search_path e URL del database derivati dal tenant",
+         "nomi con sole minuscole, cifre e _; modello di URL senza {tenant} rifiutato"),
+        ("TC-KYBES-TENANT-UOW", tenant, "req", "rt_tenant_uow", "Unit of Work con tenant",
+         "la sessione della transazione è legata al tenant (su PostgreSQL anche app.tenant_id)"),
         ("TC-KYBES-API-EXPORTS", api, "req", "rt_exports", "lettura di ogni simbolo esportato dall'indice e dai file per tabella",
          "ogni simbolo è definito; per ogni tabella esistono entità e repository"),
         ("TC-KYBES-SORT-KEY", sort, "eq", "rt_sort_key", "ordinamento sulla chiave, discendente", "solo la chiave, discendente"),

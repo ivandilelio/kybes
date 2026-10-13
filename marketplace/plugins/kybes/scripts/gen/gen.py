@@ -44,6 +44,7 @@ DEFAULT_MODEL = {
     "index_file": "MODEL_INDEX.md",
     "db_dir": "db/generated",
     "ddl_dialects": ["postgres"],
+    "tenancy": {"default": "none", "id_type": "uuid"},
     "targets": [],
 }
 
@@ -122,6 +123,13 @@ def collisions(lang: str, t: Table, text: str) -> List[str]:
 
 
 # --------------------------------------------------------------------------- config
+
+def load_tables(proj: Path, cfg: dict) -> Dict[str, Table]:
+    """Schemi del progetto con la modalità multi-tenant della configurazione (solleva SchemaError)."""
+    mc = model_config(cfg)
+    ten = {"default": "none", "id_type": "uuid", **(mc.get("tenancy") or {})}
+    return load_schemas(proj / mc["schema_dir"], ten["default"], ten["id_type"])
+
 
 def model_config(cfg: dict) -> dict:
     out = dict(DEFAULT_MODEL)
@@ -256,7 +264,7 @@ def _is_generated(p: Path) -> bool:
 def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) -> Result:
     mc = model_config(cfg)
     res = Result()
-    tables = load_schemas(proj / mc["schema_dir"])  # solleva SchemaError
+    tables = load_tables(proj, cfg)  # solleva SchemaError
     schema_rel = {n: f"{mc['schema_dir']}/{n}.yaml" for n in tables}
     desired: Dict[str, str] = {}
     managed_dirs: List[Path] = [proj / mc["json_schema_dir"], proj / mc["db_dir"]]
@@ -266,7 +274,9 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
         managed_dirs.append(proj / d / GEN_DIR)
         if index_only:
             continue
-        gen, custom = EMITTERS[lang].emit(tables, schema_rel, gen_options(tg))
+        opts = gen_options(tg)
+        opts["tenant_id_type"] = {"id_type": "uuid", **(mc.get("tenancy") or {})}["id_type"]
+        gen, custom = EMITTERS[lang].emit(tables, schema_rel, opts)
         for rel, text in gen.items():
             desired[f"{d}/{rel}"] = text
         for rel, text in custom.items():
@@ -276,7 +286,7 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
         cycles = verification.builder_cycles(tables)
         if cycles:
             res.problems.append("cicli di chiavi esterne obbligatorie, impossibili da popolare nei test: " + "; ".join(cycles))
-        cat = verification.build_catalog(tables, vc["asil"])
+        cat = verification.build_catalog(tables, vc["asil"], {"id_type": "uuid", **(mc.get("tenancy") or {})}["id_type"])
         test_files: Dict[str, Dict[str, str]] = {}
         if vc.get("generate_tests", True):
             for tg in mc["targets"]:

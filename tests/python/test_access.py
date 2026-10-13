@@ -5,6 +5,8 @@ sys.path.insert(0, sys.argv[1] + "/libs/db-models/python/src")
 from sqlalchemy import create_engine, event
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
+from model.generated import bind_tenant
+TENANT = '00000000-0000-4000-8000-0000000000aa'
 from model.generated import Base, ModelValidationError, PageRequest, run_in_transaction, isolation_for, transaction
 from model.Clienti import Clienti, ClientiRepository
 from model.Ordini import Ordini, OrdiniRepository
@@ -27,6 +29,8 @@ def expect_invalid(fn, field):
     raise SystemExit(f"atteso errore su {field}")
 
 with Session(eng) as s:
+
+    bind_tenant(s, TENANT)
     cr, orr, pr = ClientiRepository(s), OrdiniRepository(s), ProdottiRepository(s)
     a = cr.create(Clienti(ragione_sociale="Alfa"))
     b = cr.create(Clienti(ragione_sociale="Beta", attivo=False))
@@ -95,19 +99,21 @@ assert isolation_for(["Clienti", "Ordini"]) == "repeatable_read"
 
 def crea(session):
     return ClientiRepository(session).create(Clienti(ragione_sociale="Delta")).id
-new_id = run_in_transaction(SF, crea, tables=["Clienti"], levels=SQLITE_LEVELS)
+new_id = run_in_transaction(SF, crea, tables=["Clienti"], levels=SQLITE_LEVELS, tenant=TENANT)
 with Session(eng) as s:
+    bind_tenant(s, TENANT)
     assert ClientiRepository(s).get_by_id(new_id) is not None, "commit"
 
 def fallisce(session):
     ClientiRepository(session).create(Clienti(ragione_sociale="Epsilon"))
     raise RuntimeError("errore applicativo")
 try:
-    run_in_transaction(SF, fallisce, tables=["Clienti"], levels=SQLITE_LEVELS)
+    run_in_transaction(SF, fallisce, tables=["Clienti"], levels=SQLITE_LEVELS, tenant=TENANT)
     raise SystemExit("eccezione attesa")
 except RuntimeError:
     pass
 with Session(eng) as s:
+    bind_tenant(s, TENANT)
     assert ClientiRepository(s).find_by_partita_iva("x") is None
     assert not [c for c in ClientiRepository(s).list_page(PageRequest(limit=100)).items if c.ragione_sociale == "Epsilon"], "rollback"
 
@@ -120,16 +126,17 @@ def conflitto(session):
     if calls["n"] < 3:
         raise OperationalError("UPDATE", {}, Serialization())
     return calls["n"]
-assert run_in_transaction(SF, conflitto, tables=["RigheOrdine"], levels=SQLITE_LEVELS, backoff_s=0) == 3
+assert run_in_transaction(SF, conflitto, tables=["RigheOrdine"], levels=SQLITE_LEVELS, tenant=TENANT, backoff_s=0) == 3
 with Session(eng) as s:
+    bind_tenant(s, TENANT)
     names = {c.ragione_sociale for c in ClientiRepository(s).list_page(PageRequest(limit=100)).items}
     assert "Zeta3" in names and "Zeta1" not in names and "Zeta2" not in names, "solo il tentativo riuscito resta"
 calls["n"] = -10
 try:
-    run_in_transaction(SF, conflitto, levels=SQLITE_LEVELS, max_retries=2, backoff_s=0)
+    run_in_transaction(SF, conflitto, levels=SQLITE_LEVELS, tenant=TENANT, max_retries=2, backoff_s=0)
     raise SystemExit("atteso errore dopo i tentativi")
 except OperationalError:
     pass
-with transaction(SF, ["Clienti"], levels=SQLITE_LEVELS) as s:
+with transaction(SF, ["Clienti"], levels=SQLITE_LEVELS, tenant=TENANT) as s:
     ClientiRepository(s).create(Clienti(ragione_sociale="Eta"))
 print("PYTHON ACCESS OK: paginazione keyset, ordinamenti, errori del contratto, query, Unit of Work")

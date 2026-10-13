@@ -11,6 +11,7 @@ from schema import Table, snake
 from verification import METHODS, Catalog, TestCase, table_asil
 
 L = "typescript"
+_ID_TYPE = ["uuid"]
 HEAD_LINT = "/* eslint-disable */\n"
 
 
@@ -38,11 +39,13 @@ def db_file(dialect: str, n_first: str) -> str:
 import "reflect-metadata";
 import {{ DataSource }} from "typeorm";
 import type {{ EntityManager }} from "typeorm";
-import {{ ENTITIES }} from "../../src/model/generated";
+import {{ ENTITIES, bindTenant }} from "../../src/model/generated";
+import {{ TENANT_A }} from "./kybes_builders";
 
 export async function withDb(work: (em: EntityManager, ds: DataSource) => Promise<void>): Promise<void> {{
 {source}
   try {{
+    bindTenant(ds.manager, TENANT_A); // le tabelle multi-tenant richiedono un tenant legato
     await work(ds.manager, ds);
   }} finally {{
     await ds.destroy();
@@ -68,6 +71,8 @@ def builders_file(tables: Dict[str, Table]) -> str:
          'import { randomUUID } from "node:crypto";', 'import type { EntityManager } from "typeorm";']
     for n in tables:
         o.append(f'import {{ {n}, {repo_class(L, n)} }} from "../../src/model/{n}";')
+    tval = ('"00000000-0000-4000-8000-00000000000{}"' if _ID_TYPE[0] == "uuid" else '"tenant-{}"')
+    o += ["", "// tenant di prova: withDb lega TENANT_A", f"export const TENANT_A = {tval.format('a')};", f"export const TENANT_B = {tval.format('b')};"]
     o += ["", "let seq = 0;", "export function nextN(): number {", "  seq += 1;", "  return seq;", "}", "",
           "export function textValue(n: number, length: number): string {", "  return `v${n}`.slice(0, length);", "}", "",
           "export function dayValue(n: number): string {", "  return new Date(Date.UTC(2026, 0, 1) + n * 86400000).toISOString().slice(0, 10);", "}", "",
@@ -124,7 +129,7 @@ def builders_file(tables: Dict[str, Table]) -> str:
               f"export async function build{n}(em: EntityManager, over: Record<string, unknown> = {{}}): Promise<{n}> {{",
               "  const data: Record<string, unknown> = {};"]
         for c in t.columns:
-            if (c.primary_key and c.auto) or c.generated or c.default is not None:
+            if (c.primary_key and c.auto) or c.generated or c.default is not None or c.tenant:
                 continue
             a = _a(c.name)
             rel = next((r for r in t.relations if r.kind == "many_to_one" and r.foreign_key == c.name), None)
@@ -235,20 +240,20 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
          f"// Test di unità generati per {n} (ASIL {table_asil(t, default_asil)}). Specifica: docs/generated/verification/{n}.md",
          "// I test dei metodi custom vanno in tests/custom/.",
          'import { test } from "node:test";', 'import assert from "node:assert/strict";',
-         'import { ModelValidationError } from "../../src/model/generated";']
+         'import { ModelValidationError, TenantError, bindTenant } from "../../src/model/generated";']
     for x in others:
         o.append(f'import {{ {repo_class(L, x)} }} from "../../src/model/{x}";')
     o += ['import { withDb } from "./_db";',
-          'import { ' + ", ".join(sorted({f"build{x}" for x in others} | {"cmp", "different", "greater", "nextN", "smaller", "textValue"})) +
+          'import { ' + ", ".join(sorted({f"build{x}" for x in others} | {"cmp", "different", "greater", "nextN", "smaller", "textValue", "TENANT_A", "TENANT_B"})) +
           ' } from "./kybes_builders";', "",
           "const invalid = (field: string) => (e: unknown) => e instanceof ModelValidationError && field in e.fields;",
-          "void [cmp, different, greater, nextN, smaller, textValue];"]
+          "void [cmp, different, greater, nextN, smaller, textValue, TenantError, bindTenant, TENANT_A, TENANT_B];"]
     if any(tc.kind == "page_sort_each" for tc in cat.for_table(n)):
         o.insert(o.index('import { withDb } from "./_db";'), 'import type { Kind } from "./kybes_builders";')
     compare = [(c.name, c.type) for c in t.columns if c.type not in ("datetime", "json") and not c.generated]
     for tc in cat.for_table(n):
         o += ["", f"test({json.dumps(tc.id + ' · ' + ', '.join(tc.reqs) + ' · ' + METHODS[tc.method] + ': ' + tc.title)}, () =>",
-              "  withDb(async (em) => {", f"    // atteso: {tc.expected}"]
+              "  withDb(async (em, ds) => {", f"    // atteso: {tc.expected}"]
         k = tc.kind
         b = f"build{n}"
         if k == "create_valid":
@@ -337,6 +342,36 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
                 for cn, g in cols:
                     op = "=== 0" if g == "on_create" else ">= 0"
                     o.append(f'    assert.ok(cmp(after?.{_a(cn)}, before?.{_a(cn)}, "datetime") {op}, "{cn}");')
+        elif k == "tenant_required":
+            o += [f"    assert.throws(() => new {repo}(ds.createEntityManager()), (e: unknown) => e instanceof TenantError);"]
+        elif k == "tenant_isolation":
+            o += [f"    const e = await {b}(em);", f"    const repo = new {repo}(em);"]
+            kids = [r for r in t.relations if r.kind == "one_to_many" and tables[r.target].tenancy == "column"]
+            for r in kids:
+                o.append(f"    await build{r.target}(em, {{ {_a(r.foreign_key)}: e.{pk} }});")
+            o += ["    bindTenant(em, TENANT_B);", f"    assert.equal(await repo.getById(e.{pk}), null);",
+                  f"    assert.equal(await repo.exists(e.{pk}), false);", "    assert.equal(await repo.count(), 0);",
+                  f"    assert.ok(!(await repo.listPage()).items.some((x) => x.{pk} === e.{pk}));",
+                  f"    assert.equal(await repo.update(e.{pk}, {{}}), null);", f"    assert.equal(await repo.delete(e.{pk}), false);"]
+            for c in t.columns:
+                if c.unique and not c.primary_key:
+                    o.append(f"    assert.equal(await repo.{method_name(L, 'find_by:' + c.name)}(e.{_a(c.name)} as never), null);")
+            for r in kids:
+                o.append(f"    assert.deepEqual((await repo.{method_name(L, 'list_rel:' + r.name)}(e.{pk})).items, []);")
+            o += ["    bindTenant(em, TENANT_A);", f"    assert.ok(await repo.getById(e.{pk}));"]
+        elif k == "tenant_assign":
+            tm = _a(next(c for c in t.columns if c.tenant).name)
+            o += [f"    const e = await {b}(em);", f"    assert.equal(e.{tm}, TENANT_A);",
+                  f'    await assert.rejects({b}(em, {{ {tm}: TENANT_B }}), invalid("TenantId"));']
+        elif k == "tenant_unique":
+            a = _a(tc.args["column"])
+            o += [f"    const e = await {b}(em);", "    bindTenant(em, TENANT_B);", f"    const other = await {b}(em, {{ {a}: e.{a} }});",
+                  f"    assert.ok(other.{a} === e.{a} && other.{pk} !== e.{pk});"]
+        elif k == "tenant_parent":
+            r = next(x for x in t.relations if x.name == tc.args["relation"])
+            o += ["    bindTenant(em, TENANT_B);", f"    const parent = await build{r.target}(em);", "    bindTenant(em, TENANT_A);",
+                  f"    await assert.rejects({b}(em, {{ {_a(r.foreign_key)}: parent.{_a(tables[r.target].pk.name)} }}),",
+                  f'      (err: unknown) => err instanceof ModelValidationError && err.fields["{r.foreign_key}"] === "non trovato");']
         elif k == "optional_null":
             a = _a(tc.args["column"])
             o += [f"    const e = await {b}(em, {{ {a}: null }});",
@@ -413,6 +448,9 @@ def _drop_unused_repos(lines: List[str], classes: List[str]) -> str:
 
 def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
     first = next(iter(tables.values()))
+    bad = "non-un-uuid" if cat.tenant_id_type == "uuid" else "x" * 65
+    extra_names = [] if cat.tenant_id_type == "uuid" else [
+        '    assert.equal(tenantKey("Tenant-A"), "tenant_a");', '    assert.throws(() => tenantKey("nome non valido"), TenantError);']
     n, repo = first.name, repo_class(L, first.name)
     spec = f"PAGING_{snake(n).upper()}"
     pkj = member(L, first.pk.name)
@@ -456,21 +494,41 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
                                  '    assert.equal(await runInTransaction(fake, async () => 1, { isolation: "serializable" }), 1);',
                                  '    await runInTransaction(fake, async () => 2, { isolation: "serializable", levels: { serializable: null } });',
                                  '    assert.deepEqual(seen, ["SERIALIZABLE", null]);'],
-        "rt_commit": [f"    const e = await runInTransaction(ds, (tx) => build{n}(tx), {{ ...LEVELS_SQLITE, tables: [\"{n}\"] }});",
+        "rt_tenant_bind": ["    const fresh = ds.createEntityManager();", "    assert.throws(() => tenantOf(fresh), TenantError);",
+                           "    bindTenant(fresh, TENANT_A);", "    assert.equal(tenantOf(fresh), TENANT_A);",
+                           "    bindTenant(fresh, TENANT_B.toUpperCase());" if cat.tenant_id_type == "uuid" else "    bindTenant(fresh, TENANT_B);",
+                           "    assert.equal(tenantOf(fresh), TENANT_B);", "    bindTenant(fresh, null);",
+                           "    assert.throws(() => tenantOf(fresh), TenantError);",
+                           f"    assert.throws(() => bindTenant(fresh, {json.dumps(bad)}), TenantError);",
+                           "    assert.throws(() => coerceTenant(undefined), TenantError);"],
+        "rt_tenant_names": ["    const key = tenantKey(TENANT_A);", '    assert.equal(key, TENANT_A.toLowerCase().replace(/-/g, "_"));',
+                            '    assert.equal(schemaFor(TENANT_A), "tenant_" + key);',
+                            '    assert.equal(searchPathFor(TENANT_A), `"tenant_${key}", public`);',
+                            '    assert.equal(databaseUrlFor("postgresql://h/app_{tenant}", TENANT_A), "postgresql://h/app_" + key);',
+                            '    assert.throws(() => databaseUrlFor("postgresql://h/app", TENANT_A), TenantError);'] + extra_names,
+        "rt_tenant_uow": ["    assert.equal(await runInTransaction(ds, async (tx) => tenantOf(tx), { ...LEVELS_SQLITE, tenant: TENANT_A }), TENANT_A);",
+                          "    const pg = await runInTransaction(ds, async (tx) => tx.connection.options.type !== \"postgres\" ||",
+                          "      (await tx.query(\"select current_setting('app.tenant_id', true) as t\"))[0].t === TENANT_A, { ...LEVELS_SQLITE, tenant: TENANT_A });",
+                          "    assert.ok(pg);",
+                          "    // su PostgreSQL app.tenant_id: verificato anche con un EntityManager finto, qualunque sia il database dei test",
+                          "    const calls: unknown[] = [];",
+                          "    const fake = { connection: { options: { type: \"postgres\" } }, query: async (_sql: string, params: unknown[]) => { calls.push(params); } } as unknown as EntityManager;",
+                          "    bindTenant(fake, TENANT_A);", "    await applyTenantSetting(fake);", "    assert.deepEqual(calls, [[TENANT_A]]);"],
+        "rt_commit": [f"    const e = await runInTransaction(ds, (tx) => build{n}(tx), {{ ...LEVELS_SQLITE, tenant: TENANT_A, tables: [\"{n}\"] }});",
                       f"    assert.ok(await new {repo}(em).getById(e.{member(L, first.pk.name)}));",
-                      f"    const f = await runInTransaction(ds, (tx) => build{n}(tx), {{ ...LEVELS_SQLITE, isolation: \"serializable\" }});",
+                      f"    const f = await runInTransaction(ds, (tx) => build{n}(tx), {{ ...LEVELS_SQLITE, tenant: TENANT_A, isolation: \"serializable\" }});",
                       f"    assert.ok(await new {repo}(em).getById(f.{member(L, first.pk.name)}));"],
-        "rt_rollback": [f"    await assert.rejects(runInTransaction(ds, async (tx) => {{ await build{n}(tx); throw new Error(\"errore applicativo\"); }}, LEVELS_SQLITE), /errore applicativo/);",
+        "rt_rollback": [f"    await assert.rejects(runInTransaction(ds, async (tx) => {{ await build{n}(tx); throw new Error(\"errore applicativo\"); }}, {{ ...LEVELS_SQLITE, tenant: TENANT_A }}), /errore applicativo/);",
                         f"    assert.equal(await new {repo}(em).count(), 0);"],
         "rt_retry": ["    let calls = 0;", "    const res = await runInTransaction(ds, async (tx) => {", "      calls++;", f"      await build{n}(tx);",
                      '      if (calls < 3) throw Object.assign(new Error("serialization failure"), { code: "40001" });', "      return calls;",
-                     f'    }}, {{ ...LEVELS_SQLITE, tables: ["{n}"], backoffMs: 0 }});', "    assert.equal(res, 3);",
+                     f'    }}, {{ ...LEVELS_SQLITE, tenant: TENANT_A, tables: ["{n}"], backoffMs: 0 }});', "    assert.equal(res, 3);",
                      f"    assert.equal(await new {repo}(em).count(), 1);"],
         "rt_retry_limit": ["    let calls = 0;", "    await assert.rejects(runInTransaction(ds, async () => {", "      calls++;",
                            '      throw Object.assign(new Error("deadlock"), { driverError: { code: "40P01" } });',
-                           "    }, { ...LEVELS_SQLITE, maxRetries: 2, backoffMs: 0 }), /deadlock/);", "    assert.equal(calls, 3);"],
+                           "    }, { ...LEVELS_SQLITE, tenant: TENANT_A, maxRetries: 2, backoffMs: 0 }), /deadlock/);", "    assert.equal(calls, 3);"],
         "rt_retry_other": ["    let calls = 0;", "    await assert.rejects(runInTransaction(ds, async () => {", "      calls++;",
-                           '      throw Object.assign(new Error("duplicato"), { code: "23505" });', "    }, { ...LEVELS_SQLITE, backoffMs: 0 }), /duplicato/);",
+                           '      throw Object.assign(new Error("duplicato"), { code: "23505" });', "    }, { ...LEVELS_SQLITE, tenant: TENANT_A, backoffMs: 0 }), /duplicato/);",
                            "    assert.equal(calls, 1);"],
     }
     o = [header(L, "kit") + HEAD_LINT + "// Test di unità generati per i moduli comuni: paginazione (_paging) e Unit of Work (_uow).",
@@ -482,7 +540,8 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
          'import * as API from "../../src/model/generated";',
          *[f'import * as M_{x} from "../../src/model/{x}";' for x in tables],
          'import { ISOLATION, isolationFor, runInTransaction } from "../../src/model/generated/_uow";',
-         f'import {{ {repo} }} from "../../src/model/{n}";', 'import { withDb } from "./_db";', f'import {{ build{n} }} from "./kybes_builders";', "",
+         'import { TenantError, applyTenantSetting, bindTenant, coerceTenant, databaseUrlFor, schemaFor, searchPathFor, tenantKey, tenantOf } from "../../src/model/generated/_tenant";',
+         f'import {{ {repo} }} from "../../src/model/{n}";', 'import { withDb } from "./_db";', f'import {{ build{n}, TENANT_A, TENANT_B }} from "./kybes_builders";', "",
          "const invalid = (field: string) => (e: unknown) => e instanceof ModelValidationError && field in e.fields;",
          "// livelli dei test: SQLite non distingue i livelli, PostgreSQL li applica",
          'const LEVELS_SQLITE = process.env.KYBES_TEST_DATABASE_URL ? {} : { levels: { read_committed: null, repeatable_read: null, serializable: null } };',
@@ -496,7 +555,7 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
          "function rawCursor(order: OrderItem[], values: unknown[]): string {",
          '  const s = order.map((o) => (o.desc ? "-" : "") + o.json).join(",");',
          '  return Buffer.from(JSON.stringify({ s, v: values }), "utf8").toString("base64url");', "}",
-         f"void [{n}];"]
+         f"void [{n}, TENANT_B];"]
     for tc in cat.for_table("_runtime"):
         o += ["", f"test({json.dumps(tc.id + ' · ' + ', '.join(tc.reqs) + ' · ' + METHODS[tc.method] + ': ' + tc.title)}, () =>",
               "  withDb(async (em, ds) => {", "    void em; void ds;"] + bodies[tc.kind] + ["  }));"]
@@ -504,6 +563,7 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
 
 
 def emit(cat: Catalog, tables: Dict[str, Table], default_asil: str, dialect: str = "postgres") -> Dict[str, str]:
+    _ID_TYPE[0] = cat.tenant_id_type
     first = next(iter(tables))
     files = {"generated/_db.ts": db_file(dialect, first), "generated/kybes_builders.ts": builders_file(tables)}
     for n, t in tables.items():

@@ -120,17 +120,30 @@ def isolation_levels(engine):
 
 @pytest.fixture
 def session(engine):
+    """Sessione legata al tenant di prova A (le tabelle multi-tenant lo richiedono)."""
+    from model.generated import bind_tenant
+    from kybes_builders import TENANT_A
     with Session(engine) as s:
+        bind_tenant(s, TENANT_A)
         yield s
         s.rollback()
 '''
+
+
+_ID_TYPE = ["uuid"]
+
+
+def _tenant_value(id_type: str, which: str) -> str:
+    return f"uuid.UUID('00000000-0000-4000-8000-00000000000{which}')" if id_type == "uuid" else f"'tenant-{which}'"
 
 
 def builders_file(tables: Dict[str, Table]) -> str:
     _TABLES.clear()
     _TABLES.update(tables)
     o = [header(L, "kit") + "# ruff: noqa", '"""Costruttori di dati validi per i test generati: un record per chiamata, valori deterministici."""',
-         "import itertools", "import uuid", "from datetime import date, datetime, timedelta, timezone", "from decimal import Decimal", ""]
+         "import itertools", "import uuid", "from datetime import date, datetime, timedelta, timezone", "from decimal import Decimal", "",
+         "# tenant di prova: la fixture session è legata a TENANT_A",
+         f"TENANT_A = {_tenant_value(_ID_TYPE[0], 'a')}", f"TENANT_B = {_tenant_value(_ID_TYPE[0], 'b')}", ""]
     for n in tables:
         o.append(f"from model.{n} import {n}, {repo_class(L, n)}")
     o += ["", "_seq = itertools.count(1)", "", "",
@@ -162,7 +175,7 @@ def builders_file(tables: Dict[str, Table]) -> str:
     for n, t in tables.items():
         o += ["", f"def build_{snake(n)}(session, **over):", f'    """Inserisce un {n} valido; over sostituisce i valori."""', "    data = {}"]
         for c in t.columns:
-            if (c.primary_key and c.auto) or c.generated or c.default is not None:
+            if (c.primary_key and c.auto) or c.generated or c.default is not None or c.tenant:
                 continue
             a = _attr(c.name)
             rel = next((r for r in t.relations if r.kind == "many_to_one" and r.foreign_key == c.name), None)
@@ -295,15 +308,15 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
          "", f"Specifica e tracciabilità: docs/generated/verification/{n}.md. I test dei metodi custom vanno in tests/custom/.", '"""',
          "import uuid", "from datetime import date, datetime, timedelta, timezone", "from decimal import Decimal", "",
          "import pytest", "from sqlalchemy.exc import IntegrityError", "",
-         "from model.generated import ModelValidationError, PageRequest"]
+         "from model.generated import ModelValidationError, PageRequest, TenantError, bind_tenant"]
     others = sorted({r.target for r in t.relations} | {n})
     for o_n in others:
         o.append(f"from model.{o_n} import {o_n}, {repo_class(L, o_n)}")
     o.append("from kybes_builders import (build_" + ", build_".join(snake(x) for x in others) +
-             ", different, greater, next_n, smaller, text_value)")
+             ", different, greater, next_n, smaller, text_value, TENANT_A, TENANT_B)")
     compare = [_attr(c.name) for c in t.columns if c.type not in ("datetime",) and not c.generated]
     for tc in tcs:
-        o += ["", "", f"def test_{tc.slug}(session):",
+        o += ["", "", f"def test_{tc.slug}(session, session_factory):",
               f'    r"""{tc.id} · {", ".join(tc.reqs)} · {METHODS[tc.method]}: {tc.title}. Atteso: {tc.expected}."""']
         k = tc.kind
         if k == "create_valid":
@@ -389,6 +402,37 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
                 o += [f"    {repo}(session).update(e.{pk}, {{'{_attr(upd)}': {_py_new(t, upd)}}})", "    session.flush()"]
                 for cn, g in cols:
                     o.append(f"    assert e.{_attr(cn)} {'==' if g == 'on_create' else '>='} before['{cn}']")
+        elif k == "tenant_required":
+            o += ["    with session_factory() as unbound:", "        with pytest.raises(TenantError):", f"            {repo}(unbound)"]
+        elif k == "tenant_isolation":
+            o += [f"    e = build_{snake(n)}(session)", f"    repo = {repo}(session)"]
+            kids = [r for r in t.relations if r.kind == "one_to_many" and tables[r.target].tenancy == "column"]
+            for r in kids:
+                o.append(f"    build_{snake(r.target)}(session, {_attr(r.foreign_key)}=e.{pk})")
+            o += ["    bind_tenant(session, TENANT_B)", f"    assert repo.get_by_id(e.{pk}) is None", f"    assert not repo.exists(e.{pk})",
+                  "    assert repo.count() == 0", f"    assert e.{pk} not in [x.{pk} for x in repo.list_page().items]",
+                  f"    assert repo.update(e.{pk}, {{}}) is None", f"    assert repo.delete(e.{pk}) is False"]
+            for c in t.columns:
+                if c.unique and not c.primary_key:
+                    o.append(f"    assert repo.{method_name(L, 'find_by:' + c.name)}(e.{_attr(c.name)}) is None")
+            for r in kids:
+                o.append(f"    assert repo.{method_name(L, 'list_rel:' + r.name)}(e.{pk}).items == []")
+            o += ["    bind_tenant(session, TENANT_A)", f"    assert repo.get_by_id(e.{pk}) is e"]
+        elif k == "tenant_assign":
+            tm = _attr(next(c for c in t.columns if c.tenant).name)
+            o += [f"    e = build_{snake(n)}(session)", f"    assert e.{tm} == TENANT_A",
+                  "    with pytest.raises(ModelValidationError) as err:", f"        build_{snake(n)}(session, {tm}=TENANT_B)",
+                  "    assert 'TenantId' in err.value.fields"]
+        elif k == "tenant_unique":
+            a = _attr(tc.args["column"])
+            o += [f"    e = build_{snake(n)}(session)", "    bind_tenant(session, TENANT_B)",
+                  f"    other = build_{snake(n)}(session, {a}=e.{a})", f"    assert other.{a} == e.{a} and other.{pk} != e.{pk}"]
+        elif k == "tenant_parent":
+            r = next(x for x in t.relations if x.name == tc.args["relation"])
+            o += ["    bind_tenant(session, TENANT_B)", f"    parent = build_{snake(r.target)}(session)", "    bind_tenant(session, TENANT_A)",
+                  "    with pytest.raises(ModelValidationError) as err:",
+                  f"        build_{snake(n)}(session, {_attr(r.foreign_key)}=parent.{_attr(tables[r.target].pk.name)})",
+                  f"    assert err.value.fields.get('{r.foreign_key}') == 'non trovato'"]
         elif k == "optional_null":
             a = _attr(tc.args["column"])
             o += [f"    e = build_{snake(n)}(session, {a}=None)", "    session.expire_all()",
@@ -441,6 +485,9 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
 
 def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
     first = next(iter(tables.values()))
+    bad = "non-un-uuid" if cat.tenant_id_type == "uuid" else "x" * 65
+    extra_names = [] if cat.tenant_id_type == "uuid" else [
+        "    assert tenant_key('Tenant-A') == 'tenant_a'", "    with pytest.raises(TenantError):", "        tenant_key('nome non valido')"]
     n, repo = first.name, repo_class(L, first.name)
     spec = f"PAGING_{snake(n).upper()}"
     names = list(tables)
@@ -490,26 +537,50 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
                                  "    assert run_in_transaction(FakeSession, lambda s: 1, isolation='serializable') == 1",
                                  "    run_in_transaction(FakeSession, lambda s: 2, isolation='serializable', levels={'serializable': None})",
                                  "    assert calls == ['SERIALIZABLE']"],
-        "rt_commit": [f"    key = run_in_transaction(session_factory, lambda s: build_{snake(n)}(s).{_attr(first.pk.name)}, tables=['{n}'], levels=isolation_levels)",
+        "rt_tenant_bind": ["    with session_factory() as s:", "        with pytest.raises(TenantError):", "            tenant_of(s)",
+                           "        bind_tenant(s, TENANT_A)", "        assert tenant_of(s) == TENANT_A",
+                           "        bind_tenant(s, str(TENANT_B))", "        assert tenant_of(s) == TENANT_B",
+                           "        bind_tenant(s, None)", "        with pytest.raises(TenantError):", "            tenant_of(s)",
+                           "        with pytest.raises(TenantError):", f"            bind_tenant(s, {bad!r})",
+                           "        with pytest.raises(TenantError):", "            coerce_tenant(None)"],
+        "rt_tenant_names": ["    key = tenant_key(TENANT_A)", "    assert key == str(TENANT_A).lower().replace('-', '_')",
+                            "    assert schema_for(TENANT_A) == 'tenant_' + key",
+                            "    assert search_path_for(TENANT_A) == '\"tenant_' + key + '\", public'",
+                            "    assert database_url_for('postgresql://h/app_{tenant}', TENANT_A) == 'postgresql://h/app_' + key",
+                            "    with pytest.raises(TenantError):", "        database_url_for('postgresql://h/app', TENANT_A)"] + extra_names,
+        "rt_tenant_uow": ["    got = run_in_transaction(session_factory, tenant_of, tenant=TENANT_A, levels=isolation_levels)",
+                          "    assert got == TENANT_A",
+                          "    pg = run_in_transaction(session_factory, lambda s: s.get_bind().dialect.name != 'postgresql' or",
+                          "                            s.scalar(text(\"select current_setting('app.tenant_id', true)\")) == str(TENANT_A),",
+                          "                            tenant=TENANT_A, levels=isolation_levels)",
+                          "    assert pg",
+                          "    # su PostgreSQL app.tenant_id: verificato anche con una sessione finta, qualunque sia il database dei test",
+                          "    calls = []", "", "    class Dialect:", "        name = 'postgresql'", "",
+                          "    class Bind:", "        dialect = Dialect()", "",
+                          "    class FakePg:", "        info = {}", "", "        def get_bind(self):", "            return Bind()", "",
+                          "        def execute(self, stmt, params):", "            calls.append(params)", "",
+                          "    fake = FakePg()", "    bind_tenant(fake, TENANT_A)", "    apply_tenant_setting(fake)",
+                          "    assert calls == [{'tenant': str(TENANT_A)}]"],
+        "rt_commit": [f"    key = run_in_transaction(session_factory, lambda s: build_{snake(n)}(s).{_attr(first.pk.name)}, tables=['{n}'], levels=isolation_levels, tenant=TENANT_A)",
                       f"    assert {repo}(session).get_by_id(key) is not None",
-                      f"    key = run_in_transaction(session_factory, lambda s: build_{snake(n)}(s).{_attr(first.pk.name)}, isolation='serializable', levels=isolation_levels)",
+                      f"    key = run_in_transaction(session_factory, lambda s: build_{snake(n)}(s).{_attr(first.pk.name)}, isolation='serializable', levels=isolation_levels, tenant=TENANT_A)",
                       f"    assert {repo}(session).get_by_id(key) is not None"],
         "rt_rollback": ["    def work(s):", f"        build_{snake(n)}(s)", "        raise RuntimeError('errore applicativo')",
-                        "    with pytest.raises(RuntimeError):", f"        run_in_transaction(session_factory, work, tables=['{n}'], levels=isolation_levels)",
+                        "    with pytest.raises(RuntimeError):", f"        run_in_transaction(session_factory, work, tables=['{n}'], levels=isolation_levels, tenant=TENANT_A)",
                         f"    assert {repo}(session).count() == 0",
-                        "    with pytest.raises(RuntimeError):", f"        with transaction(session_factory, ['{n}'], levels=isolation_levels) as s:",
+                        "    with pytest.raises(RuntimeError):", f"        with transaction(session_factory, ['{n}'], levels=isolation_levels, tenant=TENANT_A) as s:",
                         f"            build_{snake(n)}(s)", "            raise RuntimeError('errore applicativo')",
                         f"    assert {repo}(session).count() == 0"],
         "rt_retry": ["    calls = []", "    def work(s):", "        calls.append(1)", f"        build_{snake(n)}(s)",
                      "        if len(calls) < 3:", "            raise Conflict('40001')", "        return len(calls)",
-                     f"    assert run_in_transaction(session_factory, work, tables=['{n}'], levels=isolation_levels, backoff_s=0) == 3",
+                     f"    assert run_in_transaction(session_factory, work, tables=['{n}'], levels=isolation_levels, tenant=TENANT_A, backoff_s=0) == 3",
                      f"    assert {repo}(session).count() == 1"],
         "rt_retry_limit": ["    calls = []", "    def work(s):", "        calls.append(1)", "        raise Wrapped(Conflict('40P01'))",
                            "    with pytest.raises(Wrapped):",
-                           "        run_in_transaction(session_factory, work, levels=isolation_levels, max_retries=2, backoff_s=0)",
+                           "        run_in_transaction(session_factory, work, levels=isolation_levels, tenant=TENANT_A, max_retries=2, backoff_s=0)",
                            "    assert len(calls) == 3"],
         "rt_retry_other": ["    calls = []", "    def work(s):", "        calls.append(1)", "        raise Conflict('23505')",
-                           "    with pytest.raises(Conflict):", "        run_in_transaction(session_factory, work, levels=isolation_levels, backoff_s=0)",
+                           "    with pytest.raises(Conflict):", "        run_in_transaction(session_factory, work, levels=isolation_levels, tenant=TENANT_A, backoff_s=0)",
                            "    assert len(calls) == 1"],
     }
     o = [header(L, "kit") + "# ruff: noqa", '"""Test di unità generati per i moduli comuni: paginazione (_paging) e Unit of Work (_uow)."""',
@@ -518,7 +589,10 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
          "from model.generated import ModelValidationError, PageRequest",
          "from model.generated._paging import PagingSpec, decode_cursor, encode_cursor, like_prefix, resolve_order, run_page",
          "from model.generated._uow import ISOLATION, isolation_for, run_in_transaction, transaction",
-         f"from model.generated.{n} import {n}, {spec}", f"from model.{n} import {repo}", f"from kybes_builders import build_{snake(n)}", "",
+         "from model.generated._tenant import (KEY, TenantError, apply_tenant_setting, bind_tenant, coerce_tenant, database_url_for,",
+         "                                     schema_for, search_path_for, tenant_key, tenant_of)",
+         "from sqlalchemy import text",
+         f"from model.generated.{n} import {n}, {spec}", f"from model.{n} import {repo}", f"from kybes_builders import build_{snake(n)}, TENANT_A, TENANT_B", "",
          "ALL = [('numero', 'numero', 'string', False), ('quantita', 'quantita', 'int', False), ('grande', 'grande', 'bigint', False),",
          "       ('prezzo', 'prezzo', 'decimal', True), ('giorno', 'giorno', 'date', False), ('istante', 'istante', 'datetime', True),",
          "       ('id', 'id', 'uuid', False)]",
@@ -544,6 +618,7 @@ CUSTOM_ONCE = {"custom/conftest.py": custom_conftest_file}
 
 def emit(cat: Catalog, tables: Dict[str, Table], default_asil: str) -> Dict[str, str]:
     """File relativi alla cartella dei test del pacchetto Python (es. libs/db-models/python/tests)."""
+    _ID_TYPE[0] = cat.tenant_id_type
     files = {"generated/conftest.py": conftest_file(), "generated/kybes_fixtures.py": fixtures_file(),
              "generated/kybes_builders.py": builders_file(tables)}
     for n, t in tables.items():

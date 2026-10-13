@@ -1,5 +1,6 @@
 table: Prodotti
 description: Catalogo prodotti
+tenancy: none                   # catalogo condiviso da tutte le Organization
 columns:
   - name: Id
     type: int

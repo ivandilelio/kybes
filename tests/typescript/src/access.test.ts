@@ -2,13 +2,14 @@
 import "reflect-metadata";
 import assert from "node:assert/strict";
 import { DataSource } from "typeorm";
-import { ENTITIES, ModelValidationError, runInTransaction, isolationFor } from "./model/generated";
+import { ENTITIES, ModelValidationError, bindTenant, runInTransaction, isolationFor } from "./model/generated";
 import type { PageRequest } from "./model/generated";
 import { ClientiRepository } from "./model/Clienti";
 import { Ordini, OrdiniRepository } from "./model/Ordini";
 import { ProdottiRepository } from "./model/Prodotti";
 
-const SQLITE = { levels: { read_committed: null, repeatable_read: null, serializable: null } };
+const TENANT = "00000000-0000-4000-8000-0000000000aa";
+const SQLITE = { levels: { read_committed: null, repeatable_read: null, serializable: null }, tenant: TENANT };
 
 async function invalid(p: Promise<unknown>, field: string) {
   await assert.rejects(p, (e: unknown) => e instanceof ModelValidationError && field in e.fields);
@@ -32,6 +33,7 @@ async function main() {
   await ds.initialize();
   await ds.query("PRAGMA foreign_keys = ON");
   const em = ds.manager;
+  bindTenant(em, TENANT);
   const cr = new ClientiRepository(em), orr = new OrdiniRepository(em), pr = new ProdottiRepository(em);
   const a = await cr.create({ ragioneSociale: "Alfa" });
   const b = await cr.create({ ragioneSociale: "Beta", attivo: false });

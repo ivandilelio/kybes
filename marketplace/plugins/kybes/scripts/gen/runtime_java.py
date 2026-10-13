@@ -378,9 +378,17 @@ public final class UnitOfWork {{
         return run(emf, work, tables, null, 3, 50);
     }}
 
-    /** Esegue work in una transazione; la ripete da capo sui conflitti di serializzazione e sui deadlock. */
     public static <T> T run(EntityManagerFactory emf, Function<EntityManager, T> work, Collection<String> tables,
                             Isolation isolation, int maxRetries, long backoffMs) {{
+        return run(emf, work, tables, isolation, maxRetries, backoffMs, null);
+    }}
+
+    /**
+     * Esegue work in una transazione; la ripete da capo sui conflitti di serializzazione e sui deadlock.
+     * Con tenant, l'EntityManager della transazione è legato a quel tenant (su PostgreSQL anche app.tenant_id).
+     */
+    public static <T> T run(EntityManagerFactory emf, Function<EntityManager, T> work, Collection<String> tables,
+                            Isolation isolation, int maxRetries, long backoffMs, Object tenant) {{
         Isolation level = isolation != null ? isolation : isolationFor(tables == null ? List.of() : tables);
         for (int attempt = 0; ; attempt++) {{
             EntityManager em = emf.createEntityManager();
@@ -395,6 +403,10 @@ public final class UnitOfWork {{
                             st.execute("SET TRANSACTION ISOLATION LEVEL " + level.sql());
                         }}
                     }});
+                }}
+                if (tenant != null) {{
+                    Tenancy.bind(em, tenant);
+                    if (SET_ISOLATION) Tenancy.applySetting(em);
                 }}
                 T result = work.apply(em);
                 tx.commit();

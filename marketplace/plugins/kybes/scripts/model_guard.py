@@ -26,7 +26,7 @@ def tables(proj: Path, cfg: dict) -> Optional[Dict[str, Table]]:
     key = str(proj)
     if key not in _cache:
         try:
-            _cache[key] = load_schemas(proj / G.model_config(cfg)["schema_dir"])
+            _cache[key] = G.load_tables(proj, cfg)
         except SchemaError:
             _cache[key] = None
     return _cache[key]

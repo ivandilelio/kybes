@@ -18,7 +18,13 @@ RETURNS = {"page", "list", "one"}
 ISOLATION = {"read_committed", "repeatable_read", "serializable"}
 ISOLATION_RANK = {"read_committed": 0, "repeatable_read": 1, "serializable": 2}
 SORTABLE_TYPES = {"uuid", "string", "int", "bigint", "decimal", "date", "datetime"}
-RESERVED_KEYS = {"tenancy": 4, "archive": 5, "retention": 5, "storage": 6}
+RESERVED_KEYS = {"archive": 5, "retention": 5, "storage": 6}
+TENANCY = ("none", "column", "schema", "database")
+TENANT_COL = "TenantId"
+TENANT_ID_TYPES = ("uuid", "string")
+# relazioni ammesse (tabella figlia → tabella padre) per modalità di isolamento
+TENANCY_LINKS = {("none", "none"), ("column", "none"), ("column", "column"), ("schema", "none"), ("schema", "schema"),
+                 ("database", "database")}
 ASIL = ("QM", "A", "B", "C", "D")
 DEFAULT_LIMIT = 50
 DEFAULT_MAX_LIMIT = 100
@@ -57,6 +63,7 @@ class Column:
     generated: Optional[str] = None      # on_create | on_update (datetime)
     auto: bool = False                   # PK generata dal sistema
     description: str = ""
+    tenant: bool = False                 # colonna TenantId aggiunta dal generatore (tenancy: column)
 
     @property
     def nullable(self) -> bool:
@@ -117,6 +124,7 @@ class Table:
     pagination: Pagination = field(default_factory=Pagination)
     isolation: str = "read_committed"
     asil: Optional[str] = None           # None = livello predefinito della configurazione
+    tenancy: Optional[str] = None        # None = livello predefinito della configurazione
 
     @property
     def pk(self) -> Column:
@@ -151,7 +159,7 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
     if not isinstance(data, dict):
         return None, [f"{f}: il file deve contenere una mappa con 'table' e 'columns'"]
     allowed = {"table", "db_name", "description", "columns", "relations", "indexes", "queries", "pagination", "transactions",
-               "verification"}
+               "verification", "tenancy"}
     for k in data:
         if k in RESERVED_KEYS:
             errs.append(f"{f}: la chiave '{k}' è prevista nella fase {RESERVED_KEYS[k]} della roadmap e non è ancora supportata")
@@ -303,9 +311,16 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
         else:
             asil = str(ver["asil"])
 
+    tenancy = data.get("tenancy")
+    if tenancy is not None and tenancy not in TENANCY:
+        errs.append(f"{f}: tenancy ammette {', '.join(TENANCY)}")
+        tenancy = None
+    if any(c.name == TENANT_COL for c in cols):
+        errs.append(f"{f}: la colonna {TENANT_COL} è riservata: la aggiunge il generatore alle tabelle con tenancy: column")
+
     t = Table(name=name, db_name=data.get("db_name") or snake(name), description=str(data.get("description") or ""),
               columns=cols, relations=rels, indexes=idx, source=str(path), queries=queries,
-              pagination=pagination, isolation=isolation, asil=asil)
+              pagination=pagination, isolation=isolation, asil=asil, tenancy=tenancy)
     return t, errs
 
 
@@ -519,7 +534,40 @@ def _check_access(t: Table) -> List[str]:
     return errs
 
 
-def load_schemas(schema_dir: Path) -> Dict[str, Table]:
+def apply_tenancy(tables: Dict[str, Table], default: str = "none", id_type: str = "uuid") -> List[str]:
+    """Risolve la modalità di ogni tabella, aggiunge TenantId alle tabelle 'column', controlla le relazioni."""
+    errs: List[str] = []
+    if default not in TENANCY:
+        return [f"configurazione: model.tenancy.default ammette {', '.join(TENANCY)}"]
+    if id_type not in TENANT_ID_TYPES:
+        return [f"configurazione: model.tenancy.id_type ammette {', '.join(TENANT_ID_TYPES)}"]
+    for t in tables.values():
+        t.tenancy = t.tenancy or default
+        if t.tenancy == "column" and not any(c.tenant for c in t.columns):
+            col = Column(name=TENANT_COL, type=id_type, db_name="tenant_id", required=True,
+                         length=64 if id_type == "string" else None, tenant=True,
+                         description="Organization proprietaria del record (impostata dal contesto del tenant)")
+            pos = next(i for i, c in enumerate(t.columns) if c.primary_key) + 1
+            t.columns.insert(pos, col)
+    why = {"none": "i dati condivisi non possono dipendere da un tenant",
+           "column": "la tabella padre non sta nello stesso database e schema",
+           "schema": "la tabella padre non sta nello schema del tenant né tra i dati condivisi",
+           "database": "una tabella con database per tenant può riferirsi solo ad altre tabelle con database per tenant"}
+    for t in tables.values():
+        for r in t.relations:
+            if r.kind != "many_to_one" or r.target not in tables:
+                continue
+            pair = (t.tenancy, tables[r.target].tenancy)
+            if pair not in TENANCY_LINKS:
+                errs.append(f"{t.name}.relations.{r.name}: una tabella '{pair[0]}' non può riferirsi a {r.target} ('{pair[1]}'): {why[pair[0]]}")
+    return errs
+
+
+def tenant_column(t: Table) -> Optional[Column]:
+    return next((c for c in t.columns if c.tenant), None)
+
+
+def load_schemas(schema_dir: Path, tenancy_default: str = "none", tenant_id_type: str = "uuid") -> Dict[str, Table]:
     errs: List[str] = []
     tables: Dict[str, Table] = {}
     if not schema_dir.is_dir():
@@ -538,6 +586,8 @@ def load_schemas(schema_dir: Path) -> Dict[str, Table]:
             tables[t.name] = t
     if not errs:
         errs += _cross_check(tables)
+    if not errs:
+        errs += apply_tenancy(tables, tenancy_default, tenant_id_type)
     if errs:
         raise SchemaError(errs)
     return dict(sorted(tables.items()))
@@ -626,25 +676,29 @@ def _covers(index_cols: List[str], eq: List[str], rest: List[str]) -> bool:
 
 
 def access_paths(t: Table, tables: Dict[str, "Table"]) -> List[AccessPath]:
+    """Percorsi di accesso; con tenancy: column ogni percorso parte dal filtro sul tenant."""
     paths: List[AccessPath] = []
     pk = t.pk.name
+    tp = [TENANT_COL] if t.tenancy == "column" else []
 
     def order_cols(order):
         return [c for c, _ in order if c != pk]
 
     for c in t.columns:
         if c.unique and not c.primary_key:
-            paths.append(AccessPath("find_by", f"findBy {c.name}", [c.name]))
+            paths.append(AccessPath("find_by", f"findBy {c.name}", tp + [c.name]))
     default = order_cols(t.order())
     for r in t.relations:
         if r.kind == "many_to_one":
-            paths.append(AccessPath("list_by", f"listBy {r.foreign_key}", [r.foreign_key] + default))
+            paths.append(AccessPath("list_by", f"listBy {r.foreign_key}", tp + [r.foreign_key] + default))
     # i figli di una relazione one_to_many sono letti con la FK della tabella figlia: li copre listBy di quella tabella
     if default:
-        paths.append(AccessPath("sort", f"ordine predefinito ({', '.join(default)})", default))
+        paths.append(AccessPath("sort", f"ordine predefinito ({', '.join(default)})", tp + default))
+    elif tp:
+        paths.append(AccessPath("sort", "ordine predefinito (chiave, per tenant)", tp + [pk]))
     for cn in t.pagination.sortable:
         if [cn] != default[:1]:
-            paths.append(AccessPath("sort", f"ordinamento per {cn}", [cn]))
+            paths.append(AccessPath("sort", f"ordinamento per {cn}", tp + [cn]))
     for q in t.queries:
         eq = [c.column for c in q.where if c.op in ("eq", "is_null")]
         eq = list(dict.fromkeys(eq))
@@ -652,7 +706,7 @@ def access_paths(t: Table, tables: Dict[str, "Table"]) -> List[AccessPath]:
         ordc = order_cols(q.order_by) if q.order_by else (order_cols(t.order()) if q.returns != "one" else [])
         rest = ordc if ordc else rng[:1]
         rest = [c for c in rest if c not in eq]
-        paths.append(AccessPath("query", f"query {q.name}", eq + rest))
+        paths.append(AccessPath("query", f"query {q.name}", tp + eq + rest))
     return paths
 
 
@@ -680,19 +734,20 @@ def index_plan(t: Table, tables: Optional[Dict[str, "Table"]] = None) -> IndexPl
     def nm(prefix: str, cols: List[str]) -> str:
         return f"{prefix}_{t.db_name}_" + "_".join(t.col(c).db_name for c in cols)
 
+    tp = [TENANT_COL] if t.tenancy == "column" else []   # univocità e indici valgono per tenant
     for ix in t.indexes:
-        specs.append(IndexSpec(nm("ux" if ix.unique else "ix", ix.columns), list(ix.columns), ix.unique))
+        specs.append(IndexSpec(nm("ux" if ix.unique else "ix", tp + ix.columns), tp + list(ix.columns), ix.unique))
     for c in t.columns:
-        if c.unique and not c.primary_key and not any(s.columns == [c.name] for s in specs):
-            specs.append(IndexSpec(nm("ux", [c.name]), [c.name], True, "univoco"))
+        if c.unique and not c.primary_key and not any(s.columns == tp + [c.name] for s in specs):
+            specs.append(IndexSpec(nm("ux", tp + [c.name]), tp + [c.name], True, "univoco"))
     paths = access_paths(t, tables or {})
     for p in paths:
         if not p.ideal:
             continue
-        eq_n = 1 if p.kind == "list_by" else 0
+        eq_n = (1 if p.kind == "list_by" else 0) + len(tp)
         if p.kind == "query":
             q = next(q for q in t.queries if f"query {q.name}" == p.label)
-            eq_n = len(list(dict.fromkeys(c.column for c in q.where if c.op in ("eq", "is_null"))))
+            eq_n = len(tp) + len(list(dict.fromkeys(c.column for c in q.where if c.op in ("eq", "is_null"))))
         hit = next((s for s in specs if _covers(s.columns, p.ideal[:eq_n], p.ideal[eq_n:])), None)
         if hit is None and p.ideal == [t.pk.name]:
             continue
@@ -714,7 +769,7 @@ def index_plan(t: Table, tables: Optional[Dict[str, "Table"]] = None) -> IndexPl
         pref = [c.column for c in q.where if c.op == "prefix"]
         if not pref:
             continue
-        eq = list(dict.fromkeys(c.column for c in q.where if c.op in ("eq", "is_null")))
+        eq = tp + list(dict.fromkeys(c.column for c in q.where if c.op in ("eq", "is_null")))
         cols = eq + [pref[0]]
         name = f"px_{t.db_name}_{snake(q.name)}"
         specs.append(IndexSpec(name, cols, False, "prefisso", pattern=[pref[0]], ddl_only=True))

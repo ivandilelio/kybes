@@ -1,6 +1,7 @@
 # Schema della tabella Clienti: sorgente di verità per model, JSON Schema e MODEL_INDEX.md.
 table: Clienti
 description: Anagrafica clienti
+tenancy: column                 # dati di ogni Organization: colonna TenantId, filtro in ogni metodo
 columns:
   - name: Id
     type: uuid
