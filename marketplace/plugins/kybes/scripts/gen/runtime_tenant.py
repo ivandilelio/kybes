@@ -276,6 +276,8 @@ public final class Tenancy {{
 # ------------------------------------------------------------------------------------------- C#
 
 def csharp_file(ns: str, id_type: str) -> str:
+    # con id uuid il nome è sempre valido: niente espressione regolare (non sarebbe mai usata)
+    name_field = "" if id_type == "uuid" else '    private static readonly Regex Name = new("^[a-z0-9_]{1,48}$", RegexOptions.CultureInvariant);\n\n'
     key_cs = ("        return Coerce(tenant).ToString()!.Replace('-', '_'); // un UUID è sempre un nome valido\n" if id_type == "uuid" else
               "        var key = Convert.ToString(Coerce(tenant), CultureInfo.InvariantCulture)!.ToLowerInvariant().Replace('-', '_');\n"
               '        if (!Name.IsMatch(key)) throw new TenantException("tenant non utilizzabile come nome di schema o database");\n'
@@ -310,9 +312,7 @@ public sealed class TenantException : Exception
 /// </summary>
 public static class Tenancy
 {{
-    private static readonly Regex Name = new("^[a-z0-9_]{{1,48}}$", RegexOptions.CultureInvariant);
-
-    /// <summary>Il tenant nel tipo della colonna TenantId ({id_type}).</summary>
+{name_field}    /// <summary>Il tenant nel tipo della colonna TenantId ({id_type}).</summary>
     public static {ct} Coerce(object? tenant)
     {{
         if (tenant is null) throw new TenantException("tenant mancante");
