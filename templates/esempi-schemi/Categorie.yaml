@@ -1,0 +1,26 @@
+table: Categorie
+description: Categorie di prodotto, ad albero
+columns:
+  - name: Id
+    type: int
+    primary_key: true
+  - name: Nome
+    type: string
+    length: 100
+    required: true
+  - name: PadreId
+    type: int
+relations:
+  - name: Padre
+    kind: many_to_one
+    target: Categorie
+    foreign_key: PadreId
+    on_delete: restrict
+  - name: Figlie
+    kind: one_to_many
+    target: Categorie
+    foreign_key: PadreId
+  - name: Prodotti
+    kind: one_to_many
+    target: Prodotti
+    foreign_key: CategoriaId

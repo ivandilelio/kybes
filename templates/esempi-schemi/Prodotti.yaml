@@ -1,0 +1,25 @@
+table: Prodotti
+description: Catalogo prodotti
+columns:
+  - name: Id
+    type: int
+    primary_key: true
+  - name: Codice
+    type: string
+    length: 30
+    required: true
+    unique: true
+  - name: Descrizione
+    type: string
+    length: 255
+    required: true
+  - name: CategoriaId
+    type: int
+  - name: Attributi
+    type: json
+relations:
+  - name: Categoria
+    kind: many_to_one
+    target: Categorie
+    foreign_key: CategoriaId
+    on_delete: set_null

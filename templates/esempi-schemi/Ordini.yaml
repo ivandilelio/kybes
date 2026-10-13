@@ -1,0 +1,38 @@
+table: Ordini
+description: Testata degli ordini
+columns:
+  - name: Id
+    type: uuid
+    primary_key: true
+  - name: Numero
+    type: string
+    length: 20
+    required: true
+    unique: true
+  - name: ClienteId
+    type: uuid
+    required: true
+  - name: Data
+    type: date
+    required: true
+  - name: Totale
+    type: decimal
+    precision: 14
+    scale: 2
+    required: true
+    default: 0
+  - name: Note
+    type: text
+  - name: CreatoIl
+    type: datetime
+    generated: on_create
+relations:
+  - name: Cliente
+    kind: many_to_one
+    target: Clienti
+    foreign_key: ClienteId
+    on_delete: restrict
+  - name: Righe
+    kind: one_to_many
+    target: RigheOrdine
+    foreign_key: OrdineId

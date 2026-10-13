@@ -1,0 +1,30 @@
+openapi: 3.0.3
+info:
+  title: Gestionale API
+  version: 0.1.0
+  description: Sorgente di verità per API Gateway, middleware di validazione e DB-Models.
+servers:
+  - url: https://api.example.com/v1
+components:
+  securitySchemes:
+    sso:
+      type: openIdConnect
+      openIdConnectUrl: https://login.microsoftonline.com/TENANT_ID/v2.0/.well-known/openid-configuration
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, correlationId]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            correlationId: { type: string }
+            fields:
+              type: object
+              additionalProperties: { type: string }
+security:
+  - sso: []
+paths: {}

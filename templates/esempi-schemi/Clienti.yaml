@@ -1,0 +1,35 @@
+# Schema della tabella Clienti: sorgente di verità per model, JSON Schema e MODEL_INDEX.md.
+table: Clienti
+description: Anagrafica clienti
+columns:
+  - name: Id
+    type: uuid
+    primary_key: true
+  - name: RagioneSociale
+    type: string
+    length: 200
+    required: true
+  - name: PartitaIva
+    type: string
+    length: 11
+    unique: true
+  - name: Email
+    type: string
+    length: 320
+  - name: Attivo
+    type: bool
+    required: true
+    default: true
+  - name: CreatoIl
+    type: datetime
+    generated: on_create
+  - name: ModificatoIl
+    type: datetime
+    generated: on_update
+relations:
+  - name: Ordini
+    kind: one_to_many
+    target: Ordini
+    foreign_key: ClienteId
+indexes:
+  - columns: [RagioneSociale]

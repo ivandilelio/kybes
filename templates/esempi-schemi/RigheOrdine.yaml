@@ -1,0 +1,33 @@
+table: RigheOrdine
+description: Righe degli ordini
+columns:
+  - name: Id
+    type: bigint
+    primary_key: true
+  - name: OrdineId
+    type: uuid
+    required: true
+  - name: ProdottoId
+    type: int
+    required: true
+  - name: Quantita
+    type: int
+    required: true
+  - name: PrezzoUnitario
+    type: decimal
+    precision: 12
+    scale: 4
+    required: true
+relations:
+  - name: Ordine
+    kind: many_to_one
+    target: Ordini
+    foreign_key: OrdineId
+    on_delete: cascade
+  - name: Prodotto
+    kind: many_to_one
+    target: Prodotti
+    foreign_key: ProdottoId
+indexes:
+  - columns: [OrdineId, ProdottoId]
+    unique: true

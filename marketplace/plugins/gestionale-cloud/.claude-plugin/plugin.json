@@ -1,0 +1,8 @@
+{
+  "name": "gestionale-cloud",
+  "version": "0.2.0",
+  "description": "Regole architetturali, agenti (architect, implementer, reviewer) e hook di controllo per generare gestionali cloud coerenti.",
+  "author": { "name": "Ivan Di Lelio", "email": "ivan.dilelio@metainnovation.it" },
+  "license": "UNLICENSED",
+  "keywords": ["architecture", "serverless", "kubernetes", "gestionale", "erp"]
+}

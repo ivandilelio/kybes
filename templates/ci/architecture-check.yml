@@ -1,0 +1,19 @@
+name: architecture-check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  arch-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Modello generato aggiornato (schemas/db → model, JSON Schema, MODEL_INDEX.md)
+        run: python3 -B tools/claude-gestionale/plugins/gestionale-cloud/scripts/gen/gen.py . --check
+      - name: Regole architetturali, struttura e duplicati
+        run: python3 -B tools/claude-gestionale/plugins/gestionale-cloud/scripts/arch_check.py . --strict
