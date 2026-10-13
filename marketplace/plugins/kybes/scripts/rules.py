@@ -27,7 +27,7 @@ DEFAULT_CONFIG = {
         "ignore": [
             "**/node_modules/**", "**/.venv/**", "**/venv/**", "**/dist/**",
             "**/build/**", "**/.git/**", "**/__pycache__/**", "**/*.lock",
-            "**/package-lock.json", "tools/kybes/**",
+            "**/package-lock.json", "tools/kybes/**", "**/bin/**", "**/obj/**", "**/target/**", "coverage/**",
         ],
         "protected": [".claude/kybes.config.json", "tools/kybes/**"],
     },

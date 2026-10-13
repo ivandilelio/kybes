@@ -87,6 +87,8 @@ from model.generated import Base  # noqa: E402
 @pytest.fixture
 def engine():
     url = os.environ.get("KYBES_TEST_DATABASE_URL", "sqlite://")
+    if url.startswith(("postgresql://", "postgres://")):  # stesso URL degli altri linguaggi: driver psycopg 3
+        url = "postgresql+psycopg://" + url.split("://", 1)[1]
     kwargs = {}
     if url.startswith("sqlite"):
         from sqlalchemy.pool import StaticPool

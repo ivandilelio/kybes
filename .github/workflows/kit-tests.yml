@@ -104,3 +104,35 @@ jobs:
       - name: Test xUnit generati e copertura (coverlet) entro le soglie ASIL
         working-directory: ${{ runner.temp }}/proj
         run: python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" csharp -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=csharp
+
+  generated-python-typescript:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kybes
+          POSTGRES_PASSWORD: kybes
+          POSTGRES_DB: kybes
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kybes" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      KYBES_TEST_DATABASE_URL: postgresql://kybes:kybes@localhost:5432/kybes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Progetto di prova (schemi di esempio, modello Python e TypeScript, dialetto postgres)
+        run: |
+          mkdir -p "$RUNNER_TEMP/proj" && cd "$RUNNER_TEMP/proj" && git init -q
+          "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --examples --no-plugin --model-langs python,typescript --ci none
+          pip install -e "libs/db-models/python[test,postgres]"
+          (cd libs/db-models/typescript && npm install --no-audit --no-fund)
+      - name: Test generati su PostgreSQL e copertura entro le soglie ASIL
+        working-directory: ${{ runner.temp }}/proj
+        run: python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" py-ts -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py .

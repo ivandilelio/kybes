@@ -8,23 +8,48 @@ on:
 jobs:
   arch-check:
     runs-on: ubuntu-latest
+    # PostgreSQL di test per i test generati (Java e C# lo richiedono; Python e TypeScript lo usano se KYBES_TEST_DATABASE_URL è impostato)
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kybes
+          POSTGRES_PASSWORD: kybes
+          POSTGRES_DB: kybes
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kybes" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Modello generato aggiornato (schemas/db → model, JSON Schema, MODEL_INDEX.md)
+      - name: Modello generato aggiornato (schemas/db → model, test, JSON Schema, MODEL_INDEX.md)
         run: python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --check
       - name: Regole architetturali, struttura e duplicati
         run: python3 -B tools/kybes/plugins/kybes/scripts/arch_check.py . --strict
       - uses: actions/setup-node@v4
+        if: hashFiles('libs/db-models/typescript/package.json') != ''
         with:
           node-version: "22"
+      - uses: actions/setup-java@v4
+        if: hashFiles('libs/db-models/java/pom.xml') != ''
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: libs/db-models/java/pom.xml
+      - uses: actions/setup-dotnet@v4
+        if: hashFiles('libs/db-models/csharp/tests/*.csproj') != ''
+        with:
+          dotnet-version: "8.0.x"
       - name: Dipendenze dei test del modello
         run: |
-          if [ -f libs/db-models/python/pyproject.toml ]; then pip install -e "libs/db-models/python[test]"; fi
+          if [ -f libs/db-models/python/pyproject.toml ]; then pip install -e "libs/db-models/python[test,postgres]"; fi
           if [ -f libs/db-models/typescript/package.json ]; then (cd libs/db-models/typescript && npm install --no-audit --no-fund); fi
-      - name: Test di unità del modello e copertura per ASIL (ISO 26262-6)
+      - name: Test di unità del modello e copertura per ASIL (ISO 26262-6), su PostgreSQL
+        env:
+          KYBES_TEST_DATABASE_URL: postgresql://kybes:kybes@localhost:5432/kybes
         run: python3 -B tools/kybes/plugins/kybes/scripts/verify.py .
       - name: Evidenze di verifica (report di copertura e specifiche dei test)
         if: always()
@@ -33,5 +58,6 @@ jobs:
           name: verification-evidence
           path: |
             coverage/*.cobertura.xml
+            coverage/*.jacoco.xml
             docs/generated/verification/
           if-no-files-found: ignore
