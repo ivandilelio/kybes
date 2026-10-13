@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="t d">
+  <title id="t">kybes — Know Your Backend</title>
+  <desc id="d">One YAML schema per table generates the same data-access files in C#, Python, TypeScript and Java, guarded by Claude Code hooks.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e1b4b"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="360" rx="24" fill="url(#bg)"/>
+  <g fill="none" stroke="#334155" stroke-width="1" opacity="0.6">
+    <path d="M0 300 H1200"/><path d="M0 60 H1200"/>
+  </g>
+
+  <!-- wordmark -->
+  <text x="64" y="132" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="88" font-weight="700" fill="#f8fafc" letter-spacing="-2">ky<tspan fill="url(#accent)">bes</tspan></text>
+  <text x="68" y="178" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="26" fill="#cbd5e1">Know Your Backend</text>
+  <text x="68" y="222" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="18" fill="#94a3b8">Structured, duplication-free backends</text>
+  <text x="68" y="248" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="18" fill="#94a3b8">generated with Claude Code,</text>
+  <text x="68" y="274" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="18" fill="#94a3b8">the same way in every project.</text>
+
+  <!-- schema card -->
+  <g transform="translate(560 70)">
+    <rect width="190" height="200" rx="14" fill="#111827" stroke="#38bdf8" stroke-width="2"/>
+    <text x="16" y="32" font-family="Consolas, Menlo, monospace" font-size="15" fill="#38bdf8">Clienti.yaml</text>
+    <g font-family="Consolas, Menlo, monospace" font-size="13" fill="#cbd5e1">
+      <text x="16" y="62">table: Clienti</text>
+      <text x="16" y="84">columns:</text>
+      <text x="28" y="106">- Id: uuid</text>
+      <text x="28" y="128">- RagioneSociale</text>
+      <text x="16" y="150">queries: …</text>
+      <text x="16" y="172">pagination: …</text>
+    </g>
+  </g>
+
+  <!-- arrows -->
+  <g stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)">
+    <path d="M760 110 C 820 110, 830 92, 880 92"/>
+    <path d="M760 150 C 820 150, 830 142, 880 142"/>
+    <path d="M760 190 C 820 190, 830 192, 880 192"/>
+    <path d="M760 230 C 820 230, 830 242, 880 242"/>
+  </g>
+
+  <!-- language chips -->
+  <g font-family="Consolas, Menlo, monospace" font-size="15">
+    <g transform="translate(888 72)"><rect width="250" height="40" rx="10" fill="#1f2937" stroke="#a78bfa"/><text x="14" y="26" fill="#e9d5ff">C#  model/Clienti.cs</text></g>
+    <g transform="translate(888 122)"><rect width="250" height="40" rx="10" fill="#1f2937" stroke="#a78bfa"/><text x="14" y="26" fill="#e9d5ff">Py  model/Clienti.py</text></g>
+    <g transform="translate(888 172)"><rect width="250" height="40" rx="10" fill="#1f2937" stroke="#a78bfa"/><text x="14" y="26" fill="#e9d5ff">TS  model/Clienti.ts</text></g>
+    <g transform="translate(888 222)"><rect width="250" height="40" rx="10" fill="#1f2937" stroke="#a78bfa"/><text x="14" y="26" fill="#e9d5ff">Java ClientiRepository</text></g>
+  </g>
+
+  <text x="68" y="330" font-family="Segoe UI, Helvetica, Arial, sans-serif" font-size="15" fill="#64748b">schema → generated CRUD, relations, queries, cursor pagination, indexes, transactions · guardrail hooks · CI</text>
+</svg>

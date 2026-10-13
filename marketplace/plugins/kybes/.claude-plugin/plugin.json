@@ -1,8 +1,27 @@
 {
   "name": "kybes",
   "version": "0.3.0",
-  "description": "Regole architetturali, agenti (architect, implementer, reviewer) e hook di controllo per generare gestionali cloud coerenti.",
-  "author": { "name": "Ivan Di Lelio", "email": "ivan.dilelio@metainnovation.it" },
+  "description": "Know Your Backend: predictable, duplication-free backends generated with Claude Code. Schema-driven data models in C#, Python, TypeScript and Java with queries, covering indexes, cursor pagination and transactions, plus guardrail hooks and agents.",
+  "author": {
+    "name": "Ivan Di Lelio",
+    "email": "ivan.dilelio@metainnovation.it",
+    "url": "https://www.metainnovation.it"
+  },
   "license": "UNLICENSED",
-  "keywords": ["architecture", "serverless", "kubernetes", "gestionale", "erp"]
+  "keywords": [
+    "backend",
+    "code-generation",
+    "architecture",
+    "mvc",
+    "orm",
+    "ef-core",
+    "sqlalchemy",
+    "typeorm",
+    "jpa",
+    "pagination",
+    "guardrails",
+    "hooks"
+  ],
+  "homepage": "https://github.com/ivandilelio/kybes",
+  "repository": "https://github.com/ivandilelio/kybes"
 }

@@ -49,6 +49,17 @@ La configurazione di un progetto sta in `.claude/kybes.config.json`. L'installer
 
 ## Installer
 
+Dal marketplace di Claude Code:
+
+```text
+/plugin marketplace add ivandilelio/kybes
+/plugin install kybes@kybes
+```
+
+Poi, nel progetto, chiedi a Claude di configurare kybes: la skill `kybes-init` esegue l'installer con le opzioni scelte.
+
+Dalla riga di comando, con il repository clonato:
+
 ```bash
 ./install.sh --target <repo> [opzioni]
 ```

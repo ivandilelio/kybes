@@ -52,8 +52,8 @@ Il subagent Plan integrato in Claude Code non legge `CLAUDE.md`. Per questo il p
 | Hook | `marketplace/plugins/kybes/hooks/hooks.json` | pre_write, post_edit, stop_gate |
 | Regole | `marketplace/plugins/kybes/scripts/rules.py`, `model_guard.py` | logica dei controlli, condivisa da hook e CI |
 | Generatore | `marketplace/plugins/kybes/scripts/gen/` | schema YAML → model nei quattro linguaggi |
-| Template | `templates/` | blocco CLAUDE.md, regole per cartella, scaffold, CI, schemi di esempio |
-| Installer | `install.sh` | installa il kit in un progetto, idempotente |
+| Template | `marketplace/plugins/kybes/templates/` | blocco CLAUDE.md, regole per cartella, scaffold, CI, schemi di esempio |
+| Installer | `marketplace/plugins/kybes/install.sh` (con `install.sh` in radice come scorciatoia) e skill `kybes-init` | installa il kit in un progetto, idempotente |
 
 Approfondimenti:
 - [generatore](generatore.md)

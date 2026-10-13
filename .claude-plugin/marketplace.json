@@ -1,0 +1,12 @@
+{
+  "name": "kybes",
+  "owner": { "name": "Ivan Di Lelio", "email": "ivan.dilelio@metainnovation.it" },
+  "description": "Know Your Backend: structured, duplication-free backend generation for Claude Code.",
+  "plugins": [
+    {
+      "name": "kybes",
+      "source": "./marketplace/plugins/kybes",
+      "description": "Generates and enforces a predictable Model/View/Controller backend structure: schema-driven data models in C#, Python, TypeScript and Java, cursor pagination, indexes, transactions, and guardrail hooks."
+    }
+  ]
+}

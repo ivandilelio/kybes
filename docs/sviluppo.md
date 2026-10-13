@@ -4,14 +4,15 @@
 
 | Percorso | Contenuto |
 |---|---|
-| `install.sh` | installer da usare sui progetti |
+| `.claude-plugin/marketplace.json` | marketplace pubblico: `/plugin marketplace add ivandilelio/kybes` |
+| `install.sh` | scorciatoia per l'installer del plugin |
 | `marketplace/` | marketplace di Claude Code; viene copiato nei progetti come `tools/kybes/` |
 | `marketplace/plugins/kybes/skills/` | skill `kybes-architecture` |
 | `marketplace/plugins/kybes/agents/` | agenti architect, implementer, reviewer |
 | `marketplace/plugins/kybes/hooks/hooks.json` | registrazione degli hook |
 | `marketplace/plugins/kybes/scripts/` | hook, regole (`rules.py`, `model_guard.py`), `arch_check.py` |
 | `marketplace/plugins/kybes/scripts/gen/` | generatore: `schema.py` (lettura e validazione), `naming.py` (nomi per linguaggio), `emit_<linguaggio>.py`, `gen.py` (orchestrazione) |
-| `templates/` | file copiati nei progetti dall'installer |
+| `marketplace/plugins/kybes/install.sh`, `templates/` | installer e file copiati nei progetti: stanno dentro il plugin perché Claude Code, installando dal marketplace, copia solo la cartella del plugin |
 | `tests/` | suite di test del kit |
 | `docs/` | questa documentazione |
 
