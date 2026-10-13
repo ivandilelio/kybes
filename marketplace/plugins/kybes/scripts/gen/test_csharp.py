@@ -581,6 +581,7 @@ def runtime_file(ns: str, cat: Catalog, tables: Dict[str, Table]) -> str:
                            "        fresh.BindTenant(TENANT_B.ToString());", "        Assert.Equal(TENANT_B, fresh.RequireTenant());",
                            "        fresh.BindTenant(null);", "        Assert.Throws<TenantException>(() => fresh.RequireTenant());",
                            f"        Assert.Throws<TenantException>(() => fresh.BindTenant({_cs(bad)}));",
+                           *(['        Assert.Throws<TenantException>(() => fresh.BindTenant(""));'] if cat.tenant_id_type == "string" else []),
                            "        Assert.Throws<TenantException>(() => Tenancy.Coerce(null));", "        await Task.CompletedTask;"],
         "rt_tenant_names": ["        var key = Tenancy.Key(TENANT_A);", '        Assert.Equal(TENANT_A.ToString()!.ToLowerInvariant().Replace("-", "_"), key);',
                             '        Assert.Equal("tenant_" + key, Tenancy.SchemaFor(TENANT_A));',

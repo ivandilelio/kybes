@@ -55,7 +55,9 @@ Lo stato è questo:
 |---|---|---|---|
 | `db/generated/ddl/postgres/_all.sql`, `<T>.sql` | generato | DDL PostgreSQL con vincoli e indici | disponibile |
 | `db/generated/indexes.md` | generato | analisi indici: query coperte, indici mancanti o ridondanti | disponibile |
-| `db/generated/tenancy/<T>.sql` | generato | policy di isolamento (row-level security o schema per tenant) | fase 4 |
+| `db/generated/tenancy/_rls.sql`, `<T>.sql` | generato | row-level security delle tabelle `column` | disponibile |
+| `db/generated/tenancy/_schema_per_tenant.sql` | generato | funzione che crea lo schema di un tenant con le tabelle `schema` | disponibile |
+| `db/generated/tenancy/_database_per_tenant.sql` | generato | DDL da eseguire in ogni database di tenant (tabelle `database`) | disponibile |
 | `db/generated/athena/<T>.sql` | generato | tabella esterna Athena sui file Parquet dell'archivio | fase 5 |
 | `db/migrations/` | tuo | migrazioni applicate dalla pipeline | riservato |
 | `jobs/<nome>/` | tuo | job applicativi | disponibile |

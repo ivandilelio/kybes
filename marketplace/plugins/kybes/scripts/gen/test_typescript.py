@@ -500,6 +500,7 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
                            "    assert.equal(tenantOf(fresh), TENANT_B);", "    bindTenant(fresh, null);",
                            "    assert.throws(() => tenantOf(fresh), TenantError);",
                            f"    assert.throws(() => bindTenant(fresh, {json.dumps(bad)}), TenantError);",
+                           *(['    assert.throws(() => bindTenant(fresh, ""), TenantError);'] if cat.tenant_id_type == "string" else []),
                            "    assert.throws(() => coerceTenant(undefined), TenantError);"],
         "rt_tenant_names": ["    const key = tenantKey(TENANT_A);", '    assert.equal(key, TENANT_A.toLowerCase().replace(/-/g, "_"));',
                             '    assert.equal(schemaFor(TENANT_A), "tenant_" + key);',

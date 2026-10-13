@@ -22,6 +22,7 @@ La configurazione di un progetto sta in `.claude/kybes.config.json`. L'installer
     "schema_dir": "schemas/db",
     "json_schema_dir": "schemas/generated/json",
     "index_file": "MODEL_INDEX.md",
+    "tenancy": { "default": "none", "id_type": "uuid" },
     "targets": [
       { "lang": "csharp", "dir": "libs/db-models/csharp/src/model", "namespace": "App.Model", "dialect": "postgres" },
       { "lang": "python", "dir": "libs/db-models/python/src/model" },
@@ -48,6 +49,7 @@ La configurazione di un progetto sta in `.claude/kybes.config.json`. L'installer
 |---|---|
 | `paths` | glob delle aree del progetto, usate dalle regole. Si aggiungono ai default; `ignore` e `protected` restano sempre attivi |
 | `rules` | livello di ogni regola: `block`, `warn` o `off` (elenco in [controlli](controlli.md)) |
+| `model.tenancy` | `default`: modalità multi-tenant delle tabelle senza la chiave `tenancy` (`none`, `column`, `schema`, `database`); `id_type`: `uuid` o `string` (vedi [multi-tenant](multi-tenant.md)) |
 | `model.targets` | una voce per linguaggio del modello: `lang`, `dir`, e per C# `namespace`, per Java `package`; `dialect` vale `postgres` o `sqlite` |
 | `verification` | ASIL predefinito delle tabelle, generazione dei test, cartella delle evidenze, report di copertura da controllare, soglie per ASIL (dettagli in [verifica](verifica.md)) |
 | `duplicates` | soglia di righe per il controllo duplicati, inclusione dei test, glob da escludere |
@@ -78,6 +80,8 @@ Dalla riga di comando, con il repository clonato:
 | `--model-langs` | function + microservizi | linguaggi in cui generare il modello |
 | `--namespace`, `--java-package` | `App.Model`, `app.model` | namespace C# e package Java del modello |
 | `--asil` | `B` | ASIL predefinito delle tabelle (`QM`, `A`, `B`, `C`, `D`) |
+| `--tenancy` | `none` | modalità multi-tenant predefinita delle tabelle |
+| `--tenant-id` | `uuid` | tipo dell'identificativo del tenant (`uuid` o `string`) |
 | `--scaffold` | no | struttura delle cartelle, modulo errori, `schemas/openapi.yaml`, pacchetti DB-Models (`pyproject.toml`, `package.json` e `tsconfig.json`, `pom.xml`, `src/DbModels.csproj` e `tests/DbModels.Tests.csproj`) |
 | `--examples` | no | 5 schemi di esempio e generazione |
 | `--ci` | `github` | workflow di controllo |

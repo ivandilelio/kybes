@@ -649,6 +649,7 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
                            "            Tenancy.bind(fresh, String.valueOf(TENANT_B));", "            assertEquals(TENANT_B, Tenancy.of(fresh));",
                            "            Tenancy.bind(fresh, null);", "            assertThrows(Tenancy.TenantException.class, () -> Tenancy.of(fresh));",
                            f"            assertThrows(Tenancy.TenantException.class, () -> Tenancy.bind(fresh, {_jstr(bad)}));",
+                           *(['            assertThrows(Tenancy.TenantException.class, () -> Tenancy.bind(fresh, ""));'] if cat.tenant_id_type == "string" else []),
                            "            assertThrows(Tenancy.TenantException.class, () -> Tenancy.coerce(null));",
                            "        } finally {", "            fresh.close();", "        }"],
         "rt_tenant_names": ["        String key = Tenancy.key(TENANT_A);", '        assertEquals(String.valueOf(TENANT_A).toLowerCase(Locale.ROOT).replace("-", "_"), key);',

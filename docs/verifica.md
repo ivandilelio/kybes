@@ -46,6 +46,10 @@ ISO 26262-6, tabella 8, elenca i metodi per derivare i casi di test di unità. k
 
 Ogni test di query costruisce anche un record fuori dalla classe (le condizioni a valore fisso e quelle su `null` invertite): una query che perde una condizione restituisce quel record e il test fallisce, a qualsiasi ASIL.
 
+## Multi-tenant
+
+Le tabelle con `tenancy` diversa da `none` hanno il requisito `REQ-<Tabella>-TENANT` e i casi di isolamento (tenant obbligatorio, isolamento tra tenant, assegnazione del tenant, univocità per tenant, padre di un altro tenant): l'elenco è in [multi-tenant](multi-tenant.md). La sessione dei test generati è legata al tenant di prova `TENANT_A`, definito nei builder.
+
 ## Soglie di copertura
 
 | ASIL | Statement | Branch | MC/DC |

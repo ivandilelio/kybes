@@ -13,7 +13,7 @@
 | `marketplace/plugins/kybes/scripts/` | hook, regole (`rules.py`, `model_guard.py`), `arch_check.py`, `verify.py` (test e soglie di copertura nei progetti) |
 | `marketplace/plugins/kybes/scripts/gen/` | generatore: `schema.py` (lettura e validazione), `naming.py` (nomi per linguaggio), `emit_<linguaggio>.py`, `verification.py` (requisiti e casi di test), `test_<linguaggio>.py` (test generati nei quattro linguaggi), `gen.py` (orchestrazione) |
 | `marketplace/plugins/kybes/install.sh`, `templates/` | installer e file copiati nei progetti: stanno dentro il plugin perché Claude Code, installando dal marketplace, copia solo la cartella del plugin |
-| `tests/` | suite di test del kit |
+| `tests/` | suite di test del kit; `tests/fixtures/tenancy/` sono schemi di prova con tabelle `schema` e `database` |
 | `docs/` | questa documentazione |
 
 ## Test
@@ -42,9 +42,9 @@ Java e C# richiedono librerie che la suite locale non scarica: in locale si comp
 | Job | Esegue |
 |---|---|
 | `tests` | `tests/run.sh` |
-| `generated-java` | test JUnit generati con Hibernate 6 e JaCoCo, tramite `verify.py` |
-| `generated-csharp` | `dotnet build -warnaserror` del modello, test xUnit generati con EF Core 8 e coverlet, tramite `verify.py` |
-| `generated-python-typescript` | test generati Python e TypeScript sul dialetto `postgres` |
+| `generated-java` | test JUnit generati con Hibernate 6 e JaCoCo, tramite `verify.py`, sugli schemi di esempio e su `tests/fixtures/tenancy` (id del tenant `string`) |
+| `generated-csharp` | `dotnet build -warnaserror` del modello, test xUnit generati con EF Core 8 e coverlet, tramite `verify.py`, sugli schemi di esempio e su `tests/fixtures/tenancy` |
+| `generated-python-typescript` | test generati Python e TypeScript sul dialetto `postgres`; `tests/sql/tenancy_check.py`: row-level security, schema e database per tenant su PostgreSQL reale |
 
 In CI i comandi passano da `tests/ci/annotate.py`: se falliscono, l'output finisce nelle annotazioni del job, leggibili anche via API (`gh api repos/<owner>/<repo>/check-runs/<id>/annotations`).
 

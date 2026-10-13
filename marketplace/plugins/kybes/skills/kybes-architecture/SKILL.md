@@ -114,6 +114,15 @@ Inoltre `schemas/generated/json/<Tabella>.schema.json` (validazione di API Gatew
 
 **Niente codice duplicato.** Un blocco di 8 o più righe significative uguale in due punti blocca la chiusura del lavoro. La correzione è sempre estrarre: accesso ai dati → metodo custom nel model della tabella; trasformazione pura → `libs/utils`; regola di business → service.
 
+## 4b-bis. Multi-tenant
+
+- Ogni tabella dichiara `tenancy`: `none` per i dati condivisi (cataloghi, tipologie), `column` per i dati di una Organization nella stessa tabella (il caso normale), `schema` o `database` solo se il cliente chiede separazione fisica. Il default è `model.tenancy.default`.
+- Con `column` non si dichiara `TenantId`: la aggiunge il generatore; univocità e indici diventano per tenant.
+- Il tenant si lega alla sessione nel middleware, dal token SSO, prima di creare i repository: Python `bind_tenant(session, t)`, TypeScript `bindTenant(em, t)`, Java `Tenancy.bind(em, t)`, C# `db.BindTenant(t)`; nelle transazioni si passa alla Unit of Work (`tenant=`). Mai filtrare a mano per tenant nei service e mai prendere il tenant dal payload della richiesta.
+- Relazioni ammesse: una tabella condivisa non punta a tabelle di un tenant; `column` → `none`/`column`; `schema` → `none`/`schema`; `database` → solo `database`.
+- `db/generated/tenancy/_rls.sql` (row-level security) va applicato in produzione: il ruolo dell'applicazione non ha `BYPASSRLS`.
+- Dettagli: docs/multi-tenant.md del kit.
+
 ## 4c. Verifica di unità (ISO 26262-6)
 
 - Il generatore scrive i test di unità del modello in `libs/db-models/<lang>/tests/generated/` e le evidenze in `docs/generated/verification/` (requisiti `REQ-*`, specifiche dei casi `TC-*`, tracciabilità, soglie). Non si modificano: cambia lo schema.
@@ -192,7 +201,7 @@ Ogni piano deve contenere una tabella per endpoint/Job:
 | Endpoint o Job | Bounded context | Runtime (Lambda/K8s/Job) | Motivo (regola sez. 2) | Tabelle via DB-Models | Idempotenza |
 |---|---|---|---|---|---|
 
-seguita da: modifiche agli schemi `schemas/db/<Tabella>.yaml` (colonne, relazioni, indici), metodi custom da aggiungere con il file di destinazione (`model/<Tabella>`), metodi generati che verranno riusati, test da scrivere (per ogni metodo custom: id `TC-<Tabella>-<CASO>`, requisito `REQ-<Tabella>-<CHIAVE>`, metodo di derivazione), ASIL delle tabelle toccate, impatti su IaC.
+seguita da: modifiche agli schemi `schemas/db/<Tabella>.yaml` (colonne, relazioni, indici, `tenancy` di ogni tabella nuova), metodi custom da aggiungere con il file di destinazione (`model/<Tabella>`), metodi generati che verranno riusati, test da scrivere (per ogni metodo custom: id `TC-<Tabella>-<CASO>`, requisito `REQ-<Tabella>-<CHIAVE>`, metodo di derivazione), ASIL delle tabelle toccate, impatti su IaC.
 
 ## Checklist prima di consegnare
 
@@ -200,6 +209,7 @@ seguita da: modifiche agli schemi `schemas/db/<Tabella>.yaml` (colonne, relazion
 - [ ] Tabelle e colonne cambiate solo in `schemas/db`, generatore eseguito (`gen --check` verde)
 - [ ] Metodi custom solo in `model/<Tabella>`, nessun duplicato di metodi generati, nessun blocco di codice duplicato
 - [ ] Ogni metodo custom ha un test in `tests/custom/` con id `TC-` e requisito `REQ-`; `verify.py` verde (test e soglie ASIL)
+- [ ] Ogni tabella nuova ha `tenancy`; il tenant è legato alla sessione dal middleware (mai dal payload), le transazioni lo passano alla Unit of Work
 - [ ] Nessun accesso al DB fuori da DB-Models
 - [ ] Endpoint limitati al proprio bounded context
 - [ ] Validazione ai tre livelli

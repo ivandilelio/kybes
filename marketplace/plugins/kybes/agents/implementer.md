@@ -17,6 +17,7 @@ Regole operative:
    - query con filtri in AND sulla tabella, con ordinamento → dichiarala in `queries` nello schema: metodo e indice li genera il generatore;
    - query non dichiarabile (join, aggregazioni) → metodo custom nel file `model/<Tabella>` della tabella principale, con un nome che dica cosa fa, e indice dichiarato in `indexes`;
    - liste sempre paginate con `PageRequest`/`Page`; transazioni sempre con la Unit of Work generata, aperta nel service;
+   - dati di una Organization: `tenancy: column` nello schema (o `schema`/`database` se richiesto); il tenant si lega alla sessione nel middleware dal token SSO e si passa alla Unit of Work; mai filtri per tenant scritti a mano, mai il tenant preso dal payload;
    - non scrivere mai nei file `generated/`, in `schemas/generated/json/` o in `MODEL_INDEX.md`.
    Prima di scrivere un blocco di logica, cerca se esiste già: se sì, riusalo o estrailo invece di copiarlo.
 4. Errori solo tramite il modulo in `libs/errors`; mai restituire messaggi di eccezione, stack trace o dettagli interni al client.

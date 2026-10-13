@@ -75,7 +75,7 @@ retention:
 | `pagination` | no | ordinamenti ammessi e limiti di pagina | ordine per chiave, `max_limit` 100 | disponibile |
 | `transactions` | no | livello di isolamento delle scritture | `read_committed` | disponibile |
 | `verification` | no | livello ASIL della tabella: decide soglie di copertura e casi MC/DC dei test generati | `asil` della configurazione (B) | disponibile |
-| `tenancy` | no | `none`, `column`, `schema`, `database` | `tenancy` della configurazione (`none`) | fase 4 |
+| `tenancy` | no | `none`, `column`, `schema`, `database` | `model.tenancy.default` della configurazione (`none`) | disponibile |
 | `archive` | no | spostamento dei dati vecchi su cold storage | nessun archivio | fase 5 |
 | `retention` | no | cancellazione definitiva dopo un TTL | nessuna | fase 5 |
 | `storage` | no | `sql`, `mongo` | `sql` | fase 6 |
@@ -159,16 +159,16 @@ Le transazioni si aprono nel service con la Unit of Work generata, mai dentro i 
 |---|---|---|
 | `asil` | `QM`, `A`, `B`, `C`, `D` | alza o abbassa per questa tabella il livello predefinito; decide il criterio di copertura richiesto ai test e, da C, i casi MC/DC delle query (dettagli in [verifica](verifica.md)) |
 
-## Multi-tenant (fase 4)
+## Multi-tenant
 
 | Valore di `tenancy` | Isolamento | Cosa genera |
 |---|---|---|
 | `none` | tabella condivisa da tutte le Organization | niente |
-| `column` | colonna `TenantId` aggiunta, filtro obbligatorio in ogni metodo | policy row-level security in `db/generated/tenancy/` |
-| `schema` | la tabella vive in uno schema DB per Organization | risoluzione dello schema dal contesto del tenant |
-| `database` | un database per Organization | risoluzione della connessione dal contesto del tenant |
+| `column` | colonna `TenantId` aggiunta dal generatore (nome riservato), filtro in ogni metodo, univocità e indici per tenant | policy row-level security in `db/generated/tenancy/` |
+| `schema` | la tabella vive in uno schema PostgreSQL per Organization | funzione `kybes_create_tenant_schema` in `db/generated/tenancy/_schema_per_tenant.sql` |
+| `database` | un database per Organization | DDL del database del tenant in `db/generated/tenancy/_database_per_tenant.sql` |
 
-In tutti i casi i metodi del repository ricevono il contesto del tenant e non possono leggere dati di un'altra Organization. Anche l'archivio è separato per tenant.
+In tutti i casi il repository lavora solo con un tenant legato alla sessione e non legge né modifica dati di un'altra Organization. Le relazioni ammesse tra tabelle con modalità diverse, il contesto del tenant nei quattro linguaggi e i test generati sono in [multi-tenant](multi-tenant.md). Nella fase 5 anche l'archivio sarà separato per tenant.
 
 ## Archivio (fase 5)
 

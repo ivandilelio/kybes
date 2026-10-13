@@ -542,6 +542,7 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
                            "        bind_tenant(s, str(TENANT_B))", "        assert tenant_of(s) == TENANT_B",
                            "        bind_tenant(s, None)", "        with pytest.raises(TenantError):", "            tenant_of(s)",
                            "        with pytest.raises(TenantError):", f"            bind_tenant(s, {bad!r})",
+                           *(["        with pytest.raises(TenantError):", "            bind_tenant(s, '')"] if cat.tenant_id_type == "string" else []),
                            "        with pytest.raises(TenantError):", "            coerce_tenant(None)"],
         "rt_tenant_names": ["    key = tenant_key(TENANT_A)", "    assert key == str(TENANT_A).lower().replace('-', '_')",
                             "    assert schema_for(TENANT_A) == 'tenant_' + key",

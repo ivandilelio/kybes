@@ -117,7 +117,7 @@ The generator also creates the index `(ClienteId, Data)` that covers both `listB
 | **PostgreSQL DDL** | complete schema with constraints and indexes, validated by the PostgreSQL parser | ✅ available |
 | **Guardrail hooks** | data access outside the model, generated files, folder layout, method collisions, secrets, duplicates | ✅ available |
 | **Unit tests to ISO 26262-6** | requirement IDs and test cases derived from each schema (requirements analysis, equivalence classes, boundary values, error guessing, MC/DC for ASIL C/D); runnable pytest and node:test suites; traceability matrix; coverage gate per table ASIL; mandatory traced tests for custom methods | ✅ available |
-| **Multi-tenancy** | per table: tenant column with row-level security, schema per tenant, or database per tenant | 🗺️ planned |
+| **Multi-tenancy** | per table: tenant column (every method filtered, unique constraints per tenant, PostgreSQL row-level security), schema per tenant, or database per tenant; tenant bound to the ORM session; generated isolation tests | ✅ available |
 | **Hot/cold archive** | Parquet on S3/Azure Blob partitioned by tenant and date, queryable from Athena; TTL jobs as CronJob, Job+KEDA or 24/7 engine | 🗺️ planned |
 | **MongoDB** | same repository interface over MongoDB in all four languages | 🗺️ planned |
 
@@ -218,6 +218,7 @@ The detailed documentation is in Italian, in [`docs/`](docs/README.md):
 - [pagination](docs/paginazione.md)
 - [transactions](docs/transazioni.md)
 - [guardrails](docs/controlli.md)
+- [multi-tenancy](docs/multi-tenant.md)
 - [unit verification (ISO 26262-6)](docs/verifica.md)
 - [configuration](docs/configurazione.md)
 - [roadmap](docs/roadmap.md)

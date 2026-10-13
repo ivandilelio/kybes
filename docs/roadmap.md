@@ -9,7 +9,7 @@ Ogni fase viene verificata con la suite del kit (`tests/run.sh`) prima di essere
 | 2 | Query dichiarate nello schema, analisi e generazione degli indici, DDL PostgreSQL, paginazione a cursore UI/API/DB-Model, Unit of Work con isolamento e retry | completata |
 | 3 | Test unitari generati secondo ISO 26262-6 (classi di equivalenza, valori limite, ID di requisito), soglie di copertura per ASIL, matrice di tracciabilità, test dei metodi custom obbligatori, `verify.py` (Python e TypeScript) | completata |
 | 3b | Test generati JUnit 5 (Java, Hibernate) e xUnit (C#, EF Core) dallo stesso catalogo, eseguiti su PostgreSQL; nuovi requisiti emersi dalla copertura reale (colonne facoltative, oggetto collegato, pagina predefinita, date generate, nullo esplicito su colonne con default) | completata |
-| 4 | Multi-tenant scelto per tabella: colonna tenant con row-level security, schema per tenant, database per tenant | pianificata |
+| 4 | Multi-tenant scelto per tabella: colonna tenant con filtro in ogni metodo e row-level security, schema per tenant, database per tenant; contesto del tenant nella sessione nei quattro linguaggi; test generati di isolamento | completata |
 | 5 | Archivio hot/cold: Parquet su S3/Blob partizionato per tenant e data, lettura via Athena, job di spostamento e TTL come CronJob, Job+KEDA o engine 24/7 | pianificata |
 | 6 | MongoDB nei quattro linguaggi con la stessa interfaccia dei repository SQL | pianificata |
 
