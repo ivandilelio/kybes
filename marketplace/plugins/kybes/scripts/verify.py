@@ -48,6 +48,8 @@ class FileCov:
     lines_hit: int = 0
     branches: int = 0
     branches_hit: int = 0
+    missed: List[int] = field(default_factory=list)
+    partial: List[int] = field(default_factory=list)
 
     def pct(self, kind: str) -> Optional[float]:
         tot, hit = (self.lines, self.lines_hit) if kind == "statement" else (self.branches, self.branches_hit)
@@ -81,12 +83,17 @@ def parse_cobertura(xml_path: Path, proj: Path) -> Dict[str, FileCov]:
                 continue
             seen.add(num)
             fc.lines += 1
-            fc.lines_hit += int(ln.get("hits", "0")) > 0
-            if ln.get("branch") == "true":
+            if int(ln.get("hits", "0")) > 0:
+                fc.lines_hit += 1
+            else:
+                fc.missed.append(int(num))
+            if (ln.get("branch") or "").lower() == "true":
                 m = _COND.search(ln.get("condition-coverage", ""))
                 if m:
                     fc.branches_hit += int(m.group(1))
                     fc.branches += int(m.group(2))
+                    if m.group(1) != m.group(2):
+                        fc.partial.append(int(num))
     return out
 
 
@@ -103,10 +110,15 @@ def parse_jacoco(xml_path: Path, proj: Path, targets: List[dict]) -> Dict[str, F
             fc = out.setdefault(rel, FileCov(rel))
             for ln in sf.iter("line"):
                 fc.lines += 1
-                fc.lines_hit += int(ln.get("ci", "0")) > 0
+                if int(ln.get("ci", "0")) > 0:
+                    fc.lines_hit += 1
+                else:
+                    fc.missed.append(int(ln.get("nr", "0")))
                 mb, cb = int(ln.get("mb", "0")), int(ln.get("cb", "0"))
                 fc.branches += mb + cb
                 fc.branches_hit += cb
+                if mb:
+                    fc.partial.append(int(ln.get("nr", "0")))
     return out
 
 
@@ -147,6 +159,18 @@ def file_asil(rel: str, targets: List[dict], tables: dict, default: str) -> Opti
     return None
 
 
+def _ranges(nums: List[int]) -> str:
+    out, ns = [], sorted(set(nums))
+    i = 0
+    while i < len(ns):
+        j = i
+        while j + 1 < len(ns) and ns[j + 1] == ns[j] + 1:
+            j += 1
+        out.append(str(ns[i]) if i == j else f"{ns[i]}-{ns[j]}")
+        i = j + 1
+    return ", ".join(out) or "-"
+
+
 def gate(covs: Dict[str, FileCov], targets: List[dict], tables: dict, vc: dict) -> Tuple[List[str], List[str]]:
     fails, rows = [], []
     for rel in sorted(covs):
@@ -162,7 +186,9 @@ def gate(covs: Dict[str, FileCov], targets: List[dict], tables: dict, vc: dict) 
             want = th.get(kind)
             parts.append(f"{kind} {'-' if p is None else f'{p:.1f}%'}")
             if want is not None and p is not None and p + 1e-9 < want:
-                fails.append(f"{rel}: copertura {kind} {p:.1f}% sotto la soglia {want}% (ASIL {asil}, {subj})")
+                where = _ranges(fc.missed) if kind == "statement" else _ranges(fc.partial)
+                label = "righe non eseguite" if kind == "statement" else "righe con rami non percorsi"
+                fails.append(f"{rel}: copertura {kind} {p:.1f}% sotto la soglia {want}% (ASIL {asil}, {subj}); {label}: {where}")
         rows.append(f"  {rel} [ASIL {asil}] " + ", ".join(parts))
     return fails, rows
 

@@ -186,6 +186,13 @@ def _new_value(t: Table, cn: str) -> str:
     return {"text": "'testo aggiornato'", "int": "next_n() + 500", "bigint": "next_n() + 500", "decimal": "Decimal('99.25')"}[c.type]
 
 
+def _py_new(t: Table, cn: str) -> str:
+    c = t.col(cn)
+    if c.type == "string":
+        return f"'u' + text_value(next_n(), {max(c.length - 1, 1)})"
+    return {"text": "'testo aggiornato'", "int": "next_n() + 500", "bigint": "next_n() + 500", "decimal": "Decimal('99.25')"}[c.type]
+
+
 def _sort_arg(tc: TestCase) -> str:
     sort = tc.args.get("sort")
     if not sort:
@@ -371,6 +378,15 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
                   "        page = repo.list_page(PageRequest(limit=1, cursor=cursor" + _sort_arg(tc) + "))",
                   f"        seen += [x.{pk} for x in page.items]", "        if not page.has_more:", "            break",
                   "        cursor = page.next_cursor", "    assert built <= set(seen)", "    assert len(seen) == len(set(seen))"]
+        elif k == "generated_values":
+            cols, upd = tc.args["columns"], tc.args["update"]
+            o += [f"    e = build_{snake(n)}(session)", "    session.flush()",
+                  "    before = {" + ", ".join(f"'{cn}': e.{_attr(cn)}" for cn, _ in cols) + "}",
+                  "    assert all(v is not None for v in before.values()), before"]
+            if upd:
+                o += [f"    {repo}(session).update(e.{pk}, {{'{_attr(upd)}': {_py_new(t, upd)}}})", "    session.flush()"]
+                for cn, g in cols:
+                    o.append(f"    assert e.{_attr(cn)} {'==' if g == 'on_create' else '>='} before['{cn}']")
         elif k == "page_sort_each":
             sorts = [(("-" if x.startswith("-") else "") + member("typescript", x.lstrip("-")), _attr(x.lstrip("-"))) for x in tc.args["sorts"]]
             o += [f"    for _ in range(3):", f"        build_{snake(n)}(session)", f"    repo = {repo}(session)", "    total = repo.count()",

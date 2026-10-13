@@ -78,6 +78,7 @@ def db_file(pkg: str, tables: Dict[str, Table]) -> str:
     return header(L, "kit") + f'''package {pkg}.generated;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -168,6 +169,8 @@ public final class KybesDb {{
     public static ModelValidationException assertInvalid(String field, Executable operation) {{
         ModelValidationException e = assertThrows(ModelValidationException.class, operation);
         assertTrue(e.getFields().containsKey(field), () -> "errore atteso su " + field + ", trovati " + e.getFields().keySet());
+        assertFalse(e.getTable().isEmpty());
+        assertTrue(e.getMessage().contains(field));
         return e;
     }}
 
@@ -449,6 +452,18 @@ def test_file(pkg: str, t: Table, cat: Catalog, tables: Dict[str, Table], defaul
                   f"        {repo} repo = new {repo}(em);", "        List<Object> seen = new ArrayList<>();"]
             o += _walk(n, pk, sort_expr)
             o += ["        assertTrue(seen.containsAll(built));", "        assertEquals(seen.size(), new HashSet<>(seen).size());"]
+        elif k == "generated_values":
+            cols, upd = tc.args["columns"], tc.args["update"]
+            o += [f"        {n} e = {b}(em);", "        em.flush();", "        em.clear();", f"        {repo} repo = new {repo}(em);",
+                  f"        {n} before = repo.getById(e.{pk}()).orElseThrow();"]
+            o += [f'        assertNotNull(before.{_get(cn)}(), "{cn}");' for cn, _ in cols]
+            o += [f"        Object before{i} = before.{_get(cn)}();" for i, (cn, _) in enumerate(cols)]
+            if upd:
+                o += [f"        before.{_set(upd)}({_new_value(t, upd)});", "        repo.update(before);", "        em.flush();", "        em.clear();",
+                      f"        {n} after = repo.getById(e.{pk}()).orElseThrow();"]
+                for cn, g in cols:
+                    op = "== 0" if g == "on_create" else ">= 0"
+                    o.append(f'        assertTrue(cmp(after.{_get(cn)}(), before{cols.index((cn, g))}) {op}, "{cn}");')
         elif k == "page_sort_each":
             o += [f"        for (int i = 0; i < 3; i++) {b}(em);", f"        {repo} repo = new {repo}(em);", "        long total = repo.count();"]
             for x in tc.args["sorts"]:

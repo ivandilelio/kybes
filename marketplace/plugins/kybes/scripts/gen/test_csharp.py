@@ -135,6 +135,8 @@ public static class KybesDb
     {{
         var e = await Assert.ThrowsAsync<ModelValidationException>(operation);
         Assert.True(e.Fields.ContainsKey(field), $"errore atteso su {{field}}, trovati {{string.Join(", ", e.Fields.Keys)}}");
+        Assert.False(string.IsNullOrEmpty(e.Table));
+        Assert.Contains(field, e.Message);
         return e;
     }}
 
@@ -142,6 +144,7 @@ public static class KybesDb
     {{
         var e = Assert.Throws<ModelValidationException>(operation);
         Assert.True(e.Fields.ContainsKey(field), $"errore atteso su {{field}}, trovati {{string.Join(", ", e.Fields.Keys)}}");
+        Assert.False(string.IsNullOrEmpty(e.Table));
         return e;
     }}
 
@@ -395,6 +398,23 @@ def test_file(ns: str, t: Table, cat: Catalog, tables: Dict[str, Table], default
                   f"        var repo = new {repo}(db);", "        var seen = new List<object>();"]
             o += _walk(n, repo, pk, sort_expr)
             o += ["        Assert.Subset(new HashSet<object>(seen), built);", "        Assert.Equal(seen.Count, new HashSet<object>(seen).Count);"]
+        elif k == "generated_values":
+            cols, upd = tc.args["columns"], tc.args["update"]
+            o += [f"        var e = await {b}(db);", "        using var check = KybesDb.NewContext();",
+                  f"        var before = (await new {repo}(check).GetByIdAsync(e.{pk}))!;"]
+            o += [f'        Assert.True(before.{cn} is not null, "{cn}");' for cn, _ in cols]
+            if upd:
+                o += [f"        e.{upd} = {_new_value(t, upd)};", f"        await new {repo}(db).UpdateAsync(e);",
+                      "        using var after1 = KybesDb.NewContext();", f"        var after = (await new {repo}(after1).GetByIdAsync(e.{pk}))!;"]
+                for cn, g in cols:
+                    op = "== 0" if g == "on_create" else ">= 0"
+                    o.append(f'        Assert.True(Cmp(after.{cn}, before.{cn}) {op}, "{cn}");')
+                o += ["        // anche con SaveChanges sincrono le date sono gestite dal contesto",
+                      f"        after.{upd} = {_new_value(t, upd)};", "        after1.SaveChanges();",
+                      "        using var after2 = KybesDb.NewContext();", f"        var again = (await new {repo}(after2).GetByIdAsync(e.{pk}))!;"]
+                for cn, g in cols:
+                    op = "== 0" if g == "on_create" else ">= 0"
+                    o.append(f'        Assert.True(Cmp(again.{cn}, before.{cn}) {op}, "{cn}");')
         elif k == "page_sort_each":
             o += [f"        for (var i = 0; i < 3; i++) await {b}(db);", f"        var repo = new {repo}(db);", "        var total = await repo.CountAsync();"]
             for x in tc.args["sorts"]:

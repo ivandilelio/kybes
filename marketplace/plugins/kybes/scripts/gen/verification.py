@@ -117,6 +117,16 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B") -> Catalog:
                      "tentativo di cambiare la chiave primaria (classe non valida)",
                      "rifiutato, la chiave resta quella originale (Python e TypeScript: errore di validazione; Java: la chiave non ha setter "
                      "e un aggiornamento senza chiave è rifiutato; C#: l'aggiornamento non trova il record)"))
+        gens = [c for c in t.columns if c.generated]
+        if gens:
+            desc = "; ".join(f"{c.name} ({c.generated})" for c in gens)
+            rid = _req(reqs, t, "GENERATED", f"Le date generate di {n} ({desc}) sono impostate dal modello alla creazione; "
+                       "quelle on_update anche a ogni aggiornamento, quelle on_create non cambiano più.",
+                       f"{src}: columns.*.generated", asil)
+            add(TestCase(f"TC-{n}-GENERATED", n, [rid], "req", "generated_values",
+                         "inserimento e poi aggiornamento di un record" if upd else "inserimento di un record",
+                         "valori impostati all'inserimento; dopo l'aggiornamento on_create invariato, on_update non precedente",
+                         {"columns": [(c.name, c.generated) for c in gens], "update": upd.name if upd else None}))
         add(TestCase(f"TC-{n}-DELETE", n, [r_delete], "req", "delete",
                      "cancellazione di un record esistente e poi inesistente", "prima vero, poi falso; il record non è più leggibile"))
         for c in t.columns:

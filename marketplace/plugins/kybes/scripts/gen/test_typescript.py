@@ -326,6 +326,17 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
                   "    for (let i = 0; i < 100; i++) {", "      const page = await repo.listPage({ limit: 1, cursor" + _sort_arg(tc) + " });",
                   f"      seen.push(...page.items.map((x) => x.{pk}));", "      if (!page.nextCursor) break;", "      cursor = page.nextCursor;", "    }",
                   "    assert.ok([...built].every((id) => seen.includes(id)));", "    assert.equal(new Set(seen).size, seen.length);"]
+        elif k == "generated_values":
+            cols, upd = tc.args["columns"], tc.args["update"]
+            o += [f"    const e = await {b}(em);", f"    const repo = new {repo}(em);",
+                  f"    const before = await repo.getById(e.{pk});"]
+            o += [f'    assert.ok(before?.{_a(cn)}, "{cn}");' for cn, _ in cols]
+            if upd:
+                o += [f"    await repo.update(e.{pk}, {{ {_a(upd)}: {_new_value(t, upd)} }} as never);",
+                      f"    const after = await repo.getById(e.{pk});"]
+                for cn, g in cols:
+                    op = "=== 0" if g == "on_create" else ">= 0"
+                    o.append(f'    assert.ok(cmp(after?.{_a(cn)}, before?.{_a(cn)}, "datetime") {op}, "{cn}");')
         elif k == "page_sort_each":
             sorts = ", ".join(f'["{_sort_json(x)}", "{_a(x.lstrip("-"))}", "{t.col(x.lstrip("-")).type}"]' for x in tc.args["sorts"])
             o += [f"    for (let i = 0; i < 3; i++) await {b}(em);", f"    const repo = new {repo}(em);", "    const total = await repo.count();",
