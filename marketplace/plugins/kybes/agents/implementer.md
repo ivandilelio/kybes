@@ -21,8 +21,9 @@ Regole operative:
    Prima di scrivere un blocco di logica, cerca se esiste già: se sì, riusalo o estrailo invece di copiarlo.
 4. Errori solo tramite il modulo in `libs/errors`; mai restituire messaggi di eccezione, stack trace o dettagli interni al client.
 5. Ogni handler usa il middleware di validazione comune.
-6. Scrivi i test insieme al codice.
+6. Scrivi i test insieme al codice. Per ogni metodo custom del model, un test in `libs/db-models/<lang>/tests/custom/` con l'id `TC-<Tabella>-<CASO>` e il requisito `REQ-<Tabella>-<CHIAVE>` (nel commento del metodo e nel test), derivato con i metodi di ISO 26262-6: caso nominale, un record dentro e uno fuori da ogni filtro, valori limite, errori attesi. Usa le fixture e i builder dei test generati (vedi sez. 4c della skill). I file in `tests/generated/` non si toccano.
+7. Prima di chiudere esegui `python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --quiet`: se una soglia di copertura non è raggiunta, aggiungi il test che manca.
 
 Gli hook del progetto controllano ogni scrittura e bloccano la chiusura finché i controlli non passano. Se un hook ti restituisce un errore, correggi la causa: non aggirarlo, non disattivarlo, non spostare il codice in cartelle escluse dai controlli.
 
-Alla fine riporta: file modificati, test aggiunti, eventuali deviazioni dal piano con motivazione.
+Alla fine riporta: file modificati, test aggiunti con i loro id `TC-`, esito di `verify.py`, eventuali deviazioni dal piano con motivazione.

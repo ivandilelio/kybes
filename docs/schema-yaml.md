@@ -74,7 +74,7 @@ retention:
 | `queries` | no | query di accesso dichiarate | — | disponibile |
 | `pagination` | no | ordinamenti ammessi e limiti di pagina | ordine per chiave, `max_limit` 100 | disponibile |
 | `transactions` | no | livello di isolamento delle scritture | `read_committed` | disponibile |
-| `verification` | no | livello ASIL della tabella (accettato e validato; usato dai test generati della fase 3) | `asil` della configurazione (B) | in corso |
+| `verification` | no | livello ASIL della tabella: decide soglie di copertura e casi MC/DC dei test generati | `asil` della configurazione (B) | disponibile |
 | `tenancy` | no | `none`, `column`, `schema`, `database` | `tenancy` della configurazione (`none`) | fase 4 |
 | `archive` | no | spostamento dei dati vecchi su cold storage | nessun archivio | fase 5 |
 | `retention` | no | cancellazione definitiva dopo un TTL | nessuna | fase 5 |
@@ -153,11 +153,11 @@ Il contratto è lo stesso dalla UI al database. La UI invia `limit`, `cursor` e 
 
 Le transazioni si aprono nel service con la Unit of Work generata, mai dentro i metodi del model (dettagli in [transazioni](transazioni.md)). Con `serializable`, la Unit of Work ritenta in automatico in caso di conflitto di serializzazione.
 
-## Verifica (fase 3)
+## Verifica
 
 | Chiave | Valori | Note |
 |---|---|---|
-| `asil` | `QM`, `A`, `B`, `C`, `D` | alza o abbassa per questa tabella il livello predefinito; decide il criterio di copertura richiesto ai test |
+| `asil` | `QM`, `A`, `B`, `C`, `D` | alza o abbassa per questa tabella il livello predefinito; decide il criterio di copertura richiesto ai test e, da C, i casi MC/DC delle query (dettagli in [verifica](verifica.md)) |
 
 ## Multi-tenant (fase 4)
 

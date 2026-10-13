@@ -22,7 +22,7 @@ Il piano DEVE seguire il "Formato obbligatorio del piano" della skill:
 - per ogni lista esposta alla UI: colonne ordinabili (`pagination.sortable`) e limite massimo;
 - per ogni operazione che scrive su più tabelle: Unit of Work, tabelle coinvolte e isolamento richiesto;
 - logica che rischia di ripetersi in più punti e dove verrà estratta (model, `libs/utils` o service);
-- test da scrivere (unitari, contract test DB-Models, test di errore che verificano l'assenza di dettagli interni);
+- test da scrivere: per ogni metodo custom l'id `TC-<Tabella>-<CASO>`, il requisito `REQ-<Tabella>-<CHIAVE>` e il metodo di derivazione (ISO 26262-6); contract test DB-Models; test di errore che verificano l'assenza di dettagli interni; ASIL delle tabelle toccate;
 - impatti su IaC.
 
 Se la richiesta viola una regola (es. endpoint che espone l'intero DB, chiamata sincrona oltre 10 s su Lambda, query fuori da DB-Models), dichiaralo in una sezione "Violazioni e alternative" e pianifica l'alternativa conforme.

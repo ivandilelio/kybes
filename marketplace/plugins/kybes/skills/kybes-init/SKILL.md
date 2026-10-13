@@ -11,11 +11,12 @@ kybes needs a small amount of project configuration before its hooks and generat
 2. Ask the user, in one AskUserQuestion call, only what is not already clear from the conversation or the repository:
    - languages of the data model (`csharp`, `python`, `typescript`, `java`, one or more);
    - C# namespace and/or Java package, if those languages are selected;
+   - default ASIL of the tables (`QM`, `A`, `B`, `C`, `D`; default `B`): it sets the coverage thresholds of the generated ISO 26262-6 unit tests;
    - whether to create the standard folder scaffold (`--scaffold`) and the example schemas (`--examples`).
 3. Run the installer from the project root:
 
    ```bash
-   bash "<plugin root>/install.sh" --target . --model-langs <langs> [--namespace X] [--java-package y] [--scaffold] [--examples]
+   bash "<plugin root>/install.sh" --target . --model-langs <langs> [--namespace X] [--java-package y] [--asil B] [--scaffold] [--examples]
    ```
 
    The installer is idempotent: it never overwrites the user's config, rules or files (only with `--force`), and it refreshes the `kybes` block in `CLAUDE.md`.
@@ -23,7 +24,10 @@ kybes needs a small amount of project configuration before its hooks and generat
    - `.claude/kybes.config.json`;
    - `.claude/rules/kybes/`;
    - `tools/kybes/`, the versioned copy used by CI;
-   - `MODEL_INDEX.md`, if schemas exist.
+   - `MODEL_INDEX.md`, if schemas exist;
+   - the generated unit tests in `libs/db-models/<lang>/tests/generated/` and the verification docs in `docs/generated/verification/`.
+
+   To run the model tests, the DB-models packages need their test tools: `pip install -e "libs/db-models/python[test]"` and `npm install` in `libs/db-models/typescript` (the scaffold creates both package files). Then `python3 -B tools/kybes/plugins/kybes/scripts/verify.py .` runs the tests and checks coverage per ASIL.
 
    Then suggest the next step: describe a table in `schemas/db/<Table>.yaml`; the model is generated automatically when the schema is saved.
 

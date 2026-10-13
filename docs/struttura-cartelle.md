@@ -37,14 +37,15 @@ Nella mappa `<T>` è il nome di una tabella in PascalCase (es. `Clienti`), `<t>`
 
 | Linguaggio | Punto d'ingresso (tuo) | Generato | Test generati | Test tuoi |
 |---|---|---|---|---|
-| C# | `libs/db-models/csharp/src/model/<T>.cs` | `libs/db-models/csharp/src/model/generated/<T>.cs`, `AppDbContext.cs` | `libs/db-models/csharp/tests/generated/<T>Tests.cs` | `libs/db-models/csharp/tests/custom/<T>CustomTests.cs` |
+| C# | `libs/db-models/csharp/src/model/<T>.cs` | `libs/db-models/csharp/src/model/generated/<T>.cs`, `AppDbContext.cs` | `libs/db-models/csharp/tests/generated/<T>Tests.cs` (fase 3b) | `libs/db-models/csharp/tests/custom/<T>CustomTests.cs` |
 | Python | `libs/db-models/python/src/model/<T>.py` | `libs/db-models/python/src/model/generated/<T>.py` | `libs/db-models/python/tests/generated/test_<t>.py` | `libs/db-models/python/tests/custom/test_<t>_custom.py` |
 | TypeScript | `libs/db-models/typescript/src/model/<T>.ts` | `libs/db-models/typescript/src/model/generated/<T>.ts`, `index.ts` | `libs/db-models/typescript/tests/generated/<T>.test.ts` | `libs/db-models/typescript/tests/custom/<T>.custom.test.ts` |
-| Java | `libs/db-models/java/src/main/java/<pkg>/<T>Repository.java` | `libs/db-models/java/src/main/java/<pkg>/generated/<T>.java`, `<T>RepositoryBase.java` | `libs/db-models/java/src/test/java/<pkg>/generated/<T>Test.java` | `libs/db-models/java/src/test/java/<pkg>/<T>CustomTest.java` |
+| Java | `libs/db-models/java/src/main/java/<pkg>/<T>Repository.java` | `libs/db-models/java/src/main/java/<pkg>/generated/<T>.java`, `<T>RepositoryBase.java` | `libs/db-models/java/src/test/java/<pkg>/generated/<T>Test.java` (fase 3b) | `libs/db-models/java/src/test/java/<pkg>/custom/<T>CustomTest.java` |
 
 Lo stato è questo:
 - **Model:** disponibile.
-- **Test generati e tuoi:** fase 3.
+- **Test generati:** disponibili in Python e TypeScript, con fixture e builder condivisi (`conftest.py`/`kybes_fixtures.py`/`kybes_builders.py`, `_db.ts`/`kybes_builders.ts`); Java e C# nella fase 3b.
+- **Test dei metodi custom:** tuoi, in `tests/custom/`, obbligatori per ogni metodo custom (regola `custom_tests`). In Python il generatore crea una volta `tests/custom/conftest.py` con le stesse fixture.
 - **Unit of Work e paginazione:** disponibili, come file aggiuntivi nella stessa cartella `generated/` del linguaggio: `_paging` e `_uow` in Python e TypeScript, `Paging` e `UnitOfWork` in C# e Java.
 - **Accesso a MongoDB:** fase 6. Per le tabelle con `storage: mongo` i file sono negli stessi percorsi e con gli stessi nomi; cambia solo l'implementazione.
 
@@ -76,8 +77,12 @@ Lo stato è questo:
 
 | Percorso | Di chi | Contenuto | Stato |
 |---|---|---|---|
-| `docs/generated/verification/traceability.md` | generato | matrice requisito → codice → test, con stato di copertura | fase 3 |
-| `docs/generated/verification/<T>.md` | generato | specifica dei test di unità della tabella (classi di equivalenza, valori limite) | fase 3 |
+| `docs/generated/verification/requirements.md` | generato | requisiti di ogni tabella e dei moduli comuni, con ASIL | disponibile |
+| `docs/generated/verification/<T>.md` | generato | specifica dei test di unità della tabella (metodo di derivazione, atteso) | disponibile |
+| `docs/generated/verification/kybes-runtime.md` | generato | specifica dei test di paginazione, Unit of Work e API | disponibile |
+| `docs/generated/verification/traceability.md` | generato | matrice requisito → test → file | disponibile |
+| `docs/generated/verification/coverage.md` | generato | soglie di copertura per ASIL e limiti noti | disponibile |
+| `coverage/<lingua>.cobertura.xml` | prodotto da `verify.py` | copertura strutturale misurata (non versionato) | disponibile |
 
 ## Come si ritrova una cosa
 
@@ -87,5 +92,6 @@ Lo stato è questo:
 | come si chiama il metodo che legge i figli di una relazione | `MODEL_INDEX.md`, sezione della tabella |
 | una query specifica di una tabella | il file custom `model/<T>` del linguaggio |
 | perché un indice esiste | `db/generated/indexes.md` |
-| quali test coprono un requisito | `docs/generated/verification/traceability.md` (fase 3) |
+| quali test coprono un requisito | `docs/generated/verification/traceability.md` |
+| dove scrivere il test di un metodo custom | `libs/db-models/<lingua>/tests/custom/` ([verifica](verifica.md)) |
 | quando i dati vecchi lasciano la tabella | sezione `archive` di `schemas/db/<T>.yaml` (fase 5) |

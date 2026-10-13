@@ -114,6 +114,17 @@ Inoltre `schemas/generated/json/<Tabella>.schema.json` (validazione di API Gatew
 
 **Niente codice duplicato.** Un blocco di 8 o più righe significative uguale in due punti blocca la chiusura del lavoro. La correzione è sempre estrarre: accesso ai dati → metodo custom nel model della tabella; trasformazione pura → `libs/utils`; regola di business → service.
 
+## 4c. Verifica di unità (ISO 26262-6)
+
+- Il generatore scrive i test di unità del modello in `libs/db-models/<lang>/tests/generated/` e le evidenze in `docs/generated/verification/` (requisiti `REQ-*`, specifiche dei casi `TC-*`, tracciabilità, soglie). Non si modificano: cambia lo schema.
+- L'ASIL di una tabella è `verification.asil` nello schema (default in configurazione, B). Decide le soglie di copertura; da ASIL C il generatore aggiunge un caso MC/DC per ogni condizione di ogni query.
+- **Ogni metodo custom ha un test custom** in `libs/db-models/<lang>/tests/custom/`, scritto insieme al metodo:
+  - l'identificativo del caso `TC-<Tabella>-<CASO>` e il requisito `REQ-<Tabella>-<CHIAVE>` nel nome o nel docstring/titolo del test, il requisito anche nel commento del metodo;
+  - casi derivati con i metodi della norma: analisi dei requisiti (il caso nominale), classi di equivalenza (un record dentro e uno fuori dal filtro), valori limite (vuoto, uno, massimo), stima degli errori (record inesistente, input non valido);
+  - le fixture e i builder dei test generati: in Python `session`/`session_factory` e `kybes_builders.build_<tabella>`; in TypeScript `withDb` da `../generated/_db` e `build<Tabella>` da `../generated/kybes_builders`.
+  La regola `custom_tests` blocca la chiusura se un metodo custom non compare in un test con un id `TC-<Tabella>-`.
+- `verify.py` (in `stop_gate.commands` e in CI) esegue test generati e custom e confronta la copertura di ogni file del modello con la soglia della sua tabella. Una soglia mancata si risolve con un test, mai abbassando la soglia o escludendo file.
+
 ## 5. Libreria Utils
 
 - Solo trasformazioni dati riusate in **almeno due** punti.
@@ -159,6 +170,8 @@ Modulo errori condiviso (`libs/errors`) che garantisce:
 ```
 /infra                      IaC
 /libs/db-models/<lang>/.../model            un file per tabella (custom) + generated/
+/libs/db-models/<lang>/tests       generated/ (test ISO 26262-6 generati) + custom/ (test dei metodi custom)
+/docs/generated/verification      requisiti, specifiche dei test, tracciabilità
 /schemas/db                 <Tabella>.yaml: sorgente di verità del modello
 /schemas/generated/json               JSON Schema generati
 /MODEL_INDEX.md             indice generato di tabelle, file e metodi
@@ -178,13 +191,14 @@ Ogni piano deve contenere una tabella per endpoint/Job:
 | Endpoint o Job | Bounded context | Runtime (Lambda/K8s/Job) | Motivo (regola sez. 2) | Tabelle via DB-Models | Idempotenza |
 |---|---|---|---|---|---|
 
-seguita da: modifiche agli schemi `schemas/db/<Tabella>.yaml` (colonne, relazioni, indici), metodi custom da aggiungere con il file di destinazione (`model/<Tabella>`), metodi generati che verranno riusati, test da scrivere, impatti su IaC.
+seguita da: modifiche agli schemi `schemas/db/<Tabella>.yaml` (colonne, relazioni, indici), metodi custom da aggiungere con il file di destinazione (`model/<Tabella>`), metodi generati che verranno riusati, test da scrivere (per ogni metodo custom: id `TC-<Tabella>-<CASO>`, requisito `REQ-<Tabella>-<CHIAVE>`, metodo di derivazione), ASIL delle tabelle toccate, impatti su IaC.
 
 ## Checklist prima di consegnare
 
 - [ ] Runtime scelto con l'albero della sez. 2 e motivato
 - [ ] Tabelle e colonne cambiate solo in `schemas/db`, generatore eseguito (`gen --check` verde)
 - [ ] Metodi custom solo in `model/<Tabella>`, nessun duplicato di metodi generati, nessun blocco di codice duplicato
+- [ ] Ogni metodo custom ha un test in `tests/custom/` con id `TC-` e requisito `REQ-`; `verify.py` verde (test e soglie ASIL)
 - [ ] Nessun accesso al DB fuori da DB-Models
 - [ ] Endpoint limitati al proprio bounded context
 - [ ] Validazione ai tre livelli

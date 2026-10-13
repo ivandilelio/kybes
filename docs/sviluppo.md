@@ -10,8 +10,8 @@
 | `marketplace/plugins/kybes/skills/` | skill `kybes-architecture` |
 | `marketplace/plugins/kybes/agents/` | agenti architect, implementer, reviewer |
 | `marketplace/plugins/kybes/hooks/hooks.json` | registrazione degli hook |
-| `marketplace/plugins/kybes/scripts/` | hook, regole (`rules.py`, `model_guard.py`), `arch_check.py` |
-| `marketplace/plugins/kybes/scripts/gen/` | generatore: `schema.py` (lettura e validazione), `naming.py` (nomi per linguaggio), `emit_<linguaggio>.py`, `gen.py` (orchestrazione) |
+| `marketplace/plugins/kybes/scripts/` | hook, regole (`rules.py`, `model_guard.py`), `arch_check.py`, `verify.py` (test e soglie di copertura nei progetti) |
+| `marketplace/plugins/kybes/scripts/gen/` | generatore: `schema.py` (lettura e validazione), `naming.py` (nomi per linguaggio), `emit_<linguaggio>.py`, `verification.py` (requisiti e casi di test), `test_<linguaggio>.py` (test generati), `gen.py` (orchestrazione) |
 | `marketplace/plugins/kybes/install.sh`, `templates/` | installer e file copiati nei progetti: stanno dentro il plugin perché Claude Code, installando dal marketplace, copia solo la cartella del plugin |
 | `tests/` | suite di test del kit |
 | `docs/` | questa documentazione |
@@ -33,6 +33,7 @@ La suite installa il kit in due progetti temporanei, con i quattro linguaggi e g
 | `java` | compilazione con `-Xlint:all -Werror` contro stub fedeli di JPA e Hibernate (`tests/java/stubs`); esecuzione della logica di paginazione e Unit of Work con un `EntityManager` finto che registra JPQL e parametri | JDK 17+ |
 | `csharp` | sintassi del codice generato con il parser tree-sitter (non sostituisce il compilatore) | `pip install tree-sitter tree-sitter-c-sharp` |
 | `sql` | DDL PostgreSQL validato dal parser di PostgreSQL | `pip install pglast` |
+| `python`, `typescript` | i test generati nel progetto di prova, eseguiti con `verify.py`: tutti verdi e copertura entro le soglie ASIL; compilazione dei test generati anche per il dialetto postgres | pytest e pytest-cov; c8 |
 | sempre (con i gruppi sopra) | compatibilità del cursore tra TypeScript, Python e Java | |
 | `hooks` | ogni regola con l'esito atteso (rifiuto o consenso), rigenerazione automatica, duplicati, blocco a fine lavoro | python3 |
 
@@ -50,4 +51,5 @@ Il codice C# non ha un test eseguibile nella suite: serve un SDK .NET. Prima di 
 1. Specifica la chiave in `docs/schema-yaml.md`.
 2. Validala in `schema.py`: le chiavi sconosciute vengono rifiutate.
 3. Implementala in tutti gli emettitori, con gli stessi nomi tramite `naming.py`.
-4. Estendi i test Python e TypeScript e la compilazione Java.
+4. Aggiungi i casi di test al catalogo in `verification.py` e rendili in `test_python.py` e `test_typescript.py`: la suite controlla che la copertura dei test generati resti entro le soglie.
+5. Estendi i test Python e TypeScript del kit e la compilazione Java.

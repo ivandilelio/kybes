@@ -38,15 +38,15 @@ Gli avvisi coprono, con livello predefinito `warn`:
 
 Vale per la sessione principale e per ogni subagent. Il lavoro non si chiude finché passano tutti:
 
-1. `arch_check`: tutte le regole su tutto il repository, compreso il **codice duplicato** (blocchi di almeno 8 righe significative uguali in due punti);
+1. `arch_check`: tutte le regole su tutto il repository, compreso il **codice duplicato** (blocchi di almeno 8 righe significative uguali in due punti) e i **test dei metodi custom** (`custom_tests`, livello `block`: ogni metodo custom del model deve comparire in un test di `tests/custom/` con un identificativo `TC-<Tabella>-`);
 2. `gen --check`: file generati allineati agli schemi, nessun file custom orfano, nessun conflitto di nomi;
-3. i comandi in `stop_gate.commands` (test, contract test, copertura).
+3. i comandi in `stop_gate.commands`. L'installer ci mette `verify.py`, che esegue i test generati e custom del modello e confronta la copertura con le soglie dell'ASIL di ogni tabella ([verifica](verifica.md)); aggiungi gli altri test del progetto.
 
 Dopo 3 rifiuti consecutivi nella stessa sessione il lavoro può chiudersi, con un avviso che elenca i problemi rimasti. Questo evita che un agente resti bloccato all'infinito.
 
 ## In CI
 
-Il workflow `.github/workflows/architecture-check.yml` esegue `gen --check` e `arch_check --strict`. In modalità strict anche gli avvisi fanno fallire la build.
+Il workflow `.github/workflows/architecture-check.yml` esegue `gen --check`, `arch_check --strict` e `verify.py`, e conserva report di copertura e specifiche dei test come artefatto `verification-evidence`. In modalità strict anche gli avvisi fanno fallire la build.
 
 ## Livelli e configurazione
 

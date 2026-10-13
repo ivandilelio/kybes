@@ -7,6 +7,7 @@ Questo progetto segue l'architettura della skill `kybes-architecture`. In sintes
 - Ogni function o microservizio espone un solo bounded context. Accesso ai dati SOLO tramite `libs/db-models`.
 - Modello dati: `schemas/db/<Tabella>.yaml` è la sorgente di verità. Il generatore produce entità, CRUD e relazioni in `model/generated/` (mai a mano). I metodi custom di una tabella stanno solo in `model/<Tabella>` (Java: `model/<Tabella>Repository.java`).
 - **Prima di cercare nel codice leggi `MODEL_INDEX.md`**: dice in che file sta ogni metodo di ogni tabella.
+- Test: quelli del modello sono generati in `tests/generated/` (ISO 26262-6, evidenze in `docs/generated/verification/`). Ogni metodo custom ha un test in `tests/custom/` con id `TC-<Tabella>-<CASO>` e requisito `REQ-<Tabella>-<CHIAVE>`; `verify.py` controlla test e copertura per ASIL.
 - Niente codice duplicato: si estrae nel model (dati), in `libs/utils` (trasformazioni) o nel service (regole).
 - `libs/utils` solo funzioni pure riusate in almeno due punti.
 - Validazione su tre livelli (API Gateway, middleware, model) con schemi da `schemas/`.

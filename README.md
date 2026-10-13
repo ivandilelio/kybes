@@ -116,7 +116,7 @@ The generator also creates the index `(ClienteId, Data)` that covers both `listB
 | **Transactions** | Unit of Work with per-table isolation level and automatic retry on serialization failures and deadlocks | ✅ available |
 | **PostgreSQL DDL** | complete schema with constraints and indexes, validated by the PostgreSQL parser | ✅ available |
 | **Guardrail hooks** | data access outside the model, generated files, folder layout, method collisions, secrets, duplicates | ✅ available |
-| **Unit tests to ISO 26262-6** | generated tests per table (equivalence classes, boundary values, MC/DC for ASIL C/D), traceability matrix, coverage gates per ASIL | 🚧 in progress |
+| **Unit tests to ISO 26262-6** | requirement IDs and test cases derived from each schema (requirements analysis, equivalence classes, boundary values, error guessing, MC/DC for ASIL C/D); runnable pytest and node:test suites; traceability matrix; coverage gate per table ASIL; mandatory traced tests for custom methods | ✅ Python, TypeScript · 🗺️ Java, C# |
 | **Multi-tenancy** | per table: tenant column with row-level security, schema per tenant, or database per tenant | 🗺️ planned |
 | **Hot/cold archive** | Parquet on S3/Azure Blob partitioned by tenant and date, queryable from Athena; TTL jobs as CronJob, Job+KEDA or 24/7 engine | 🗺️ planned |
 | **MongoDB** | same repository interface over MongoDB in all four languages | 🗺️ planned |
@@ -130,8 +130,9 @@ The generator also creates the index `(ClienteId, Data)` that covers both `listB
 | before every write | a file in `model/` that doesn't map to a table, or a sub-folder | block |
 | before every write | a custom method named like a generated one | block |
 | before every write | secrets in clear text (AWS keys, private keys, tokens, passwords) | block |
+| before finishing | a custom model method without a traced test (`TC-<Table>-…`) in `tests/custom/` | block |
 | after every write | schema saved → model regenerated in every language; linters; architecture warnings | — |
-| before finishing (main agent and every subagent) | `arch_check` (incl. duplicated blocks of 8+ lines), `gen --check`, your test commands | block |
+| before finishing (main agent and every subagent) | `arch_check` (incl. duplicated blocks of 8+ lines), `gen --check`, `verify.py` (model tests + coverage per ASIL), your test commands | block |
 | in CI | the same checks, `--strict` | fail build |
 
 Every rule can be set to `block`, `warn` or `off` in `.claude/kybes.config.json`, a file the agent is not allowed to modify.
@@ -146,6 +147,10 @@ your-project/
 ├── libs/db-models/<language>/…/model/
 │   ├── <Table>.{cs,py,ts} | <Table>Repository.java   ← yours: custom methods only
 │   └── generated/                       ← generator only
+├── libs/db-models/<language>/tests/
+│   ├── generated/                       ← ISO 26262-6 unit tests, generator only
+│   └── custom/                          ← yours: tests of your custom methods
+├── docs/generated/verification/         ← requirements, test specs, traceability, coverage policy
 ├── db/generated/ddl/postgres/_all.sql   ← DDL, indexes.md
 ├── services/<context>/{functions,ms}/   ← Lambda / Kubernetes handlers
 ├── jobs/  libs/utils/  libs/errors/  frontend/  infra/
@@ -194,6 +199,7 @@ The installer is idempotent. Teammates run `tools/kybes/setup.sh` once after clo
 |---|---|
 | Python | real CRUD, relations, cascades, unique constraints, pagination edge cases (ties, tampered cursors, disallowed sorts), every query operator, and Unit of Work commit, rollback and retry, on SQLite |
 | TypeScript | the same scenarios on sql.js; `strict` + `noUnusedLocals` compilation for the PostgreSQL dialect |
+| Generated tests | the ISO 26262-6 suites generated into the sample project run green in Python and TypeScript, with 100% statement and branch coverage of the model; mutants (dropped query condition, off-by-one length or page limit, flipped keyset comparator, retry off-by-one) are killed |
 | Java | `javac -Xlint:all -Werror` against faithful JPA/Hibernate stubs; paging and Unit of Work logic executed against a recording `EntityManager` |
 | C# | syntax check with the tree-sitter C# grammar; EF Core 8 translation reviewed against EF Core sources |
 | SQL | generated DDL parsed by the PostgreSQL parser (`pglast`) |
@@ -213,6 +219,7 @@ The detailed documentation is in Italian, in [`docs/`](docs/README.md):
 - [pagination](docs/paginazione.md)
 - [transactions](docs/transazioni.md)
 - [guardrails](docs/controlli.md)
+- [unit verification (ISO 26262-6)](docs/verifica.md)
 - [configuration](docs/configurazione.md)
 - [roadmap](docs/roadmap.md)
 - [developing the kit](docs/sviluppo.md)

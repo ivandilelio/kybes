@@ -1,6 +1,6 @@
 {
   "name": "kybes",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Know Your Backend: predictable, duplication-free backends generated with Claude Code. Schema-driven data models in C#, Python, TypeScript and Java with queries, covering indexes, cursor pagination and transactions, plus guardrail hooks and agents.",
   "author": {
     "name": "Ivan Di Lelio",
