@@ -1,9 +1,10 @@
 """Emettitore Java: JPA (jakarta.persistence) con repository basato su EntityManager."""
 from __future__ import annotations
 
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import runtime_archive
+import runtime_mongo
 import runtime_java
 import runtime_tenant
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
@@ -451,14 +452,15 @@ def _common_file(pkg: str) -> str:
 
 def custom_stub(t: Table, pkg: str) -> str:
     base = base_class(L, t.name)
+    session = f"{pkg}.{GEN_DIR}.MongoSession" if t.mongo else "jakarta.persistence.EntityManager"
     return (f"package {pkg};\n\n"
-            "import jakarta.persistence.EntityManager;\n"
+            f"import {session};\n"
             f"import {pkg}.{GEN_DIR}.{base};\n\n"
             f"/**\n * {t.name}: punto d'ingresso per l'accesso ai dati della tabella {t.db_name}.\n"
             f" * Entità in {GEN_DIR}/{t.name}.java, CRUD e relazioni ereditati da {GEN_DIR}/{base}.java (vedi MODEL_INDEX.md).\n"
             " * Qui vanno SOLO i metodi custom di questa tabella, con nomi diversi da quelli generati.\n */\n"
             f"public class {repo_class(L, t.name)} extends {base} {{\n\n"
-            f"    public {repo_class(L, t.name)}(EntityManager em) {{\n"
+            f"    public {repo_class(L, t.name)}({'MongoSession' if t.mongo else 'EntityManager'} em) {{\n"
             "        super(em);\n"
             "    }\n"
             "}\n")
@@ -472,8 +474,15 @@ def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tu
            f"{GEN_DIR}/Tenancy.java": runtime_tenant.java_file(pkg, opts.get("tenant_id_type", "uuid")),
            f"{GEN_DIR}/Archive.java": runtime_archive.java_file(pkg)}
     for n, t in tables.items():
-        gen[f"{GEN_DIR}/{n}.java"] = _entity_file(t, tables, schema_rel[n], pkg, dialect)
-        gen[f"{GEN_DIR}/{base_class(L, n)}.java"] = _repo_file(t, tables, schema_rel[n], pkg)
+        if t.mongo:
+            gen[f"{GEN_DIR}/{n}.java"] = _mongo_entity_file(t, tables, schema_rel[n], pkg)
+            gen[f"{GEN_DIR}/{base_class(L, n)}.java"] = _mongo_repo_file(t, tables, schema_rel[n], pkg)
+        else:
+            gen[f"{GEN_DIR}/{n}.java"] = _entity_file(t, tables, schema_rel[n], pkg, dialect)
+            gen[f"{GEN_DIR}/{base_class(L, n)}.java"] = _repo_file(t, tables, schema_rel[n], pkg)
+    if any(t.mongo for t in tables.values()):
+        gen[f"{GEN_DIR}/MongoSession.java"] = runtime_mongo.java_file(pkg, opts.get("tenant_id_type", "uuid"))
+        gen[f"{GEN_DIR}/MongoIndexes.java"] = _mongo_indexes_file(tables, pkg)
     custom = {custom_file(L, n): custom_stub(t, pkg) for n, t in tables.items()}
     return gen, custom
 
@@ -502,3 +511,331 @@ def _java_cond(prop: str, op: str, key: str) -> str:
     return {"eq": f"{prop} = :{key}", "ne": f"{prop} <> :{key}", "lt": f"{prop} < :{key}", "lte": f"{prop} <= :{key}",
             "gt": f"{prop} > :{key}", "gte": f"{prop} >= :{key}", "in": f"{prop} IN :{key}",
             "prefix": f"{prop} LIKE :{key} ESCAPE '\\\\'", "is_null": f"{prop} IS NULL", "not_null": f"{prop} IS NOT NULL"}[op]
+
+
+# ------------------------------------------------------------------------------------------- MongoDB
+
+def _mongo_entity_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) -> str:
+    import mongo_plan
+    m = {c.name: member(L, c.name) for c in t.columns}
+    T = t.name
+    out: List[str] = []
+    w = out.append
+    w(header(L, schema_rel).rstrip("\n"))
+    w(f"package {pkg}.{GEN_DIR};\n")
+    w("import java.math.BigDecimal;")
+    w("import java.time.LocalDate;")
+    w("import java.time.OffsetDateTime;")
+    w("import java.util.UUID;")
+    w("import org.bson.Document;\n")
+    w(f"/** {T}: documento della collection MongoDB {t.db_name}.{(' ' + t.description) if t.description else ''} */")
+    w(f"public class {T} {{\n")
+    for c in t.columns:
+        init = f" = {_java_value(c, c.default)}" if c.default is not None else ""
+        w(f"    private {J_TYPE[c.type]} {m[c.name]}{init};")
+    w("")
+    for c in t.columns:
+        jt, mm = J_TYPE[c.type], m[c.name]
+        w(f"    public {jt} get{_cap(mm)}() {{ return {mm}; }}")
+        if not (c.primary_key and c.auto) and not c.generated:
+            w(f"    public void set{_cap(mm)}({jt} value) {{ this.{mm} = value; }}")
+    w("")
+    w("    /** Chiave e date generate: le imposta il repository. */")
+    w("    void kybesGenerated(String field, Object value) {")
+    w("        switch (field) {")
+    for c in t.columns:
+        if (c.primary_key and c.auto) or c.generated:
+            w(f'            case "{m[c.name]}" -> this.{m[c.name]} = ({J_TYPE[c.type]}) value;')
+    w('            default -> throw new IllegalArgumentException(field);')
+    w("        }")
+    w("    }\n")
+    orderable = ({t.pk.name} | set(t.pagination.sortable) | {cn for cn, _ in t.order(None)}
+                 | {cn for q in t.queries for cn, _ in t.order(q.order_by or None)})
+    sortable_cols = [c for c in t.columns if c.name in orderable and c.type in SORTABLE_TYPES and not c.nullable]
+    w("    /** Valore di una colonna ordinabile, usato dal cursore di paginazione. */")
+    w("    public Object kybesValue(String field) {")
+    w("        return switch (field) {")
+    for c in sortable_cols:
+        w(f'            case "{m[c.name]}" -> {m[c.name]};')
+    w('            default -> throw new IllegalArgumentException("colonna non ordinabile: " + field);')
+    w("        };")
+    w("    }\n")
+    w("    /** Validazione di modello prima della persistenza. */")
+    w("    public void validate() {")
+    w("        java.util.Map<String, String> errors = new java.util.TreeMap<>();")
+    for c in t.columns:
+        mm = m[c.name]
+        if c.tenant:
+            continue
+        if c.required and not (c.primary_key and c.auto) and not c.generated:
+            w(f'        if ({mm} == null) errors.put("{c.name}", "obbligatorio");')
+        if c.type == "string":
+            w(f'        if ({mm} != null && {mm}.length() > {c.length}) errors.put("{c.name}", "lunghezza massima {c.length}");')
+    w(f'        if (!errors.isEmpty()) throw new ModelValidationException("{T}", errors);')
+    w("    }\n")
+    w("    /** Documento MongoDB del record: le colonne vuote non compaiono. */")
+    w("    public Document toDocument() {")
+    w("        Document d = new Document();")
+    for c in t.columns:
+        f = mongo_plan.field_name(t, c)
+        w(f'        if ({m[c.name]} != null) d.append("{f}", MongoSession.toBson({m[c.name]}, "{c.type}"));' if c.nullable or (c.primary_key and c.auto) or c.generated
+          else f'        d.append("{f}", MongoSession.toBson({m[c.name]}, "{c.type}"));')
+    w("        return d;")
+    w("    }\n")
+    w(f"    public static {T} fromDocument(Document d) {{")
+    w(f"        {T} e = new {T}();")
+    for c in t.columns:
+        w(f'        e.{m[c.name]} = ({J_TYPE[c.type]}) MongoSession.fromBson(d.get("{mongo_plan.field_name(t, c)}"), "{c.type}");')
+    w("        return e;")
+    w("    }")
+    w("}")
+    return "\n".join(out) + "\n"
+
+
+def _mongo_cond_java(field: str, op: str, val: str) -> str:
+    return {"eq": f'new Document("{field}", {val})', "ne": f'new Document("{field}", new Document("$nin", java.util.Arrays.asList({val}, null)))',
+            "lt": f'new Document("{field}", new Document("$lt", {val}))', "lte": f'new Document("{field}", new Document("$lte", {val}))',
+            "gt": f'new Document("{field}", new Document("$gt", {val}))', "gte": f'new Document("{field}", new Document("$gte", {val}))',
+            "in": f'new Document("{field}", new Document("$in", {val}))', "prefix": f'new Document("{field}", MongoSession.prefix({val}))',
+            "is_null": f'new Document("{field}", null)', "not_null": f'new Document("{field}", new Document("$ne", null))'}[op]
+
+
+def _mongo_repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) -> str:
+    import mongo_plan
+    m = {c.name: member(L, c.name) for c in t.columns}
+    pk = t.pk
+    pkm, pkt = m[pk.name], J_TYPE[pk.type]
+    T = t.name
+    base = base_class(L, T)
+    tc = tenant_column(t)
+    fields = {m[c.name]: mongo_plan.field_name(t, c) for c in t.columns}
+    out: List[str] = []
+    w = out.append
+    w(header(L, schema_rel).rstrip("\n"))
+    w(f"package {pkg}.{GEN_DIR};\n")
+    w("import com.mongodb.client.MongoDatabase;")
+    w("import com.mongodb.client.model.IndexOptions;")
+    w("import jakarta.persistence.EntityNotFoundException;")
+    w("import java.math.BigDecimal;")
+    w("import java.time.LocalDate;")
+    w("import java.time.OffsetDateTime;")
+    w("import java.util.ArrayList;")
+    w("import java.util.Collection;")
+    w("import java.util.List;")
+    w("import java.util.Map;")
+    w("import java.util.Objects;")
+    w("import java.util.Optional;")
+    w("import java.util.UUID;")
+    w("import org.bson.Document;\n")
+    w(f"/** CRUD, relazioni e query di {T} su MongoDB. Le transazioni le apre il chiamante (MongoSession.transaction). Metodi custom: model/{custom_file(L, T)}. */")
+    w(f"public abstract class {base} {{\n")
+
+    def oi(cn, d):
+        return f'new Paging.OrderItem("{m[cn]}", "{member("typescript", cn)}", Paging.SortType.{t.col(cn).type.upper()}, {str(d).lower()})'
+    w(f'    public static final Paging.Spec PAGING = new Paging.Spec("{T}", "{T}",')
+    w(f"            {oi(pk.name, False)},")
+    entries = ", ".join(f'Map.entry("{member("typescript", cn)}", {oi(cn, False)})' for cn in t.pagination.sortable)
+    w(f"            Map.ofEntries({entries}),")
+    w(f"            List.of({', '.join(oi(cn, d) for cn, d in t.order())}),")
+    w(f"            {t.pagination.default_limit}, {t.pagination.max_limit});")
+    w(f'    public static final String COLLECTION = "{t.db_name}";')
+    w("    public static final Map<String, String> FIELDS = Map.ofEntries(" + ", ".join(f'Map.entry("{a}", "{f}")' for a, f in fields.items()) + ");\n")
+    w("    protected final MongoSession em;\n")
+    w(f"    protected {base}(MongoSession em) {{")
+    w("        this.em = em;")
+    if t.tenancy != "none":
+        w(f"        em.requireTenant(); // tenancy: {t.tenancy}: senza un tenant legato alla sessione il repository non lavora")
+    w("    }\n")
+    w("    /** Indici della collection (stessi nomi del DDL SQL); idempotente: si chiama all'avvio o nel deploy. */")
+    w("    public static void ensureIndexes(MongoDatabase db) {")
+    ixs = mongo_plan.indexes(t)
+    for ix in ixs:
+        keys = "new Document()" + "".join(f'.append("{f}", 1)' for f in ix.fields)
+        opts = f'new IndexOptions().name("{ix.name}")'
+        if ix.unique:
+            opts += ".unique(true)"
+        if ix.partial:
+            opts += ".partialFilterExpression(new Document()" + "".join(f'.append("{f}", new Document("$exists", true))' for f in ix.partial) + ")"
+        if ix.ttl is not None:
+            opts += f".expireAfter({ix.ttl}L, java.util.concurrent.TimeUnit.SECONDS)"
+        w(f"        db.getCollection(COLLECTION).createIndex({keys}, {opts});")
+    if not ixs:
+        w("        Objects.requireNonNull(db); // nessun indice oltre a _id")
+    w("    }\n")
+    w("    protected Document scope(Document filter) {")
+    if tc:
+        w(f'        return MongoSession.and(filter, new Document("{tc.db_name}", MongoSession.toBson(em.requireTenant(), "{tc.type}")));')
+    else:
+        w("        return filter;")
+    w("    }\n")
+    w("    /** Lettura per chiave (anche dai repository collegati). */")
+    w(f"    public Optional<{T}> find({pkt} id) {{")
+    w(f'        Document d = em.findOne(COLLECTION, scope(new Document("_id", MongoSession.toBson(id, "{pk.type}"))));')
+    w(f"        return d == null ? Optional.empty() : Optional.of({T}.fromDocument(d));")
+    w("    }\n")
+    parents = [r for r in t.relations if r.kind == "many_to_one"]
+    w("    /** Tenant della sessione e record collegati esistenti (MongoDB non ha chiavi esterne). */")
+    w(f"    protected void check({T} entity) {{")
+    if tc:
+        tm = m[tc.name]
+        w(f"        {J_TYPE[tc.type]} tenant = em.requireTenant();")
+        w(f"        if (entity.get{_cap(tm)}() != null && !entity.get{_cap(tm)}().equals(tenant)) {{")
+        w(f'            throw new ModelValidationException("{T}", Map.of("{tc.name}", "tenant diverso da quello della sessione"));')
+        w("        }")
+        w(f"        entity.set{_cap(tm)}(tenant);")
+    w("        entity.validate();")
+    if parents:
+        w("        Map<String, String> errors = new java.util.TreeMap<>();")
+        for r in parents:
+            fk = _cap(m[r.foreign_key])
+            w(f"        if (entity.get{fk}() != null && new {base_class(L, r.target)}(em) {{ }}.find(entity.get{fk}()).isEmpty()) {{")
+            w(f'            errors.put("{r.foreign_key}", "non trovato");')
+            w("        }")
+        w(f'        if (!errors.isEmpty()) throw new ModelValidationException("{T}", errors);')
+    w("    }\n")
+    paging_call = f"em.runPage(COLLECTION, PAGING, FIELDS, {{flt}}, page, {{order}}, {T}::fromDocument, {T}::kybesValue)"
+    for meth in methods_of(t):
+        k, _, arg = meth.key.partition(":")
+        name = method_name(L, meth.key)
+        w(f"    /** {meth.summary} */")
+        if k == "get_by_id":
+            w(f"    public Optional<{T}> {name}({pkt} id) {{")
+            w("        return find(id);")
+        elif k == "list_page":
+            w(f"    public Paging.Page<{T}> {name}() {{")
+            w(f"        return {name}(Paging.PageRequest.first());")
+            w("    }\n")
+            w(f"    public Paging.Page<{T}> {name}(Paging.PageRequest page) {{")
+            w("        return " + paging_call.format(flt="scope(new Document())", order="null") + ";")
+        elif k == "count":
+            w(f"    public long {name}() {{")
+            w("        return em.count(COLLECTION, scope(new Document()), 0);")
+        elif k == "exists":
+            w(f"    public boolean {name}({pkt} id) {{")
+            w(f'        return em.count(COLLECTION, scope(new Document("_id", MongoSession.toBson(id, "{pk.type}"))), 1) > 0;')
+        elif k == "create":
+            w(f"    public {T} {name}({T} entity) {{")
+            w("        check(entity);")
+            if pk.auto:
+                gen = "UUID.randomUUID()" if pk.type == "uuid" else ("em.nextId(COLLECTION)" if pk.type == "bigint" else "(int) em.nextId(COLLECTION)")
+                w(f'        entity.kybesGenerated("{pkm}", {gen});')
+            for c in t.columns:
+                if c.generated:
+                    w(f'        entity.kybesGenerated("{m[c.name]}", MongoSession.nowMs());')
+            w("        em.insert(COLLECTION, entity.toDocument());")
+            w("        return entity;")
+        elif k == "update":
+            w(f"    public {T} {name}({T} entity) {{")
+            w(f'        if (entity.get{_cap(pkm)}() == null) throw new IllegalArgumentException("{T}: update senza chiave");')
+            w(f"        {T} stored = find(entity.get{_cap(pkm)}()).orElseThrow(() -> new EntityNotFoundException(\"{T}: record inesistente\"));")
+            w("        check(entity);")
+            for c in t.columns:
+                if c.generated == "on_create":
+                    w(f'        entity.kybesGenerated("{m[c.name]}", stored.get{_cap(m[c.name])}());')
+                elif c.generated == "on_update":
+                    w(f'        entity.kybesGenerated("{m[c.name]}", MongoSession.nowMs());')
+            if not any(c.generated == "on_create" for c in t.columns):
+                w("        Objects.requireNonNull(stored);")
+            w(f'        em.replace(COLLECTION, scope(new Document("_id", MongoSession.toBson(entity.get{_cap(pkm)}(), "{pk.type}"))), entity.toDocument());')
+            w("        return entity;")
+        elif k == "delete":
+            w(f"    public boolean {name}({pkt} id) {{")
+            w("        if (find(id).isEmpty()) return false;")
+            for c, r in mongo_plan.children(t, tables):
+                ctc = tenant_column(c)
+                fk_f = mongo_plan.field_name(c, c.col(r.foreign_key))
+                flt = f'new Document("{fk_f}", MongoSession.toBson(id, "{pk.type}"))' + (f'.append("{ctc.db_name}", MongoSession.toBson(em.requireTenant(), "{ctc.type}"))' if ctc else "")
+                if r.on_delete == "restrict":
+                    w(f'        if (em.count("{c.db_name}", {flt}, 1) > 0) {{')
+                    w(f'            throw new ModelValidationException("{T}", Map.of("{mongo_plan.child_label(t, c, r)}", "record collegati"));')
+                    w("        }")
+                else:
+                    w(f'        em.updateMany("{c.db_name}", {flt}, new Document("$unset", new Document("{fk_f}", "")));')
+            w(f'        em.delete(COLLECTION, scope(new Document("_id", MongoSession.toBson(id, "{pk.type}"))));')
+            w("        return true;")
+        elif k == "find_by":
+            c = t.col(arg)
+            w(f"    public Optional<{T}> {name}({J_TYPE[c.type]} value) {{")
+            w(f'        Document d = em.findOne(COLLECTION, scope(new Document("{fields[m[arg]]}", MongoSession.toBson(value, "{c.type}"))));')
+            w(f"        return d == null ? Optional.empty() : Optional.of({T}.fromDocument(d));")
+        elif k == "list_by":
+            c = t.col(arg)
+            w(f"    public Paging.Page<{T}> {name}({J_TYPE[c.type]} value) {{")
+            w(f"        return {name}(value, Paging.PageRequest.first());")
+            w("    }\n")
+            w(f"    public Paging.Page<{T}> {name}({J_TYPE[c.type]} value, Paging.PageRequest page) {{")
+            w(f'        Objects.requireNonNull(value, "{m[arg]}");')
+            w("        return " + paging_call.format(flt=f'scope(new Document("{fields[m[arg]]}", MongoSession.toBson(value, "{c.type}")))', order="null") + ";")
+        elif k == "get_rel":
+            r = next(x for x in t.relations if x.name == arg)
+            fk = _cap(m[r.foreign_key])
+            w(f"    public Optional<{r.target}> {name}({pkt} id) {{")
+            w(f"        return find(id).map({T}::get{fk}).flatMap(fk -> new {base_class(L, r.target)}(em) {{ }}.find(fk));")
+        elif k == "list_rel":
+            r = next(x for x in t.relations if x.name == arg)
+            w(f"    public Paging.Page<{r.target}> {name}({pkt} id) {{")
+            w(f"        return {name}(id, Paging.PageRequest.first());")
+            w("    }\n")
+            w(f"    public Paging.Page<{r.target}> {name}({pkt} id, Paging.PageRequest page) {{")
+            w(f"        return new {base_class(L, r.target)}(em) {{ }}.{method_name(L, 'list_by:' + r.foreign_key)}(id, page);")
+        elif k in ("query_page", "query_list", "query_one"):
+            q = next(x for x in t.queries if x.name == arg)
+            params, conds, guards = [], [], []
+            for c in q.where:
+                col = t.col(c.column)
+                jt = J_TYPE[col.type]
+                if c.param:
+                    pn = member(L, c.param)
+                    params.append(f"Collection<{jt}> {pn}" if c.op == "in" else f"{jt} {pn}")
+                    raw = pn
+                    if c.op == "in":
+                        guards.append(pn)
+                else:
+                    raw = _java_value(col, c.value) if c.has_value else "null"
+                if c.op == "in":
+                    val = f'{raw}.stream().map(x -> MongoSession.toBson(x, "{col.type}")).toList()'
+                elif c.op == "prefix":
+                    val = raw
+                else:
+                    val = f'MongoSession.toBson({raw}, "{col.type}")'
+                conds.append(_mongo_cond_java(mongo_plan.field_name(t, col), c.op, val))
+            order = ", ".join(oi(cn, d) for cn, d in t.order(q.order_by or None))
+            ret = {"query_page": f"Paging.Page<{T}>", "query_list": f"List<{T}>", "query_one": f"Optional<{T}>"}[k]
+            if k == "query_page":
+                w(f"    public {ret} {name}({', '.join(params + ['Paging.PageRequest page'])}) {{")
+            else:
+                w(f"    public {ret} {name}({', '.join(params)}) {{")
+            for prm in params:
+                pn = prm.split(" ")[-1]
+                w(f'        Objects.requireNonNull({pn}, "{pn}");')
+            for g in guards:
+                empty = {"query_page": "Paging.emptyPage(PAGING, page)", "query_list": "List.of()", "query_one": "Optional.empty()"}[k]
+                w(f"        if ({g}.isEmpty()) return {empty};")
+            w(f"        List<Paging.OrderItem> order = List.of({order});")
+            w(f"        Document filter = scope(MongoSession.and({', '.join(conds)}));")
+            if k == "query_page":
+                w("        return " + paging_call.format(flt="filter", order="order") + ";")
+            else:
+                lim = "PAGING.maxLimit()" if k == "query_list" else "1"
+                w(f"        List<{T}> rows = new ArrayList<>();")
+                w(f"        for (Document d : em.find(COLLECTION, filter, MongoSession.sort(FIELDS, order), {lim})) rows.add({T}.fromDocument(d));")
+                w("        return rows;" if k == "query_list" else "        return rows.stream().findFirst();")
+            if k == "query_page":
+                w("    }\n")
+                args = ", ".join(p.split(" ")[-1] for p in params)
+                w(f"    public {ret} {name}({', '.join(params)}) {{")
+                w(f"        return {name}({args + ', ' if args else ''}Paging.PageRequest.first());")
+        w("    }\n")
+    out[-1] = out[-1].rstrip("\n")
+    w("}")
+    return "\n".join(out) + "\n"
+
+
+def _mongo_indexes_file(tables: Dict[str, Table], pkg: str) -> str:
+    mongo = [n for n, t in tables.items() if t.mongo]
+    return (header(L, "kit").rstrip("\n") + f"\npackage {pkg}.{GEN_DIR};\n\nimport com.mongodb.client.MongoDatabase;\n\n"
+            "/** Indici di tutte le collection MongoDB del modello. */\npublic final class MongoIndexes {\n\n"
+            "    private MongoIndexes() {\n    }\n\n"
+            "    /** Crea gli indici (idempotente): all'avvio dell'applicazione o nel deploy. */\n"
+            "    public static void ensure(MongoDatabase db) {\n" + "".join(f"        {base_class(L, n)}.ensureIndexes(db);\n" for n in mongo) +
+            "    }\n}\n")

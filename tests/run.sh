@@ -32,9 +32,16 @@ sed -i.bak 's/"dialect": "postgres"/"dialect": "sqlite"/' "$FIX/.claude/kybes.co
 python3 -B "$FIX/tools/kybes/plugins/kybes/scripts/gen/gen.py" "$FIX" --quiet
 VERIFY="$P/tools/kybes/plugins/kybes/scripts/verify.py"
 PG="$WORK/proj-pg"; make_project "$PG" postgres
+# progetto con collection MongoDB (tests/fixtures/mongo): 4 linguaggi, una tabella SQL accanto alle collection
+MG="$WORK/mongo"; mkdir -p "$MG" && (cd "$MG" && git init -q)
+"$KIT/install.sh" --target "$MG" --scaffold --no-plugin --model-langs csharp,python,typescript,java --ci none >/dev/null
+cp "$KIT"/tests/fixtures/mongo/*.yaml "$MG/schemas/db/"
+python3 -B "$MG/tools/kybes/plugins/kybes/scripts/gen/gen.py" "$MG" --quiet
 
 if python3 -B "$P/tools/kybes/plugins/kybes/scripts/gen/gen.py" "$P" --check >/dev/null; then pass "generatore idempotente (gen --check)"; else fail "gen --check"; fi
 if python3 -B "$P/tools/kybes/plugins/kybes/scripts/arch_check.py" "$P" --strict >/dev/null; then pass "arch_check pulito sul progetto generato"; else fail "arch_check"; fi
+if python3 -B "$MG/tools/kybes/plugins/kybes/scripts/gen/gen.py" "$MG" --check >/dev/null && python3 -B "$MG/tools/kybes/plugins/kybes/scripts/arch_check.py" "$MG" --strict >/dev/null; then
+  pass "collection MongoDB: generatore idempotente e arch_check pulito"; else fail "mongo gen --check / arch_check"; fi
 # il lettore YAML di riserva (senza PyYAML) deve dare lo stesso risultato di PyYAML sugli schemi di esempio
 if python3 -B - "$KIT/marketplace/plugins/kybes/scripts/gen" "$KIT/marketplace/plugins/kybes/templates/esempi-schemi" <<'PY'
 import datetime, glob, sys
@@ -64,6 +71,10 @@ if want python; then
     if python3 -c "import pytest, pytest_cov" 2>/dev/null; then
       if python3 -B "$VERIFY" "$P" --lang=python --quiet; then pass "python: test ISO 26262-6 generati nel progetto, copertura entro le soglie ASIL"; else fail "python: test generati o copertura"; fi
       if python3 -B "$VERIFY" "$FIX" --lang=python --quiet; then pass "python: test generati con tabelle per schema e per database"; else fail "python: progetto tenancy"; fi
+      if python3 -c "import pymongo, mongomock" 2>/dev/null; then
+        if KYBES_TEST_MONGO_URL=mongodb://finto PYTHONPATH="$KIT/tests/mongo" PYTEST_ADDOPTS="-p fake_mongo" python3 -B "$VERIFY" "$MG" --lang=python --quiet; then
+          pass "python: test generati delle collection MongoDB (mongomock), copertura entro le soglie ASIL"; else fail "python: collection MongoDB"; fi
+      else skip "python: collection MongoDB non verificate (pip install pymongo mongomock)"; fi
     else skip "python: test generati non eseguiti (pip install pytest pytest-cov)"; fi
   else skip "python: SQLAlchemy non installato (pip install sqlalchemy)"; fi
 fi
@@ -99,6 +110,9 @@ if want typescript; then
       ln -s "$T/node_modules" "$PG/libs/db-models/typescript/node_modules"
       if (cd "$PG/libs/db-models/typescript" && "$T/node_modules/.bin/tsc" -p . --noEmit); then pass "typescript: compilazione strict dialetto postgres (model e test generati)"; else fail "typescript postgres"; fi
       rm -f "$PG/libs/db-models/typescript/node_modules"
+      ln -s "$T/node_modules" "$MG/libs/db-models/typescript/node_modules"
+      if (cd "$MG/libs/db-models/typescript" && "$T/node_modules/.bin/tsc" -p . --noEmit); then pass "typescript: compilazione strict con collection MongoDB (model e test generati)"; else fail "typescript mongo"; fi
+      rm -f "$MG/libs/db-models/typescript/node_modules"
     else skip "typescript: npm install non riuscito"; fi
   else skip "typescript: npm non disponibile"; fi
 fi
@@ -107,6 +121,8 @@ if want java; then
   if command -v javac >/dev/null; then
     if javac -Xlint:all -Werror -d "$WORK/javaout" $(find "$KIT/tests/java/stubs" -name '*.java') $(find "$PG/libs/db-models/java" -name '*.java') 2>&1 | grep -v JAVA_TOOL_OPTIONS; then :; fi
     if [ -d "$WORK/javaout" ] && [ -n "$(find "$WORK/javaout" -name '*Repository.class' | head -1)" ]; then pass "java: compilazione -Xlint:all -Werror (stub JPA/Hibernate)"; else fail "java"; fi
+    if javac -Xlint:all -Werror -d "$WORK/javamongo" $(find "$KIT/tests/java/stubs" -name '*.java') $(find "$MG/libs/db-models/java" -name '*.java') 2>&1 | grep -v JAVA_TOOL_OPTIONS; then :; fi
+    if [ -n "$(find "$WORK/javamongo" -name 'MongoSession.class' 2>/dev/null | head -1)" ]; then pass "java: compilazione -Xlint:all -Werror con collection MongoDB (stub del driver)"; else fail "java mongo"; fi
     if javac -d "$WORK/javaout" -cp "$WORK/javaout" "$KIT/tests/java/runtime/PagingTest.java" 2>&1 | grep -v JAVA_TOOL_OPTIONS; then :; fi
     PYCUR=$(cd "$P" && python3 -B -c "import sys,uuid,datetime as dt; sys.path.insert(0,'libs/db-models/python/src'); from model.generated._paging import encode_cursor; from model.generated import PAGING_ORDINI as S
 class R: data=dt.date(2026,1,2); id=uuid.UUID('00000000-0000-0000-0000-000000000002')
@@ -123,6 +139,7 @@ fi
 if want csharp; then
   if python3 -c "import tree_sitter_c_sharp" 2>/dev/null; then
     if python3 "$KIT/tests/csharp/syntax_check.py" "$PG/libs/db-models/csharp" >/dev/null; then pass "csharp: sintassi del codice generato (tree-sitter)"; else python3 "$KIT/tests/csharp/syntax_check.py" "$PG/libs/db-models/csharp"; fail "csharp sintassi"; fi
+    if python3 "$KIT/tests/csharp/syntax_check.py" "$MG/libs/db-models/csharp" >/dev/null; then pass "csharp: sintassi con collection MongoDB (tree-sitter)"; else python3 "$KIT/tests/csharp/syntax_check.py" "$MG/libs/db-models/csharp"; fail "csharp mongo sintassi"; fi
   else skip "csharp: tree-sitter-c-sharp non installato (pip install tree-sitter tree-sitter-c-sharp)"; fi
   if command -v dotnet >/dev/null; then skip "csharp: compilazione non ancora automatizzata nella suite"; fi
 fi

@@ -269,6 +269,21 @@ public final class Paging {
 
     public static <T> Page<T> runPage(EntityManager em, Class<T> cls, Spec spec, String where, Map<String, Object> params,
                                       PageRequest page, List<OrderItem> fixedOrder, BiFunction<T, String, Object> value) {
+        Prepared prep = prepare(spec, page, fixedOrder);
+        List<OrderItem> order = prep.order();
+        int limit = prep.limit();
+        List<T> rows = query(em, cls, spec, where, params, order, prep.after()).setMaxResults(limit + 1).getResultList();
+        boolean more = rows.size() > limit;
+        List<T> items = more ? new ArrayList<>(rows.subList(0, limit)) : rows;
+        String next = more ? encodeCursor(order, items.get(items.size() - 1), value) : null;
+        return new Page<>(items, next, limit);
+    }
+
+    /** Ordinamento, limite e valori del cursore validati di una richiesta di pagina (comune a SQL e MongoDB). */
+    public record Prepared(List<OrderItem> order, int limit, List<Object> after) {
+    }
+
+    public static Prepared prepare(Spec spec, PageRequest page, List<OrderItem> fixedOrder) {
         PageRequest p = page == null ? PageRequest.first() : page;
         if (fixedOrder != null && p.sort() != null && !p.sort().isBlank()) {
             throw invalid(spec, "sort", "questa query ha un ordinamento fisso");
@@ -277,11 +292,7 @@ public final class Paging {
         int limit = p.limit() == null ? spec.defaultLimit() : p.limit();
         if (limit < 1 || limit > spec.maxLimit()) throw invalid(spec, "limit", "tra 1 e " + spec.maxLimit());
         List<Object> after = p.cursor() == null || p.cursor().isEmpty() ? null : decodeCursor(spec, order, p.cursor());
-        List<T> rows = query(em, cls, spec, where, params, order, after).setMaxResults(limit + 1).getResultList();
-        boolean more = rows.size() > limit;
-        List<T> items = more ? new ArrayList<>(rows.subList(0, limit)) : rows;
-        String next = more ? encodeCursor(order, items.get(items.size() - 1), value) : null;
-        return new Page<>(items, next, limit);
+        return new Prepared(order, limit, after);
     }
 
     public static <T> List<T> listRows(EntityManager em, Class<T> cls, Spec spec, String where, Map<String, Object> params,

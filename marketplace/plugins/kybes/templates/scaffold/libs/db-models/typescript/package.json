@@ -10,6 +10,7 @@
     "test": "python3 -B ../../../tools/kybes/plugins/kybes/scripts/verify.py ../../.. --lang=typescript"
   },
   "dependencies": {
+    "mongodb": "^7.0.0",
     "reflect-metadata": "^0.2.2",
     "typeorm": "^1.1.2"
   },

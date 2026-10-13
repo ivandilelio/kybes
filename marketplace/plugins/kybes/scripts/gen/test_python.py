@@ -6,7 +6,7 @@ from typing import Dict, List
 from emit_python import PY_TYPE, _py_value
 from naming import header, member, method_name, repo_class
 from schema import Table, snake
-from verification import METHODS, Catalog, TestCase, table_asil
+from verification import METHODS, Catalog, TestCase, nulled_columns, over_values, put_over, ttl_column, table_asil
 
 L = "python"
 
@@ -21,6 +21,8 @@ def _sample(t: Table, cn: str) -> str:
     rel = next((r for r in t.relations if r.kind == "many_to_one" and r.foreign_key == cn), None)
     if rel:
         return f"build_{snake(rel.target)}(session).{_attr(rel_target_pk(rel, t))}"
+    if cn == ttl_column(t):
+        return {"date": "date.today() + timedelta(days=next_n())", "datetime": "datetime.now(timezone.utc) + timedelta(hours=next_n())"}[c.type]
     if c.type == "string":
         return f"text_value(next_n(), {c.length})"
     return {"uuid": "uuid.uuid4()", "text": "f'testo {next_n()}'",
@@ -36,16 +38,23 @@ def rel_target_pk(rel, t: Table) -> str:
     return _TABLES[rel.target].pk.name
 
 
+_MONGO = [False]
+
+
+def _fixture_names() -> str:
+    return "engine, isolation_levels, session, session_factory" + (", mongo_client, mongo_db, mongo_session, mongo_session_factory" if _MONGO[0] else "")
+
+
 def conftest_file() -> str:
-    return header(L, "kit") + '''# ruff: noqa
+    return (header(L, "kit") + '''# ruff: noqa
 """Rende disponibili ai test generati le fixture di kybes_fixtures."""
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from kybes_fixtures import engine, isolation_levels, session, session_factory  # noqa: E402,F401
-'''
+from kybes_fixtures import FIXTURES  # noqa: E402,F401
+''').replace("FIXTURES", _fixture_names())
 
 
 def custom_conftest_file() -> str:
@@ -60,7 +69,53 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "generated"))
 
-from kybes_fixtures import engine, isolation_levels, session, session_factory  # noqa: E402,F401
+from kybes_fixtures import FIXTURES  # noqa: E402,F401
+'''.replace("FIXTURES", _fixture_names())
+
+
+MONGO_FIXTURES = '''
+
+# ---- MongoDB (storage: mongo): un database nuovo per ogni test, con gli indici del modello
+MONGO_URL = os.environ.get("KYBES_TEST_MONGO_URL")
+
+
+@pytest.fixture(scope="session")
+def mongo_client():
+    if not MONGO_URL:
+        pytest.skip("KYBES_TEST_MONGO_URL non impostato: serve un MongoDB con replica set per le collection")
+    from pymongo import MongoClient
+    client = MongoClient(MONGO_URL, tz_aware=True)
+    yield client
+    client.close()
+
+
+@pytest.fixture
+def mongo_db(mongo_client):
+    import uuid
+    from model.generated import ensure_mongo_indexes
+    name = "kybes_test_" + uuid.uuid4().hex[:12]
+    db = mongo_client[name]
+    ensure_mongo_indexes(db)
+    yield db
+    mongo_client.drop_database(name)
+
+
+@pytest.fixture
+def mongo_session(mongo_db):
+    """Sessione MongoDB legata al tenant di prova A."""
+    from model.generated import MongoSession, bind_tenant
+    from kybes_builders import TENANT_A
+    ms = MongoSession(mongo_db)
+    bind_tenant(ms, TENANT_A)
+    return ms
+
+
+@pytest.fixture
+def mongo_session_factory(mongo_db):
+    """Sessioni MongoDB senza tenant, come session_factory per SQL."""
+    import contextlib
+    from model.generated import MongoSession
+    return lambda: contextlib.nullcontext(MongoSession(mongo_db))
 '''
 
 
@@ -127,7 +182,7 @@ def session(engine):
         bind_tenant(s, TENANT_A)
         yield s
         s.rollback()
-'''
+''' + (MONGO_FIXTURES if _MONGO[0] else "")
 
 
 _ID_TYPE = ["uuid"]
@@ -220,7 +275,7 @@ def _query_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
     flip = tc.args.get("flip")
     empty = tc.args.get("empty")
     repo = repo_class(L, t.name)
-    lines, over, params, checks, noise = [], [], [], [], []
+    lines, over, params, checks, noise = [], {}, [], [], []
     for i, c in enumerate(q.where):
         col = t.col(c.column)
         a = _attr(c.column)
@@ -231,20 +286,22 @@ def _query_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
             outside, inside = f"{a}=different({lit}, {col.length or 0})", f"{a}={lit}"
             if c.op == "ne":
                 outside, inside = inside, outside
-            over.append(outside if flipped else inside)
+            put_over(over, c.column, outside if flipped else inside, 3 if flipped else 2)
             noise.append(outside)
             checks.append(_py_check(a, c.op, lit))
             continue
         if c.op in ("is_null", "not_null"):
             want_null = (c.op == "is_null") != flipped
-            over.append(f"{a}=None" if want_null else f"{a}={_sample(t, c.column)}")
+            put_over(over, c.column, f"{a}=None" if want_null else f"{a}={_sample(t, c.column)}", 3 if flipped else 2)
             noise.append(f"{a}=None" if c.op == "not_null" else f"{a}={_sample(t, c.column)}")
             checks.append(_py_check(a, c.op, None))
             continue
         if col.nullable:
-            over.append(f"{a}={_sample(t, c.column)}")
+            put_over(over, c.column, f"{a}={_sample(t, c.column)}", 1)
         pn = snake(c.param)
         v = f"e.{a}"
+        if c.column in nulled_columns(q, flip):  # la colonna è vuota nel record: il parametro usa un valore di esempio
+            v = _sample(t, c.column)
         if c.op == "eq":
             expr = f"different({v}, {col.length or 0})" if flipped else v
         elif c.op == "ne":
@@ -263,6 +320,7 @@ def _query_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
             expr = '"zz"' if flipped else f"{v}[:1]"
         params.append((pn, "[]" if i == empty else expr))
         checks.append(_py_check(a, c.op, pn))
+    over = over_values(over)
     lines.append(f"    e = build_{snake(t.name)}(session{', ' + ', '.join(over) if over else ''})")
     if flip is None and empty is None and noise:
         lines.append(f"    build_{snake(t.name)}(session, {', '.join(noise)})  # fuori dalla classe: non deve comparire")
@@ -315,6 +373,11 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
     o.append("from kybes_builders import (build_" + ", build_".join(snake(x) for x in others) +
              ", different, greater, next_n, smaller, text_value, TENANT_A, TENANT_B)")
     compare = [_attr(c.name) for c in t.columns if c.type not in ("datetime",) and not c.generated]
+    if t.mongo:
+        o[o.index("from sqlalchemy.exc import IntegrityError")] = "from pymongo.errors import DuplicateKeyError as IntegrityError"
+        o += ["", "", "@pytest.fixture", "def session(mongo_session):", '    """Collection MongoDB: i test usano la sessione MongoDB del modello."""',
+              "    return mongo_session", "", "", "@pytest.fixture", "def session_factory(mongo_session_factory):",
+              "    return mongo_session_factory"]
     for tc in tcs:
         fixtures = "session, session_factory, tmp_path" if tc.kind.startswith("archive_") else "session, session_factory"
         o += ["", "", f"def test_{tc.slug}({fixtures}):",
@@ -481,9 +544,63 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
             o += _query_case(t, tc, tables)
         elif k.startswith("archive_"):
             o += _archive_case(t, tc, cat)
+        elif k.startswith("mongo_"):
+            o += _mongo_case(t, tc, tables)
         else:
             raise ValueError(k)
+    if t.mongo:
+        o = _for_mongo(o, t)
     return "\n".join(o) + "\n"
+
+
+def _for_mongo(lines: List[str], t: Table) -> List[str]:
+    """Adatta i casi comuni alla sessione MongoDB: niente identity map né flush (si confrontano le chiavi),
+    e l'aggiornamento restituisce un oggetto nuovo."""
+    import re
+    pk = _attr(t.pk.name)
+    out = []
+    for line in lines:
+        if line.strip() in ("session.expire_all()", "session.flush()", "session.rollback()"):
+            continue
+        line = re.sub(r"^(\s+assert )(.+) is e$", rf"\1(\2).{pk} == e.{pk}", line)
+        line = re.sub(r"^(\s+)(\w+Repository\(session\)\.update\(e\.)", r"\1e = \2", line)
+        out.append(line)
+    return out
+
+
+def _mongo_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
+    import mongo_plan
+    n, repo, pk = t.name, repo_class(L, t.name), _attr(t.pk.name)
+    k = tc.kind
+    if k == "mongo_parent_missing":
+        r = next(x for x in t.relations if x.name == tc.args["relation"])
+        return ["    with pytest.raises(ModelValidationError) as err:",
+                f"        build_{snake(n)}(session, {_attr(r.foreign_key)}={_missing_pk(tables[r.target])})",
+                f"    assert err.value.fields.get('{r.foreign_key}') == 'non trovato'"]
+    if k == "mongo_delete_restrict":
+        c, r = tables[tc.args["child"]], next(x for x in tables[tc.args["child"]].relations if x.name == tc.args["relation"])
+        return [f"    e = build_{snake(n)}(session)", f"    build_{snake(c.name)}(session, {_attr(r.foreign_key)}=e.{pk})",
+                "    with pytest.raises(ModelValidationError) as err:", f"        {repo}(session).delete(e.{pk})",
+                f"    assert err.value.fields == {{'{mongo_plan.child_label(t, c, r)}': 'record collegati'}}",
+                f"    assert {repo}(session).exists(e.{pk})"]
+    if k == "mongo_delete_set_null":
+        c, r = tables[tc.args["child"]], next(x for x in tables[tc.args["child"]].relations if x.name == tc.args["relation"])
+        cpk = _attr(c.pk.name)
+        return [f"    e = build_{snake(n)}(session)", f"    child = build_{snake(c.name)}(session, {_attr(r.foreign_key)}=e.{pk})",
+                f"    assert {repo}(session).delete(e.{pk}) is True",
+                f"    assert {repo_class(L, c.name)}(session).get_by_id(child.{cpk}).{_attr(r.foreign_key)} is None"]
+    if k == "mongo_key_given":
+        key = {"uuid": "uuid.UUID(int=424242)", "int": "424242", "bigint": "424242"}[t.pk.type]
+        return [f"    e = build_{snake(n)}(session, {pk}={key})", f"    assert e.{pk} == {key} and {repo}(session).exists({key})"]
+    if k == "mongo_unique_null":
+        a = _attr(tc.args["column"])
+        return [f"    first = build_{snake(n)}(session, {a}=None)", f"    second = build_{snake(n)}(session, {a}=None)",
+                f"    assert {repo}(session).exists(first.{pk}) and {repo}(session).exists(second.{pk})"]
+    if k == "mongo_ttl":
+        ix = next(x for x in mongo_plan.indexes(t) if x.ttl is not None)
+        return [f"    info = session.db['{t.db_name}'].index_information()['{ix.name}']",
+                f"    assert info['expireAfterSeconds'] == {ix.ttl} and info['key'] == [('{ix.fields[0]}', 1)]"]
+    raise ValueError(k)
 
 
 def _py_lit(c, v) -> str:
@@ -530,8 +647,44 @@ def _archive_case(t: Table, tc: TestCase, cat: Catalog) -> List[str]:
     return o
 
 
+def _mongo_runtime_bodies(tables: Dict[str, Table]) -> Dict[str, List[str]]:
+    import mongo_plan
+    expected = {t.db_name: sorted(ix.name for ix in mongo_plan.indexes(t)) for t in tables.values() if t.mongo}
+    partial = {ix.name: (t.db_name, {f: {"$exists": True} for f in ix.partial}) for t in tables.values() if t.mongo
+               for ix in mongo_plan.indexes(t) if ix.partial}
+    return {
+        "rt_mongo_bson": ["    vals = [('uuid', uuid.UUID(int=10)), ('decimal', Decimal('12.30')), ('bigint', 9007199254740993),",
+                          "            ('date', date(2020, 1, 31)), ('datetime', datetime(2020, 1, 31, 10, 20, 30, 123000, tzinfo=timezone.utc)),",
+                          "            ('string', 'x'), ('json', {'a': [1]})]", "    col = mongo_db['kybes_prova']",
+                          "    for typ, v in vals:", "        assert to_bson(None, typ) is None and from_bson(None, typ) is None",
+                          "        col.insert_one({'_id': typ, 'v': to_bson(v, typ)})",
+                          "        assert from_bson(col.find_one({'_id': typ})['v'], typ) == v, typ",
+                          "    assert to_bson(datetime(2020, 1, 31, 10), 'datetime').tzinfo == timezone.utc"],
+        "rt_mongo_prefix": ["    col = mongo_db['kybes_prova']", "    col.insert_many([{'_id': 1, 's': 'a.b*(c[^$\\\\'}, {'_id': 2, 's': 'axb*(c[^$\\\\x'}])",
+                            "    assert [d['_id'] for d in col.find({'s': prefix('a.b*(c[^$\\\\')})] == [1]"],
+        "rt_mongo_counter": ["    assert [next_id(mongo_session, 'a'), next_id(mongo_session, 'a'), next_id(mongo_session, 'b')] == [1, 2, 1]"],
+        "rt_mongo_session": ["    ms = open_mongo_session(mongo_client, mongo_db.name)", "    with pytest.raises(TenantError):", "        tenant_of(ms)",
+                             "    ms = open_mongo_session(mongo_client, mongo_db.name, tenant=TENANT_A)",
+                             "    assert tenant_of(ms) == TENANT_A and ms.db.name == mongo_db.name"],
+        "rt_mongo_commit": ["    mongo_db.create_collection('kybes_prova')", "    def work(ms):",
+                            "        ms.db['kybes_prova'].insert_one({'_id': 1}, session=ms.session)", "        return tenant_of(ms)",
+                            "    assert run_in_mongo_transaction(mongo_client, mongo_db.name, work, tenant=TENANT_A) == TENANT_A",
+                            "    assert mongo_db['kybes_prova'].count_documents({}) == 1"],
+        "rt_mongo_rollback": ["    mongo_db.create_collection('kybes_prova')", "    def work(ms):",
+                              "        ms.db['kybes_prova'].insert_one({'_id': 1}, session=ms.session)",
+                              "        raise RuntimeError('errore applicativo')", "    with pytest.raises(RuntimeError):",
+                              "        run_in_mongo_transaction(mongo_client, mongo_db.name, work)",
+                              "    assert mongo_db['kybes_prova'].count_documents({}) == 0"],
+        "rt_mongo_indexes": ["    ensure_mongo_indexes(mongo_db)  # ripetibile",
+                             f"    for name, ixs in {expected!r}.items():",
+                             "        assert set(ixs) <= set(mongo_db[name].index_information()), name",
+                             f"    for ix, (name, flt) in {partial!r}.items():",
+                             "        assert mongo_db[name].index_information()[ix]['partialFilterExpression'] == flt, ix"],
+    }
+
+
 def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
-    first = next(iter(tables.values()))
+    first = next((x for x in tables.values() if not x.mongo), next(iter(tables.values())))
     bad = "non-un-uuid" if cat.tenant_id_type == "uuid" else "x" * 65
     extra_names = [] if cat.tenant_id_type == "uuid" else [
         "    assert tenant_key('Tenant-A') == 'tenant_a'", "    with pytest.raises(TenantError):", "        tenant_key('nome non valido')"]
@@ -651,6 +804,8 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
                            "    with pytest.raises(Conflict):", "        run_in_transaction(session_factory, work, levels=isolation_levels, tenant=TENANT_A, backoff_s=0)",
                            "    assert len(calls) == 1"],
     }
+    if any(x.mongo for x in tables.values()):
+        bodies.update(_mongo_runtime_bodies(tables))
     o = [header(L, "kit") + "# ruff: noqa", '"""Test di unità generati per i moduli comuni: paginazione (_paging) e Unit of Work (_uow)."""',
          "import base64", "import json", "import uuid", "from datetime import date, datetime, timezone", "from decimal import Decimal", "",
          "import pytest", "from sqlalchemy import select", "",
@@ -676,8 +831,12 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
          "class Conflict(Exception):", "    def __init__(self, code):", "        super().__init__(code)", "        self.sqlstate = code", "", "",
          "class Wrapped(Exception):", '    """Errore del driver avvolto, come fa SQLAlchemy (orig)."""', "    def __init__(self, orig):",
          "        super().__init__(str(orig))", "        self.orig = orig"]
+    if any(x.mongo for x in tables.values()):
+        o += ["from model.generated._mongo import from_bson, next_id, prefix, to_bson",
+              "from model.generated import ensure_mongo_indexes, run_in_mongo_transaction, mongo_session as open_mongo_session"]
     for tc in cat.for_table("_runtime"):
-        o += ["", "", f"def test_{tc.slug}(session, session_factory, isolation_levels):",
+        args = "mongo_session, mongo_client, mongo_db" if tc.kind.startswith("rt_mongo") else "session, session_factory, isolation_levels"
+        o += ["", "", f"def test_{tc.slug}({args}):",
               f'    r"""{tc.id} · {", ".join(tc.reqs)} · {METHODS[tc.method]}: {tc.title}. Atteso: {tc.expected}."""']
         o += bodies[tc.kind]
     return "\n".join(o) + "\n"
@@ -689,6 +848,7 @@ CUSTOM_ONCE = {"custom/conftest.py": custom_conftest_file}
 def emit(cat: Catalog, tables: Dict[str, Table], default_asil: str) -> Dict[str, str]:
     """File relativi alla cartella dei test del pacchetto Python (es. libs/db-models/python/tests)."""
     _ID_TYPE[0] = cat.tenant_id_type
+    _MONGO[0] = any(t.mongo for t in tables.values())
     files = {"generated/conftest.py": conftest_file(), "generated/kybes_fixtures.py": fixtures_file(),
              "generated/kybes_builders.py": builders_file(tables)}
     for n, t in tables.items():

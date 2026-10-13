@@ -1,0 +1,12 @@
+table: Accessi
+description: Registro degli accessi, cancellato da MongoDB dopo 90 giorni (indice TTL)
+storage: mongo
+columns:
+  - { name: Id, type: uuid, primary_key: true }
+  - { name: Utente, type: string, length: 80, required: true }
+  - { name: AvvenutoIl, type: datetime, required: true }
+indexes:
+  - columns: [AvvenutoIl]
+retention:
+  delete_after: 90d
+  column: AvvenutoIl

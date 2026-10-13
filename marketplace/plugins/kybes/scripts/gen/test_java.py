@@ -11,7 +11,7 @@ from typing import Dict, List
 from emit_java import J_TYPE, _java_value
 from naming import header, member, method_name, repo_class
 from schema import Table
-from verification import METHODS, Catalog, TestCase, table_asil
+from verification import METHODS, Catalog, TestCase, nulled_columns, over_values, put_over, ttl_column, table_asil
 
 L = "java"
 
@@ -44,6 +44,8 @@ def _sample(t: Table, cn: str, tables: Dict[str, Table]) -> str:
     rel = next((r for r in t.relations if r.kind == "many_to_one" and r.foreign_key == cn), None)
     if rel:
         return f"build{rel.target}(em).{_get(tables[rel.target].pk.name)}()"
+    if cn == ttl_column(t):
+        return {"date": "LocalDate.now(ZoneOffset.UTC).plusDays(nextN())", "datetime": "OffsetDateTime.now(ZoneOffset.UTC).plusHours(nextN())"}[c.type]
     if c.type == "string":
         return f"textValue(nextN(), {c.length})"
     return {"uuid": "UUID.randomUUID()", "text": '"testo " + nextN()', "int": "nextN()", "bigint": "(long) nextN()",
@@ -80,6 +82,7 @@ def _imports(pkg: str, tables: Dict[str, Table], extra: List[str] = ()) -> List[
 # ------------------------------------------------------------------------------------------- infrastruttura
 
 def db_file(pkg: str, tables: Dict[str, Table]) -> str:
+    tables = {n: t for n, t in tables.items() if not t.mongo}
     classes = "\n".join(f"        cfg.addAnnotatedClass({n}.class);" for n in tables)
     names = ", ".join('\\"' + t.db_name + '\\"' for t in tables.values())
     return header(L, "kit") + f'''package {pkg}.generated;
@@ -258,9 +261,10 @@ def builders_file(pkg: str, tables: Dict[str, Table]) -> str:
           "        return (T) out;",
           "    }"]
     for n, t in tables.items():
-        o += ["", f"    public static {n} build{n}(EntityManager em) {{", f"        return build{n}(em, e -> {{ }});", "    }", "",
+        em_t = "MongoSession" if t.mongo else "EntityManager"
+        o += ["", f"    public static {n} build{n}({em_t} em) {{", f"        return build{n}(em, e -> {{ }});", "    }", "",
               f"    /** Inserisce un {n} valido; over cambia i valori prima dell'inserimento. */",
-              f"    public static {n} build{n}(EntityManager em, Consumer<{n}> over) {{", f"        {n} e = new {n}();"]
+              f"    public static {n} build{n}({em_t} em, Consumer<{n}> over) {{", f"        {n} e = new {n}();"]
         for c in t.columns:
             if (c.primary_key and c.auto) or c.generated or c.default is not None or c.tenant:
                 continue
@@ -287,7 +291,7 @@ def _query_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
     q = next(x for x in t.queries if x.name == tc.args["query"])
     flip, empty = tc.args.get("flip"), tc.args.get("empty")
     repo = repo_class(L, t.name)
-    lines, over, params, checks, noise = [], [], [], [], []
+    lines, over, params, checks, noise = [], {}, [], [], []
     for i, c in enumerate(q.where):
         col = t.col(c.column)
         g, s = _get(c.column), _set(c.column)
@@ -298,21 +302,23 @@ def _query_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
             outside, inside = f"x.{s}(different({lit}, {ln}));", f"x.{s}({lit});"
             if c.op == "ne":
                 outside, inside = inside, outside
-            over.append(outside if flipped else inside)
+            put_over(over, c.column, outside if flipped else inside, 3 if flipped else 2)
             noise.append(outside)
             checks.append(_check(g, c.op, lit, col.type))
             continue
         if c.op in ("is_null", "not_null"):
             want_null = (c.op == "is_null") != flipped
             sample = _sample(t, c.column, tables)
-            over.append(f"x.{s}(null);" if want_null else f"x.{s}({sample});")
+            put_over(over, c.column, f"x.{s}(null);" if want_null else f"x.{s}({sample});", 3 if flipped else 2)
             noise.append(f"x.{s}(null);" if c.op == "not_null" else f"x.{s}({sample});")
             checks.append(_check(g, c.op, None, col.type))
             continue
         if col.nullable:
-            over.append(f"x.{s}({_sample(t, c.column, tables)});")
+            put_over(over, c.column, f"x.{s}({_sample(t, c.column, tables)});", 1)
         pn = member(L, c.param)
         v = f"e.{g}()"
+        if c.column in nulled_columns(q, flip):  # la colonna è vuota nel record: il parametro usa un valore di esempio
+            v = _sample(t, c.column, tables)
         jt = J_TYPE[col.type]
         expr = {
             "eq": f"different({v}, {ln})" if flipped else v,
@@ -328,6 +334,7 @@ def _query_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
             expr = "List.of()"
         params.append((f"Collection<{jt}>" if c.op == "in" else jt, pn, expr))
         checks.append(_check(g, c.op, pn, col.type))
+    over = over_values(over)
     body = " ".join(over)
     lines.append(f"        {t.name} e = build{t.name}(em, x -> {{ {body} }});" if over else f"        {t.name} e = build{t.name}(em);")
     if flip is None and empty is None and noise:
@@ -380,7 +387,9 @@ def test_file(pkg: str, t: Table, cat: Catalog, tables: Dict[str, Table], defaul
               f"    void {tc.slug}(){' throws Exception' if tc.kind.startswith('archive_') else ''} {{", f"        // atteso: {tc.expected}"]
         k = tc.kind
         b = f"build{n}"
-        if k == "create_valid":
+        if t.mongo and k in ("unique_duplicate", "tenant_required", "rel_children") or k.startswith("mongo_"):
+            o += _mongo_case(t, tc, tables)
+        elif k == "create_valid":
             o += [f"        {n} e = {b}(em);", "        em.flush();", "        em.clear();",
                   f"        {n} got = new {repo}(em).getById(e.{pk}()).orElseThrow();"]
             o += [f'        assertEquals(0, cmp(got.{_get(cn)}(), e.{_get(cn)}()), "{cn}");' for cn in compare]
@@ -569,6 +578,8 @@ def test_file(pkg: str, t: Table, cat: Catalog, tables: Dict[str, Table], defaul
         else:
             raise ValueError(k)
         o.append("    }")
+    if t.mongo:
+        o = _for_mongo(o)
     if any(tc.kind.startswith("archive_") for tc in cat.for_table(n)):
         o += ["", "    /** Scrive un oggetto per chiave in un archivio su cartella temporanea e ne restituisce la radice. */",
               "    static java.nio.file.Path archiveWith(String path, String content) throws java.io.IOException {",
@@ -577,6 +588,185 @@ def test_file(pkg: str, t: Table, cat: Catalog, tables: Dict[str, Table], defaul
               "        java.nio.file.Files.writeString(file, content);", "        return root;", "    }"]
     o.append("}")
     return "\n".join(o) + "\n"
+
+
+def _for_mongo(o: List[str]) -> List[str]:
+    """Test di una collection MongoDB: MongoSession al posto dell'EntityManager, nessun flush/clear (le scritture sono immediate)."""
+    out = []
+    for x in o:
+        if x.strip() in ("em.flush();", "em.clear();", "em.detach(e);"):
+            continue
+        x = (x.replace("private EntityManager em;", "private MongoSession em;").replace("KybesDb.open()", "KybesMongo.open()")
+             .replace("KybesDb.close(em)", "KybesMongo.close(em)").replace("Tenancy.bind(em, ", "em.bindTenant("))
+        out.append(x)
+    return out
+
+
+def _mongo_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
+    import mongo_plan
+    n, repo, pk, b = t.name, repo_class(L, t.name), _get(t.pk.name), f"build{t.name}"
+    k = tc.kind
+    if k == "unique_duplicate":
+        cn = tc.args["column"]
+        return [f"        {n} e = {b}(em);",
+                f"        assertThrows(com.mongodb.MongoWriteException.class, () -> {b}(em, x -> x.{_set(cn)}(e.{_get(cn)}())));"]
+    if k == "tenant_required":
+        return [f"        assertThrows(Tenancy.TenantException.class, () -> new {repo}(new MongoSession(em.db(), null)));"]
+    if k == "rel_children":
+        r = next(x for x in t.relations if x.name == tc.args["relation"])
+        ct = tables[r.target]
+        cpk, fk = _get(ct.pk.name), _get(r.foreign_key)
+        return [f"        {n} parent = {b}(em);", f"        {r.target} child = build{r.target}(em, x -> x.{_set(r.foreign_key)}(parent.{pk}()));",
+                f"        List<{r.target}> items = new {repo}(em).{method_name(L, 'list_rel:' + r.name)}(parent.{pk}(), Paging.PageRequest.of({ct.pagination.max_limit})).items();",
+                f"        assertTrue(items.stream().anyMatch(x -> Objects.equals(x.{cpk}(), child.{cpk}())));",
+                f"        assertTrue(items.stream().allMatch(x -> Objects.equals(x.{fk}(), parent.{pk}())));"]
+    if k == "mongo_parent_missing":
+        r = next(x for x in t.relations if x.name == tc.args["relation"])
+        return [f'        ModelValidationException error = assertInvalid("{r.foreign_key}", () -> {b}(em, x -> x.{_set(r.foreign_key)}({_missing_pk(tables[r.target])})));',
+                f'        assertEquals("non trovato", error.getFields().get("{r.foreign_key}"));']
+    if k in ("mongo_delete_restrict", "mongo_delete_set_null"):
+        c = tables[tc.args["child"]]
+        r = next(x for x in c.relations if x.name == tc.args["relation"])
+        o = [f"        {n} e = {b}(em);", f"        {c.name} child = build{c.name}(em, x -> x.{_set(r.foreign_key)}(e.{pk}()));",
+             f"        {repo} repo = new {repo}(em);"]
+        if k == "mongo_delete_restrict":
+            o += [f"        ModelValidationException error = assertThrows(ModelValidationException.class, () -> repo.delete(e.{pk}()));",
+                  f'        assertEquals("record collegati", error.getFields().get("{mongo_plan.child_label(t, c, r)}"));',
+                  f"        assertTrue(repo.exists(e.{pk}()));", f"        assertTrue(new {repo_class(L, c.name)}(em).exists(child.{_get(c.pk.name)}()));"]
+        else:
+            o += [f"        assertTrue(repo.delete(e.{pk}()));",
+                  f"        assertNull(new {repo_class(L, c.name)}(em).getById(child.{_get(c.pk.name)}()).orElseThrow().{_get(r.foreign_key)}());"]
+        return o
+    if k == "mongo_ttl":
+        ix = next(x for x in mongo_plan.indexes(t) if x.ttl is not None)
+        return ["        org.bson.Document info = null;",
+                f'        for (org.bson.Document i : em.db().getCollection("{t.db_name}").listIndexes()) if ("{ix.name}".equals(i.getString("name"))) info = i;',
+                f'        assertNotNull(info, "{ix.name}");', f'        assertEquals({ix.ttl}L, ((Number) info.get("expireAfterSeconds")).longValue());',
+                '        org.bson.Document key = info.get("key", org.bson.Document.class);',
+                f'        assertEquals(Set.of("{ix.fields[0]}"), key.keySet());', f'        assertEquals(1, ((Number) key.get("{ix.fields[0]}")).intValue());']
+    if k == "mongo_unique_null":
+        cn = tc.args["column"]
+        return [f"        {n} first = {b}(em, x -> x.{_set(cn)}(null));", f"        {n} second = {b}(em, x -> x.{_set(cn)}(null));",
+                f"        assertTrue(new {repo}(em).exists(first.{pk}()));", f"        assertTrue(new {repo}(em).exists(second.{pk}()));"]
+    if k == "mongo_key_given":
+        # in Java la chiave generata non ha setter: il repository la assegna sempre, diversa a ogni inserimento
+        return [f"        {n} first = {b}(em);", f"        {n} second = {b}(em);", f"        assertNotNull(first.{pk}());",
+                f"        assertNotEquals(first.{pk}(), second.{pk}());", f"        assertTrue(new {repo}(em).exists(second.{pk}()));"]
+    raise ValueError(k)
+
+
+def mongo_file(pkg: str) -> str:
+    return header(L, "kit") + f'''package {pkg}.generated;
+
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.MongoClients;
+import com.mongodb.client.MongoDatabase;
+import java.util.UUID;
+
+/**
+ * Database MongoDB dei test delle collection (storage: mongo): il server indicato da KYBES_TEST_MONGO_URL (replica set,
+ * per le transazioni). Ogni test lavora in un database nuovo con gli indici del modello, eliminato alla fine.
+ */
+public final class KybesMongo {{
+
+    private static MongoClient client;
+
+    private KybesMongo() {{
+    }}
+
+    public static synchronized MongoClient client() {{
+        if (client == null) {{
+            String url = System.getenv("KYBES_TEST_MONGO_URL");
+            if (url == null || url.isBlank()) {{
+                throw new IllegalStateException("Imposta KYBES_TEST_MONGO_URL (MongoDB con replica set) per eseguire i test delle collection");
+            }}
+            client = MongoClients.create(url);
+        }}
+        return client;
+    }}
+
+    /** Database vuoto con gli indici e TENANT_A legato. */
+    public static MongoSession open() {{
+        MongoDatabase db = client().getDatabase("kybes_test_" + UUID.randomUUID().toString().replace("-", ""));
+        MongoIndexes.ensure(db);
+        MongoSession em = new MongoSession(db, null);
+        em.bindTenant(KybesBuilders.TENANT_A);
+        return em;
+    }}
+
+    public static void close(MongoSession em) {{
+        em.db().drop();
+    }}
+}}
+'''
+
+
+def _mongo_runtime_bodies(tables: Dict[str, Table]) -> Dict[str, List[str]]:
+    import mongo_plan
+    expected = {t.db_name: sorted(ix.name for ix in mongo_plan.indexes(t)) for t in tables.values() if t.mongo}
+    partial = [(ix.name, t.db_name, json.dumps({f: {"$exists": True} for f in ix.partial})) for t in tables.values() if t.mongo
+               for ix in mongo_plan.indexes(t) if ix.partial]
+    return {
+        "rt_mongo_bson": ['        var col = m.collection("kybes_prova");',
+                          '        Object[][] vals = {{"uuid", UUID.fromString("00000000-0000-0000-0000-00000000000a")}, {"decimal", new BigDecimal("12.30")},',
+                          '            {"bigint", 9007199254740993L}, {"int", 7}, {"date", LocalDate.parse("2020-01-31")},',
+                          '            {"datetime", OffsetDateTime.parse("2020-01-31T10:20:30.123+02:00")}, {"string", "x"}, {"bool", Boolean.TRUE},',
+                          '            {"json", "{\\"a\\": [1]}"}};',
+                          "        for (Object[] v : vals) {", "            String type = (String) v[0];",
+                          "            assertNull(MongoSession.toBson(null, type));", "            assertNull(MongoSession.fromBson(null, type));",
+                          '            col.insertOne(new org.bson.Document("_id", type).append("v", MongoSession.toBson(v[1], type)));',
+                          '            Object back = MongoSession.fromBson(col.find(new org.bson.Document("_id", type)).first().get("v"), type);',
+                          "            assertEquals(0, cmp(back, v[1]), type);", "        }",
+                          '        assertEquals("00000000-0000-0000-0000-00000000000a", MongoSession.toBson(new UUID(0, 10), "uuid"));'],
+        "rt_mongo_prefix": ['        var col = m.collection("kybes_prova");',
+                            '        col.insertOne(new org.bson.Document("_id", 1).append("s", "a.b*(c[^$\\\\"));',
+                            '        col.insertOne(new org.bson.Document("_id", 2).append("s", "axb*(c[^$\\\\x"));',
+                            '        List<Object> ids = new ArrayList<>();',
+                            '        for (org.bson.Document d : col.find(new org.bson.Document("s", MongoSession.prefix("a.b*(c[^$\\\\")))) ids.add(d.get("_id"));',
+                            "        assertEquals(List.of(1), ids);"],
+        "rt_mongo_counter": ['        assertEquals(List.of(1L, 2L, 1L), List.of(m.nextId("a"), m.nextId("a"), m.nextId("b")));'],
+        "rt_mongo_session": ["        String name = m.db().getName();", "        MongoSession fresh = MongoSession.open(KybesMongo.client(), name, null);",
+                             "        assertThrows(Tenancy.TenantException.class, fresh::requireTenant);", "        assertNull(fresh.session());",
+                             "        MongoSession bound = MongoSession.open(KybesMongo.client(), name, TENANT_A);",
+                             "        assertEquals(TENANT_A, bound.requireTenant());", "        assertEquals(name, bound.db().getName());",
+                             "        bound.bindTenant(String.valueOf(TENANT_B));", "        assertEquals(TENANT_B, bound.requireTenant());",
+                             "        bound.bindTenant(null);", "        assertThrows(Tenancy.TenantException.class, bound::requireTenant);",
+                             "        // colonne non ordinabili e valori non generati: rifiutati"]
+        + [x for t in tables.values() if t.mongo for x in (
+            f'        assertThrows(IllegalArgumentException.class, () -> new {t.name}().kybesValue("kybesNonOrdinabile"));',
+            f'        assertThrows(IllegalArgumentException.class, () -> new {t.name}().kybesGenerated("kybesNonGenerato", null));')],
+        "rt_mongo_commit": ['        m.db().createCollection("kybes_prova");', "        m.db().createCollection(MongoSession.COUNTERS);",
+                            "        Object got = MongoSession.transaction(KybesMongo.client(), m.db().getName(), tx -> {",
+                            "            assertNotNull(tx.session());",
+                            '            tx.insert("kybes_prova", new org.bson.Document("_id", 1).append("n", 1));',
+                            '            tx.insert("kybes_prova", new org.bson.Document("_id", 2).append("n", 2));',
+                            '            tx.replace("kybes_prova", new org.bson.Document("_id", 1), new org.bson.Document("_id", 1).append("n", 10));',
+                            '            tx.updateMany("kybes_prova", new org.bson.Document("_id", 2), new org.bson.Document("$set", new org.bson.Document("n", 20)));',
+                            '            assertEquals(Integer.valueOf(20), tx.findOne("kybes_prova", new org.bson.Document("_id", 2)).getInteger("n"));',
+                            '            tx.delete("kybes_prova", new org.bson.Document("_id", 2));',
+                            '            assertEquals(Integer.valueOf(10), tx.findOne("kybes_prova", new org.bson.Document("_id", 1)).getInteger("n"));',
+                            '            assertEquals(1, tx.find("kybes_prova", new org.bson.Document(), new org.bson.Document("_id", 1), 10).size());',
+                            '            assertEquals(1L, tx.count("kybes_prova", new org.bson.Document(), 0));',
+                            '            assertEquals(1L, tx.nextId("kybes_prova"));',
+                            "            return tx.requireTenant();", "        }, TENANT_A);", "        assertEquals(TENANT_A, got);",
+                            '        assertEquals(1L, m.collection("kybes_prova").countDocuments());'],
+        "rt_mongo_rollback": ['        m.db().createCollection("kybes_prova");',
+                              "        IllegalStateException error = assertThrows(IllegalStateException.class, () -> MongoSession.transaction(KybesMongo.client(), m.db().getName(), tx -> {",
+                              '            tx.insert("kybes_prova", new org.bson.Document("_id", 1));',
+                              '            throw new IllegalStateException("errore applicativo");', "        }, null));",
+                              '        assertEquals("errore applicativo", error.getMessage());',
+                              '        assertEquals(0L, m.collection("kybes_prova").countDocuments());'],
+        "rt_mongo_indexes": ["        MongoIndexes.ensure(m.db()); // ripetibile"]
+        + [x for coll, ixs in expected.items() for x in (
+            "        {", "            Set<String> have = new HashSet<>();",
+            f'            for (org.bson.Document i : m.db().getCollection("{coll}").listIndexes()) have.add(i.getString("name"));',
+            f"            assertTrue(have.containsAll(List.of({', '.join(_jstr(i) for i in ixs)})), have.toString());", "        }")]
+        + [x for ix, coll, flt in partial for x in (
+            "        {", "            org.bson.Document info = null;",
+            f'            for (org.bson.Document i : m.db().getCollection("{coll}").listIndexes()) if ("{ix}".equals(i.getString("name"))) info = i;',
+            f'            assertNotNull(info, "{ix}");',
+            f'            assertEquals(org.bson.Document.parse({_jstr(flt)}), info.get("partialFilterExpression"), "{ix}");', "        }")],
+    }
 
 
 def _java_expect(c, v, got: str) -> str:
@@ -636,15 +826,16 @@ def _archive_case(t: Table, tc: TestCase, cat: Catalog) -> List[str]:
 # ------------------------------------------------------------------------------------------- moduli comuni
 
 def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
-    first = next(iter(tables.values()))
+    first = next((x for x in tables.values() if not x.mongo), next(iter(tables.values())))
+    sql = {k: v for k, v in tables.items() if not v.mongo}
     bad = "non-un-uuid" if cat.tenant_id_type == "uuid" else "x" * 65
     extra_names = [] if cat.tenant_id_type == "uuid" else [
         '        assertEquals("tenant_a", Tenancy.key("Tenant-A"));',
         '        assertThrows(Tenancy.TenantException.class, () -> Tenancy.key("nome non valido"));']
     n, repo = first.name, repo_class(L, first.name)
     pk = _get(first.pk.name)
-    tbl_list = ", ".join(f"{x}.class" for x in tables)
-    repo_list = ", ".join(f"{repo_class(L, x)}.class" for x in tables)
+    tbl_list = ", ".join(f"{x}.class" for x in sql)
+    repo_list = ", ".join(f"{repo_class(L, x)}.class" for x in sql)
     bodies = {
         "rt_exports": [f"        for (Class<?> entity : List.<Class<?>>of({tbl_list})) {{",
                        '            assertNotNull(entity.getAnnotation(jakarta.persistence.Entity.class), entity.getSimpleName());',
@@ -831,9 +1022,15 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
         "        public void setRollbackOnly() { }", "        public boolean getRollbackOnly() { return false; }",
         "        public void setTimeout(Integer timeout) { }", "        public Integer getTimeout() { return null; }",
         "        public boolean isActive() { return active; }", "    }"]
+    if any(x.mongo for x in tables.values()):
+        bodies.update(_mongo_runtime_bodies(tables))
     for tc in cat.for_table("_runtime"):
+        body = bodies[tc.kind]
+        if tc.kind.startswith("rt_mongo"):
+            body = ["        MongoSession m = KybesMongo.open();", "        try {"] + ["    " + x for x in body] + [
+                "        } finally {", "            KybesMongo.close(m);", "        }"]
         o += ["", "    @Test", f"    @DisplayName({_jstr(tc.id + ' · ' + ', '.join(tc.reqs) + ' · ' + METHODS[tc.method] + ': ' + tc.title)})",
-              f"    void {tc.slug}() throws Exception {{"] + bodies[tc.kind] + ["    }"]
+              f"    void {tc.slug}() throws Exception {{"] + body + ["    }"]
     o.append("}")
     return "\n".join(o) + "\n"
 
@@ -845,4 +1042,6 @@ def emit(cat: Catalog, tables: Dict[str, Table], default_asil: str, pkg: str = "
     for n, t in tables.items():
         files[f"generated/{n}Test.java"] = test_file(pkg, t, cat, tables, default_asil)
     files["generated/KybesRuntimeTest.java"] = runtime_file(pkg, cat, tables)
+    if any(t.mongo for t in tables.values()):
+        files["generated/KybesMongo.java"] = mongo_file(pkg)
     return files

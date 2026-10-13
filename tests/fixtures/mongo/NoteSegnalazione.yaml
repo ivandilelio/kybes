@@ -1,0 +1,16 @@
+table: NoteSegnalazione
+description: Note di lavoro sulle segnalazioni, con risposte tra note
+storage: mongo
+tenancy: column
+columns:
+  - { name: Id, type: bigint, primary_key: true }
+  - { name: SegnalazioneId, type: uuid, required: true }
+  - { name: RispostaA, type: bigint }
+  - { name: Testo, type: text, required: true }
+  - { name: ScrittaIl, type: datetime, required: true }
+relations:
+  - { name: Segnalazione, kind: many_to_one, target: Segnalazioni, foreign_key: SegnalazioneId, on_delete: restrict }
+  - { name: Risposta, kind: many_to_one, target: NoteSegnalazione, foreign_key: RispostaA, on_delete: set_null }
+pagination:
+  default_order: [{ column: ScrittaIl, dir: desc }]
+  sortable: [ScrittaIl]

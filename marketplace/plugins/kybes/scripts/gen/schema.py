@@ -18,7 +18,8 @@ RETURNS = {"page", "list", "one"}
 ISOLATION = {"read_committed", "repeatable_read", "serializable"}
 ISOLATION_RANK = {"read_committed": 0, "repeatable_read": 1, "serializable": 2}
 SORTABLE_TYPES = {"uuid", "string", "int", "bigint", "decimal", "date", "datetime"}
-RESERVED_KEYS = {"storage": 6}
+RESERVED_KEYS: Dict[str, int] = {}
+STORAGES = ("sql", "mongo")
 TENANCY = ("none", "column", "schema", "database")
 TENANT_COL = "TenantId"
 TENANT_ID_TYPES = ("uuid", "string")
@@ -163,6 +164,11 @@ class Table:
     archive: Optional[Archive] = None
     retention: Optional[Retention] = None
     job: Optional[Job] = None
+    storage: str = "sql"                 # sql | mongo
+
+    @property
+    def mongo(self) -> bool:
+        return self.storage == "mongo"
 
     @property
     def job_name(self) -> str:
@@ -202,7 +208,7 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
     if not isinstance(data, dict):
         return None, [f"{f}: il file deve contenere una mappa con 'table' e 'columns'"]
     allowed = {"table", "db_name", "description", "columns", "relations", "indexes", "queries", "pagination", "transactions",
-               "verification", "tenancy", "archive", "retention"}
+               "verification", "tenancy", "archive", "retention", "storage"}
     for k in data:
         if k in RESERVED_KEYS:
             errs.append(f"{f}: la chiave '{k}' è prevista nella fase {RESERVED_KEYS[k]} della roadmap e non è ancora supportata")
@@ -362,10 +368,21 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
         errs.append(f"{f}: la colonna {TENANT_COL} è riservata: la aggiunge il generatore alle tabelle con tenancy: column")
 
     archive, retention, job = _parse_lifecycle(f, data.get("archive"), data.get("retention"), errs)
+    storage = data.get("storage", "sql")
+    if storage not in STORAGES:
+        errs.append(f"{f}: storage ammette {', '.join(STORAGES)}")
+        storage = "sql"
+    if storage == "mongo":
+        if archive is not None:
+            errs.append(f"{f}: archive non è disponibile per storage mongo: usa retention (indice TTL di MongoDB) o una tabella SQL")
+        if isinstance(data.get("retention"), dict) and "job" in data["retention"]:
+            errs.append(f"{f}: retention.job non vale per storage mongo: la cancellazione la fa MongoDB con un indice TTL")
+        if tx is not None:
+            errs.append(f"{f}: transactions non vale per storage mongo: le transazioni MongoDB sono snapshot")
     t = Table(name=name, db_name=data.get("db_name") or snake(name), description=str(data.get("description") or ""),
               columns=cols, relations=rels, indexes=idx, source=str(path), queries=queries,
               pagination=pagination, isolation=isolation, asil=asil, tenancy=tenancy,
-              archive=archive, retention=retention, job=job)
+              archive=archive, retention=retention, job=job, storage=storage)
     return t, errs
 
 
@@ -752,6 +769,17 @@ def apply_tenancy(tables: Dict[str, Table], default: str = "none", id_type: str 
             a.partition_by.insert(0, "tenant")   # implicita: l'archivio è separato per Organization
         if a and t.tenancy == "none" and "tenant" in a.partition_by:
             errs.append(f"{t.name}.archive.partition_by: tenant vale solo per le tabelle multi-tenant (tenancy: none)")
+        if t.mongo and t.tenancy == "schema":
+            errs.append(f"{t.name}: tenancy schema non vale per storage mongo (usa column o database)")
+        if t.mongo and t.retention and lifecycle_children(t, tables):
+            errs.append(f"{t.name}: retention con storage mongo usa un indice TTL, che non controlla i record collegati: "
+                        f"{', '.join(c.name for c, _ in lifecycle_children(t, tables))} si riferisce a {t.name}")
+        for r in t.relations:
+            if r.target in tables and tables[r.target].storage != t.storage:
+                errs.append(f"{t.name}.relations.{r.name}: {t.name} ({t.storage}) e {r.target} ({tables[r.target].storage}) "
+                            "hanno storage diversi: le relazioni valgono tra tabelle dello stesso storage")
+            elif t.mongo and r.kind == "many_to_one" and r.on_delete == "cascade":
+                errs.append(f"{t.name}.relations.{r.name}: on_delete cascade non è supportato con storage mongo (usa restrict o set_null)")
         if (t.archive or t.retention) and t.tenancy == "none":
             for c, r in lifecycle_children(t, tables):
                 if c.tenancy in ("schema", "database"):

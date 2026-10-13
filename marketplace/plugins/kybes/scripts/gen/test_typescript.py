@@ -8,7 +8,7 @@ from typing import Dict, List
 from emit_typescript import _ts_value
 from naming import header, member, method_name, repo_class
 from schema import Table, snake
-from verification import METHODS, Catalog, TestCase, table_asil
+from verification import METHODS, Catalog, TestCase, nulled_columns, over_values, put_over, ttl_column, table_asil
 
 L = "typescript"
 _ID_TYPE = ["uuid"]
@@ -59,6 +59,9 @@ def _sample(t: Table, cn: str, tables: Dict[str, Table]) -> str:
     rel = next((r for r in t.relations if r.kind == "many_to_one" and r.foreign_key == cn), None)
     if rel:
         return f"(await build{rel.target}(em)).{_a(tables[rel.target].pk.name)}"
+    if cn == ttl_column(t):
+        return {"date": "new Date(Date.now() + nextN() * 86400000).toISOString().slice(0, 10)",
+                "datetime": "new Date(Date.now() + nextN() * 3600000)"}[c.type]
     if c.type == "string":
         return f"textValue(nextN(), {c.length})"
     return {"uuid": "randomUUID()", "text": "`testo ${nextN()}`", "int": "nextN()", "bigint": "String(nextN())",
@@ -69,6 +72,8 @@ def _sample(t: Table, cn: str, tables: Dict[str, Table]) -> str:
 def builders_file(tables: Dict[str, Table]) -> str:
     o = [header(L, "kit") + HEAD_LINT + "// Costruttori di dati validi per i test generati: un record per chiamata, valori deterministici.",
          'import { randomUUID } from "node:crypto";', 'import type { EntityManager } from "typeorm";']
+    if any(t.mongo for t in tables.values()):
+        o.append('import type { MongoSession } from "../../src/model/generated";')
     for n in tables:
         o.append(f'import {{ {n}, {repo_class(L, n)} }} from "../../src/model/{n}";')
     tval = ('"00000000-0000-4000-8000-00000000000{}"' if _ID_TYPE[0] == "uuid" else '"tenant-{}"')
@@ -126,7 +131,7 @@ def builders_file(tables: Dict[str, Table]) -> str:
           "}"]
     for n, t in tables.items():
         o += ["", f"/** Inserisce un {n} valido; over sostituisce i valori. */",
-              f"export async function build{n}(em: EntityManager, over: Record<string, unknown> = {{}}): Promise<{n}> {{",
+              f"export async function build{n}(em: {'MongoSession' if t.mongo else 'EntityManager'}, over: Record<string, unknown> = {{}}): Promise<{n}> {{",
               "  const data: Record<string, unknown> = {};"]
         for c in t.columns:
             if (c.primary_key and c.auto) or c.generated or c.default is not None or c.tenant:
@@ -167,7 +172,7 @@ def _query_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
     flip = tc.args.get("flip")
     empty = tc.args.get("empty")
     repo = repo_class(L, t.name)
-    lines, over, params, checks, noise = [], [], [], [], []
+    lines, over, params, checks, noise = [], {}, [], [], []
     for i, c in enumerate(q.where):
         col = t.col(c.column)
         a = _a(c.column)
@@ -179,20 +184,22 @@ def _query_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
             outside, inside = f'{a}: different({lit}, "{kind}", {ln})', f"{a}: {lit}"
             if c.op == "ne":
                 outside, inside = inside, outside
-            over.append(outside if flipped else inside)
+            put_over(over, c.column, outside if flipped else inside, 3 if flipped else 2)
             noise.append(outside)
             checks.append(_check(a, c.op, lit, kind))
             continue
         if c.op in ("is_null", "not_null"):
             want_null = (c.op == "is_null") != flipped
-            over.append(f"{a}: null" if want_null else f"{a}: {_sample(t, c.column, tables)}")
+            put_over(over, c.column, f"{a}: null" if want_null else f"{a}: {_sample(t, c.column, tables)}", 3 if flipped else 2)
             noise.append(f"{a}: null" if c.op == "not_null" else f"{a}: {_sample(t, c.column, tables)}")
             checks.append(_check(a, c.op, None, kind))
             continue
         if col.nullable:
-            over.append(f"{a}: {_sample(t, c.column, tables)}")
+            put_over(over, c.column, f"{a}: {_sample(t, c.column, tables)}", 1)
         pn = member(L, c.param)
         v = f"e.{a}"
+        if c.column in nulled_columns(q, flip):  # la colonna è vuota nel record: il parametro usa un valore di esempio
+            v = _sample(t, c.column, tables)
         K = f'"{kind}"'
         expr = {
             "eq": f"different({v}, {K}, {ln})" if flipped else v,
@@ -206,6 +213,7 @@ def _query_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
         }[c.op]
         params.append((pn, "[]" if i == empty else expr))
         checks.append(_check(a, c.op, pn, kind))
+    over = over_values(over)
     lines.append(f"    const e = await build{t.name}(em{', { ' + ', '.join(over) + ' }' if over else ''});")
     if flip is None and empty is None and noise:
         lines.append(f"    await build{t.name}(em, {{ {', '.join(noise)} }}); // fuori dalla classe: non deve comparire")
@@ -244,10 +252,10 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
     for x in others:
         o.append(f'import {{ {repo_class(L, x)} }} from "../../src/model/{x}";')
     o += ['import { withDb } from "./_db";',
-          'import { ' + ", ".join(sorted({f"build{x}" for x in others} | {"cmp", "different", "greater", "nextN", "smaller", "textValue", "TENANT_A", "TENANT_B"})) +
+          'import { ' + ", ".join(sorted({f"build{x}" for x in others} | {"cmp", "dayValue", "different", "greater", "nextN", "smaller", "textValue", "TENANT_A", "TENANT_B"})) +
           ' } from "./kybes_builders";', "",
           "const invalid = (field: string) => (e: unknown) => e instanceof ModelValidationError && field in e.fields;",
-          "void [cmp, different, greater, nextN, smaller, textValue, TenantError, bindTenant, TENANT_A, TENANT_B];"]
+          "void [cmp, dayValue, different, greater, nextN, smaller, textValue, TenantError, bindTenant, TENANT_A, TENANT_B];"]
     if any(tc.kind == "page_sort_each" for tc in cat.for_table(n)):
         o.insert(o.index('import { withDb } from "./_db";'), 'import type { Kind } from "./kybes_builders";')
     compare = [(c.name, c.type) for c in t.columns if c.type not in ("datetime", "json") and not c.generated]
@@ -419,9 +427,14 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
             o += _query_case(t, tc, tables)
         elif k.startswith("archive_"):
             o += _archive_case(t, tc, cat)
+        elif k.startswith("mongo_"):
+            o += _mongo_case(t, tc, tables)
         else:
             raise ValueError(k)
         o.append("  }));")
+    if t.mongo:
+        o = [x.replace('import { withDb } from "./_db";', 'import { withMongo } from "./_mongo_db";').replace("  withDb(async (em, ds) => {", "  withMongo(async (em, ds) => {")
+             for x in o]
     if any(tc.kind.startswith("archive_") for tc in cat.for_table(n)):
         at = o.index('import { withDb } from "./_db";')
         o[at:at] = ['import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";', 'import { tmpdir } from "node:os";',
@@ -432,6 +445,74 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
               '  const root = mkdtempSync(join(tmpdir(), "kybes-archivio-"));', "  mkdirSync(dirname(join(root, path)), { recursive: true });",
               "  writeFileSync(join(root, path), content);", "  return root;", "}", "void archivePath;"]
     return _drop_unused_repos(o, [repo_class(L, x) for x in others])
+
+
+def _mongo_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
+    import mongo_plan
+    n, repo, pk = t.name, repo_class(L, t.name), _a(t.pk.name)
+    k = tc.kind
+    if k == "mongo_parent_missing":
+        r = next(x for x in t.relations if x.name == tc.args["relation"])
+        return [f'    await assert.rejects(build{n}(em, {{ {_a(r.foreign_key)}: {_missing_pk(tables[r.target])} }}),',
+                f'      (err: unknown) => err instanceof ModelValidationError && err.fields["{r.foreign_key}"] === "non trovato");']
+    if k in ("mongo_delete_restrict", "mongo_delete_set_null"):
+        c = tables[tc.args["child"]]
+        r = next(x for x in c.relations if x.name == tc.args["relation"])
+        o = [f"    const e = await build{n}(em);", f"    const child = await build{c.name}(em, {{ {_a(r.foreign_key)}: e.{pk} }});"]
+        if k == "mongo_delete_restrict":
+            o += [f"    void child;", f"    await assert.rejects(new {repo}(em).delete(e.{pk}),",
+                  f'      (err: unknown) => err instanceof ModelValidationError && err.fields["{mongo_plan.child_label(t, c, r)}"] === "record collegati");',
+                  f"    assert.ok(await new {repo}(em).exists(e.{pk}));"]
+        else:
+            o += [f"    assert.equal(await new {repo}(em).delete(e.{pk}), true);",
+                  f"    assert.equal((await new {repo_class(L, c.name)}(em).getById(child.{_a(c.pk.name)}))!.{_a(r.foreign_key)}, null);"]
+        return o
+    if k == "mongo_ttl":
+        ix = next(x for x in mongo_plan.indexes(t) if x.ttl is not None)
+        return [f'    const info = (await em.db.collection("{t.db_name}").indexes()).find((i) => i.name === "{ix.name}");',
+                f'    assert.equal(info?.expireAfterSeconds, {ix.ttl});', f'    assert.deepEqual(info?.key, {{ "{ix.fields[0]}": 1 }});']
+    if k == "mongo_unique_null":
+        a = _a(tc.args["column"])
+        return [f"    const first = await build{n}(em, {{ {a}: null }});", f"    const second = await build{n}(em, {{ {a}: null }});",
+                f"    assert.ok(await new {repo}(em).exists(first.{pk}));", f"    assert.ok(await new {repo}(em).exists(second.{pk}));"]
+    if k == "mongo_key_given":
+        key = {"uuid": '"00000000-0000-4000-8000-000000424242"', "int": "424242", "bigint": '"424242"'}[t.pk.type]
+        return [f"    const e = await build{n}(em, {{ {pk}: {key} }});", f"    assert.equal(e.{pk}, {key});",
+                f"    assert.ok(await new {repo}(em).exists({key}));"]
+    raise ValueError(k)
+
+
+def mongo_db_file() -> str:
+    return header(L, "kit") + HEAD_LINT + '''// Database MongoDB isolato per ogni test delle collection (storage: mongo): KYBES_TEST_MONGO_URL, con replica set.
+import { randomUUID } from "node:crypto";
+import { MongoClient } from "mongodb";
+import type { Db } from "mongodb";
+import { MongoSession, bindTenant, ensureMongoIndexes } from "../../src/model/generated";
+import { TENANT_A } from "./kybes_builders";
+
+export interface MongoTestDb {
+  client: MongoClient;
+  db: Db;
+  /** Sessione senza tenant, come ds.createEntityManager() per SQL. */
+  createEntityManager(): MongoSession;
+}
+
+export async function withMongo(work: (em: MongoSession, ds: MongoTestDb) => Promise<void>): Promise<void> {
+  const url = process.env.KYBES_TEST_MONGO_URL;
+  if (!url) throw new Error("Imposta KYBES_TEST_MONGO_URL (MongoDB con replica set) per eseguire i test delle collection");
+  const client = await new MongoClient(url).connect();
+  const db = client.db("kybes_test_" + randomUUID().replace(/-/g, "").slice(0, 12));
+  try {
+    await ensureMongoIndexes(db);
+    const em = new MongoSession(db);
+    bindTenant(em, TENANT_A); // le collection multi-tenant richiedono un tenant legato
+    await work(em, { client, db, createEntityManager: () => new MongoSession(db) });
+  } finally {
+    await db.dropDatabase();
+    await client.close();
+  }
+}
+'''
 
 
 def _ts_expect(c, v, got: str) -> str:
@@ -493,8 +574,51 @@ def _drop_unused_repos(lines: List[str], classes: List[str]) -> str:
     return "\n".join(keep) + "\n"
 
 
+def _mongo_runtime_bodies(tables: Dict[str, Table]) -> Dict[str, List[str]]:
+    import mongo_plan
+    expected = {t.db_name: sorted(ix.name for ix in mongo_plan.indexes(t)) for t in tables.values() if t.mongo}
+    partial = {ix.name: [t.db_name, {f: {"$exists": True} for f in ix.partial}] for t in tables.values() if t.mongo
+               for ix in mongo_plan.indexes(t) if ix.partial}
+    return {
+        "rt_mongo_bson": ['    const col = em.collection("kybes_prova");',
+                          '    const vals: [ColumnType, unknown][] = [["uuid", "00000000-0000-0000-0000-00000000000A"], ["decimal", "12.30"],',
+                          '      ["bigint", "9007199254740993"], ["date", "2020-01-31"], ["datetime", new Date("2020-01-31T10:20:30.123Z")],',
+                          '      ["string", "x"], ["json", { a: [1] }]];',
+                          "    for (const [type, v] of vals) {",
+                          "      assert.equal(toBson(null, type), null);", "      assert.equal(toBson(undefined, type), null);",
+                          "      assert.equal(fromBson(null, type), null);", "      assert.equal(fromBson(undefined, type), null);",
+                          "      await col.insertOne({ _id: type as never, v: toBson(v, type) });",
+                          "      const back = fromBson((await col.findOne({ _id: type as never }))!.v, type);",
+                          '      assert.deepEqual(back, type === "uuid" ? String(v).toLowerCase() : v, type);', "    }"],
+        "rt_mongo_prefix": ['    const col = em.collection("kybes_prova");',
+                            '    await col.insertMany([{ _id: 1 as never, s: "a.b*(c[^$\\\\" }, { _id: 2 as never, s: "axb*(c[^$\\\\x" }]);',
+                            '    assert.deepEqual((await col.find({ s: prefix("a.b*(c[^$\\\\") }).toArray()).map((d) => d._id), [1]);'],
+        "rt_mongo_counter": ['    assert.deepEqual([await nextId(em, "a"), await nextId(em, "a"), await nextId(em, "b")], [1, 2, 1]);'],
+        "rt_mongo_session": ["    const fresh = mongoSession(ds.client, ds.db.databaseName);", "    assert.throws(() => tenantOf(fresh), TenantError);",
+                             "    const bound = mongoSession(ds.client, ds.db.databaseName, TENANT_A);", "    assert.equal(tenantOf(bound), TENANT_A);",
+                             "    assert.equal(bound.db.databaseName, ds.db.databaseName);"],
+        "rt_mongo_commit": ['    await ds.db.createCollection("kybes_prova");',
+                            "    const got = await runInMongoTransaction(ds.client, ds.db.databaseName, async (tx) => {",
+                            '      await tx.collection("kybes_prova").insertOne({ _id: 1 as never }, { session: tx.session });',
+                            "      return tenantOf(tx);", "    }, { tenant: TENANT_A });", "    assert.equal(got, TENANT_A);",
+                            '    assert.equal(await ds.db.collection("kybes_prova").countDocuments(), 1);'],
+        "rt_mongo_rollback": ['    await ds.db.createCollection("kybes_prova");',
+                              "    await assert.rejects(runInMongoTransaction(ds.client, ds.db.databaseName, async (tx) => {",
+                              '      await tx.collection("kybes_prova").insertOne({ _id: 1 as never }, { session: tx.session });',
+                              '      throw new Error("errore applicativo");', "    }), /errore applicativo/);",
+                              '    assert.equal(await ds.db.collection("kybes_prova").countDocuments(), 0);'],
+        "rt_mongo_indexes": ["    await ensureMongoIndexes(ds.db); // ripetibile",
+                             f"    for (const [name, ixs] of Object.entries({json.dumps(expected)} as Record<string, string[]>)) {{",
+                             "      const have = (await ds.db.collection(name).indexes()).map((i) => i.name);",
+                             "      for (const ix of ixs) assert.ok(have.includes(ix), ix);", "    }",
+                             f"    for (const [ix, [name, flt]] of Object.entries({json.dumps(partial)} as Record<string, [string, unknown]>)) {{",
+                             "      const info = (await ds.db.collection(name).indexes()).find((i) => i.name === ix);",
+                             "      assert.deepEqual(info?.partialFilterExpression, flt, ix);", "    }"],
+    }
+
+
 def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
-    first = next(iter(tables.values()))
+    first = next((x for x in tables.values() if not x.mongo), next(iter(tables.values())))
     bad = "non-un-uuid" if cat.tenant_id_type == "uuid" else "x" * 65
     extra_names = [] if cat.tenant_id_type == "uuid" else [
         '    assert.equal(tenantKey("Tenant-A"), "tenant_a");', '    assert.throws(() => tenantKey("nome non valido"), TenantError);']
@@ -625,9 +749,17 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
          '  const s = order.map((o) => (o.desc ? "-" : "") + o.json).join(",");',
          '  return Buffer.from(JSON.stringify({ s, v: values }), "utf8").toString("base64url");', "}",
          f"void [{n}, TENANT_B];"]
+    mongo = any(x.mongo for x in tables.values())
+    if mongo:
+        bodies.update(_mongo_runtime_bodies(tables))
+        o += ['import { withMongo } from "./_mongo_db";',
+              'import { ensureMongoIndexes, mongoSession, runInMongoTransaction } from "../../src/model/generated";',
+              'import { fromBson, nextId, prefix, toBson } from "../../src/model/generated/_mongo";',
+              'import type { ColumnType } from "../../src/model/generated/_mongo";']
     for tc in cat.for_table("_runtime"):
+        runner = "withMongo" if tc.kind.startswith("rt_mongo") else "withDb"
         o += ["", f"test({json.dumps(tc.id + ' · ' + ', '.join(tc.reqs) + ' · ' + METHODS[tc.method] + ': ' + tc.title)}, () =>",
-              "  withDb(async (em, ds) => {", "    void em; void ds;"] + bodies[tc.kind] + ["  }));"]
+              f"  {runner}(async (em, ds) => {{", "    void em; void ds;"] + bodies[tc.kind] + ["  }));"]
     return "\n".join(o) + "\n"
 
 
@@ -635,6 +767,8 @@ def emit(cat: Catalog, tables: Dict[str, Table], default_asil: str, dialect: str
     _ID_TYPE[0] = cat.tenant_id_type
     first = next(iter(tables))
     files = {"generated/_db.ts": db_file(dialect, first), "generated/kybes_builders.ts": builders_file(tables)}
+    if any(t.mongo for t in tables.values()):
+        files["generated/_mongo_db.ts"] = mongo_db_file()
     for n, t in tables.items():
         files[f"generated/{n}.test.ts"] = test_file(t, cat, tables, default_asil)
     files["generated/kybes_runtime.test.ts"] = runtime_file(cat, tables)

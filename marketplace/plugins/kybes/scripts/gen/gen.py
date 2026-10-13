@@ -203,7 +203,14 @@ def build_index(tables: Dict[str, Table], targets: List[dict], customs: Dict[Tup
                "schema": "per tenant nello schema `tenant_<chiave>`: la sessione va aperta con il search_path del tenant",
                "database": "per tenant in un database dedicato: la sessione va aperta sul database del tenant"}[t.tenancy or "none"]
         o += [f"Multi-tenant: **{t.tenancy or 'none'}**, {ten}.", ""]
-        if t.archive or t.retention:
+        if t.mongo:
+            o += [f"Storage: **MongoDB**, collection `{t.db_name}` (chiave in `_id`): stessi metodi delle tabelle SQL su una sessione MongoDB "
+                  "(Python `mongo_session`, TypeScript `mongoSession`, Java `MongoSession.open`, C# `MongoSession.Open`); "
+                  "transazioni con `run_in_mongo_transaction` / `runInMongoTransaction` / `MongoSession.transaction` / `MongoSession.TransactionAsync`; "
+                  "indici creati da `ensure_mongo_indexes` / `ensureMongoIndexes` / `MongoIndexes.ensure` / `MongoIndexes.EnsureAsync`.", ""]
+            if t.retention:
+                o += [f"Ciclo di vita: cancellazione dopo {t.retention.delete_after} su `{t.retention.on}` con un indice TTL di MongoDB (nessun job).", ""]
+        if (t.archive or t.retention) and not t.mongo:
             jd = mc.get("jobs_dir", "jobs/generated").rstrip("/")
             life = []
             if t.archive:

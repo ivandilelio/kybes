@@ -179,9 +179,15 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B", tenant_id_t
                              f"lettura del {r.target} collegato, poi da una chiave inesistente",
                              f"restituisce il {r.target} con chiave uguale a {r.foreign_key}; nessun record per la chiave inesistente",
                              {"relation": r.name}))
-                add(TestCase(f"TC-{n}-{r.name}-PARENT-OBJECT", n, [rid], "eq", "rel_parent_object",
-                             f"inserimento collegando il {r.target} come oggetto invece che con la chiave",
-                             f"{r.foreign_key} è impostata dal modello e resta coerente con l'oggetto collegato", {"relation": r.name}))
+                if t.mongo:
+                    add(TestCase(f"TC-{n}-{r.name}-PARENT-MISSING", n, [rid], "eg", "mongo_parent_missing",
+                                 f"inserimento con {r.foreign_key} di un {r.target} inesistente",
+                                 f"errore di validazione su {r.foreign_key}: non trovato (MongoDB non ha chiavi esterne: le controlla il modello)",
+                                 {"relation": r.name}))
+                else:
+                    add(TestCase(f"TC-{n}-{r.name}-PARENT-OBJECT", n, [rid], "eq", "rel_parent_object",
+                                 f"inserimento collegando il {r.target} come oggetto invece che con la chiave",
+                                 f"{r.foreign_key} è impostata dal modello e resta coerente con l'oggetto collegato", {"relation": r.name}))
                 add(TestCase(f"TC-{n}-{r.foreign_key}-LISTBY", n, [rid], "req", "list_by",
                              f"pagina dei {n} con {r.foreign_key} dato", "contiene il record e solo record con quel valore",
                              {"relation": r.name}))
@@ -191,7 +197,9 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B", tenant_id_t
                              f"pagina dei {r.target} collegati", "contiene il figlio e solo figli di quel record", {"relation": r.name}))
         if t.tenancy != "none":
             _tenancy_cases(t, tables, reqs, add, src, asil)
-        if t.archive or t.retention:
+        if t.mongo:
+            _mongo_cases(t, tables, reqs, add, src, asil)
+        elif t.archive or t.retention:
             _lifecycle_cases(t, tables, reqs, add, src, asil)
         add(TestCase(f"TC-{n}-PAGE-WALK", n, [r_page], "req", "page_walk",
                      "scorrimento completo con limite 1", "ogni record una sola volta, ultimo cursore nullo"))
@@ -238,12 +246,37 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B", tenant_id_t
                                  {"query": q.name, "flip": i}))
     top = max((table_asil(t, default_asil) for t in tables.values()), key=ASIL.index, default=default_asil)
     _runtime(reqs, tests, top)
-    if any(t.archive or t.retention for t in tables.values()):
+    if any(t.mongo for t in tables.values()):
+        _mongo_runtime(reqs, tests, top)
+    if any((t.archive or t.retention) and not t.mongo for t in tables.values()):
         _jobs_runtime(reqs, tests, top)
     return Catalog(reqs, tests, tenant_id_type)
 
 
 RUNTIME = "_runtime"
+
+
+def ttl_column(t: Table) -> Optional[str]:
+    """Colonna dell'indice TTL di una collection MongoDB: i dati di prova devono stare nel futuro, o MongoDB li cancella."""
+    return t.retention.on if t.mongo and t.retention else None
+
+
+def nulled_columns(q: Query, flip: Optional[int]) -> set:
+    """Colonne che il record di prova di una query lascia vuote (is_null vera o not_null resa falsa)."""
+    return {c.column for i, c in enumerate(q.where) if c.op in ("is_null", "not_null") and ((c.op == "is_null") != (i == flip))}
+
+
+def put_over(over: Dict, column: str, expr: str, prio: int) -> None:
+    """Valore di una colonna nel record di prova di una query: con più condizioni sulla stessa colonna vince la
+    condizione resa falsa (MC/DC), poi quella esplicita, poi il valore di esempio di una colonna facoltativa."""
+    if column not in over or prio > over[column][0]:
+        over[column] = (prio, expr)
+
+
+def over_values(over: Dict) -> List[str]:
+    return [e for _, e in over.values()]
+
+
 JOBS = "_jobs"
 ENGINE_TESTS = Path(__file__).resolve().parent / "engine" / "tests" / "test_engine.py"
 JOB_REQS = {
@@ -271,11 +304,69 @@ def engine_test_cases() -> List[tuple]:
     return out
 
 
+def _mongo_runtime(reqs: List[Requirement], tests: List[TestCase], asil: str) -> None:
+    """Moduli comuni MongoDB: formato dei documenti, contatori, transazioni, indici."""
+    def req(key, text):
+        rid = f"REQ-KYBES-{key}"
+        reqs.append(Requirement(rid, RUNTIME, text, "modulo comune generato (MongoDB)", asil))
+        return rid
+    fmt = req("MONGO-FORMAT", "I valori del modello si scrivono nei documenti MongoDB nel formato comune (uuid stringa, decimal Decimal128, "
+              "bigint int64, date a mezzanotte UTC, datetime ai millisecondi) e si rileggono uguali; la ricerca per prefisso protegge "
+              "i caratteri speciali delle espressioni regolari.")
+    seq = req("MONGO-COUNTER", "Le chiavi intere generate sono progressive per collection.")
+    tx = req("MONGO-TX", "La sessione MongoDB del modello porta il tenant; la Unit of Work MongoDB conferma il lavoro riuscito e annulla quello fallito.")
+    ix = req("MONGO-INDEX", "Gli indici delle collection hanno i nomi del piano degli indici, la creazione è ripetibile e un indice univoco "
+             "su una colonna facoltativa ammette più documenti senza valore.")
+    for tid, r, m, kind, title, exp in [
+        ("TC-KYBES-MONGO-BSON", fmt, "eq", "rt_mongo_bson", "conversione di ogni tipo verso BSON e ritorno, e del valore nullo",
+         "valori uguali dopo il ritorno; nullo resta nullo"),
+        ("TC-KYBES-MONGO-PREFIX", fmt, "bv", "rt_mongo_prefix", "prefisso con . * ( [ ^ $ \\", "trovato solo il documento che inizia davvero con il prefisso"),
+        ("TC-KYBES-MONGO-COUNTER", seq, "req", "rt_mongo_counter", "chiavi generate in due collection", "1, 2 nella prima, 1 nella seconda"),
+        ("TC-KYBES-MONGO-SESSION", tx, "eq", "rt_mongo_session", "sessione con e senza tenant", "tenant legato solo quando indicato"),
+        ("TC-KYBES-MONGO-COMMIT", tx, "req", "rt_mongo_commit", "lavoro riuscito in una transazione MongoDB", "dati confermati, tenant legato"),
+        ("TC-KYBES-MONGO-ROLLBACK", tx, "eq", "rt_mongo_rollback", "lavoro che solleva un errore in una transazione MongoDB",
+         "dati annullati, errore propagato"),
+        ("TC-KYBES-MONGO-INDEXES", ix, "req", "rt_mongo_indexes", "creazione ripetuta degli indici, documenti senza la colonna univoca facoltativa",
+         "stessi indici, nessun errore; due documenti senza valore accettati"),
+    ]:
+        tests.append(TestCase(tid, RUNTIME, [r], m, kind, title, exp))
+
+
 def _jobs_runtime(reqs: List[Requirement], tests: List[TestCase], asil: str) -> None:
     for key, text in JOB_REQS.items():
         reqs.append(Requirement(f"REQ-KYBES-JOB-{key}", JOBS, text, "motore dei job generato (jobs/generated/_engine)", asil))
     for tid, rid, method, title, expected in engine_test_cases():
         tests.append(TestCase(tid, JOBS, [rid], method, "engine", title, expected, scope="jobs"))
+
+
+def _mongo_cases(t: Table, tables: Dict[str, Table], reqs: List[Requirement], add, src: str, asil: str) -> None:
+    """Collection MongoDB: integrità dei riferimenti fatta dal modello e conservazione con indice TTL."""
+    import mongo_plan
+    n = t.name
+    kids = mongo_plan.children(t, tables)
+    if kids:
+        rid = _req(reqs, t, "DELETE-REFS", f"La cancellazione di {n} rispetta i record collegati: con restrict è rifiutata finché ne esistono, "
+                   "con set_null li scollega.", f"{src}: relations (on_delete)", asil)
+        for c, r in kids:
+            kind = "mongo_delete_restrict" if r.on_delete == "restrict" else "mongo_delete_set_null"
+            add(TestCase(f"TC-{n}-DELETE-{c.name}-{r.name}", n, [rid], "eg" if r.on_delete == "restrict" else "req", kind,
+                         f"cancellazione di un record con un {c.name} collegato ({r.name}, {r.on_delete})",
+                         "rifiutata, il record resta" if r.on_delete == "restrict" else f"riuscita, {r.foreign_key} del collegato resta vuota",
+                         {"child": c.name, "relation": r.name}))
+    if t.pk.auto:
+        add(TestCase(f"TC-{n}-KEY-GIVEN", n, [f"REQ-{n}-CREATE"], "eq", "mongo_key_given", "inserimento con la chiave già indicata",
+                     "il record è salvato con quella chiave (generata solo se manca)"))
+    for c in t.columns:
+        if c.unique and c.nullable:
+            add(TestCase(f"TC-{n}-{c.name}-UNIQUE-NULL", n, [f"REQ-{n}-{c.name}-UNIQUE"], "bv", "mongo_unique_null",
+                         f"due record senza {c.name}", "entrambi accettati: l'univocità vale solo per i valori presenti, come in SQL",
+                         {"column": c.name}))
+    if t.retention:
+        r = t.retention
+        rid = _req(reqs, t, "RETENTION", f"I documenti di {n} con {r.on} più vecchia di {r.delete_after} sono cancellati da MongoDB "
+                   f"(indice TTL di {mongo_plan.duration_days(r.delete_after)} giorni).", f"{src}: retention", asil)
+        add(TestCase(f"TC-{n}-TTL-INDEX", n, [rid], "req", "mongo_ttl", "indici della collection dopo ensure_indexes",
+                     "indice TTL sulla colonna dell'età con la durata della conservazione"))
 
 
 def _lifecycle_cases(t: Table, tables: Dict[str, Table], reqs: List[Requirement], add, src: str, asil: str) -> None:

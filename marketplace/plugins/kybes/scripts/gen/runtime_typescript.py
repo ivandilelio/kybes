@@ -140,6 +140,15 @@ function after(alias: string, order: OrderItem[], values: unknown[]): Brackets {
   });
 }
 
+/** Ordinamento e limite validati di una richiesta di pagina (comune a SQL e MongoDB). */
+export function preparePage(spec: PagingSpec, page: PageRequest, fixedOrder?: OrderItem[]): { order: OrderItem[]; limit: number } {
+  if (fixedOrder && page.sort) throw invalid(spec, "sort", "questa query ha un ordinamento fisso");
+  const order = fixedOrder ?? resolveOrder(spec, page.sort);
+  const limit = page.limit ?? spec.defaultLimit;
+  if (!Number.isInteger(limit) || limit < 1 || limit > spec.maxLimit) throw invalid(spec, "limit", `tra 1 e ${spec.maxLimit}`);
+  return { order, limit };
+}
+
 export function emptyPage<T>(spec: PagingSpec, page: PageRequest = {}): Page<T> {
   return { items: [], nextCursor: null, limit: page.limit ?? spec.defaultLimit };
 }
@@ -151,10 +160,7 @@ export async function runPage<T extends ObjectLiteral>(
   page: PageRequest = {},
   fixedOrder?: OrderItem[],
 ): Promise<Page<T>> {
-  if (fixedOrder && page.sort) throw invalid(spec, "sort", "questa query ha un ordinamento fisso");
-  const order = fixedOrder ?? resolveOrder(spec, page.sort);
-  const limit = page.limit ?? spec.defaultLimit;
-  if (!Number.isInteger(limit) || limit < 1 || limit > spec.maxLimit) throw invalid(spec, "limit", `tra 1 e ${spec.maxLimit}`);
+  const { order, limit } = preparePage(spec, page, fixedOrder);
   if (page.cursor) qb.andWhere(after(alias, order, decodeCursor(spec, order, page.cursor)));
   const rows = await orderRows(qb, alias, order).limit(limit + 1).getMany();
   const more = rows.length > limit;

@@ -1,0 +1,7 @@
+# Tabella SQL nello stesso progetto delle collection MongoDB: i due storage convivono (senza relazioni tra loro).
+table: Reparti
+description: Reparti dell'organizzazione (PostgreSQL)
+tenancy: column
+columns:
+  - { name: Id, type: int, primary_key: true }
+  - { name: Nome, type: string, length: 60, required: true, unique: true }

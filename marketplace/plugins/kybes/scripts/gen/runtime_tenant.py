@@ -130,7 +130,7 @@ export class TenantError extends Error {
   }
 }
 
-const bound = new WeakMap<EntityManager, string>();
+const bound = new WeakMap<object, string>(); // EntityManager (SQL) o MongoSession (MongoDB)
 
 /** Il tenant nel formato della colonna TenantId (''' + id_type + '''). */
 export function coerceTenant(tenant: unknown): string {
@@ -139,12 +139,12 @@ export function coerceTenant(tenant: unknown): string {
 ''' + check + '''}
 
 /** Lega il tenant all'EntityManager (null lo scollega). */
-export function bindTenant(em: EntityManager, tenant: unknown): void {
+export function bindTenant(em: object, tenant: unknown): void {
   if (tenant === null || tenant === undefined) bound.delete(em);
   else bound.set(em, coerceTenant(tenant));
 }
 
-export function tenantOf(em: EntityManager): string {
+export function tenantOf(em: object): string {
   const tenant = bound.get(em);
   if (tenant === undefined) {
     throw new TenantError("EntityManager senza tenant: chiama bindTenant(em, tenant) o usa runInTransaction(ds, work, { tenant })");

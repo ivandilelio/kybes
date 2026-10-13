@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Dict, List, Tuple
 
 import runtime_archive
+import runtime_mongo
 import runtime_python
 import runtime_tenant
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
@@ -111,40 +112,7 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
     w(f'        return f"<{t.name} {pkm}={{self.{pkm}!r}}>"')
     w("\n")
 
-    # ---- validazione
-    w(f"def validate_{snake(t.name)}(e: {t.name}) -> None:")
-    w(f'    """Validazione di modello prima della persistenza (lo schema JSON valida a monte la API)."""')
-    w("    errors: Dict[str, str] = {}")
-    for c in t.columns:
-        mm = m[c.name]
-        if c.tenant:
-            continue  # impostata dal repository con il tenant della sessione
-        if c.required and not (c.primary_key and c.auto) and not c.generated and c.default is None:
-            w(f"    if e.{mm} is None:")
-            w(f'        errors["{c.name}"] = "obbligatorio"')
-        elif c.required and not c.generated and c.default is not None:
-            # assente: vale il default all'inserimento; None esplicito: rifiutato
-            w(f'    if "{mm}" in vars(e) and e.{mm} is None:')
-            w(f'        errors["{c.name}"] = "obbligatorio"')
-        if c.type == "string":
-            w(f"    if e.{mm} is not None and len(e.{mm}) > {c.length}:")
-            w(f'        errors["{c.name}"] = "lunghezza massima {c.length}"')
-    w("    if errors:")
-    w(f'        raise ModelValidationError("{t.name}", errors)')
-    w("\n")
-
-    # ---- paginazione
-    w(f"PAGING_{snake(t.name).upper()} = PagingSpec(")
-    w(f'    table="{t.name}",')
-    w(f'    entity={t.name},')
-    w(f'    pk=("{pkm}", "{member("typescript", pk.name)}", "{pk.type}"),')
-    sortable = ", ".join(f'"{member("typescript", cn)}": ("{m[cn]}", "{t.col(cn).type}")' for cn in t.pagination.sortable)
-    w(f"    sortable={{{sortable}}},")
-    order = ", ".join(f'("{m[cn]}", "{member("typescript", cn)}", "{t.col(cn).type}", {d})' for cn, d in t.order())
-    w(f"    default_order=[{order}],")
-    w(f"    default_limit={t.pagination.default_limit},")
-    w(f"    max_limit={t.pagination.max_limit},")
-    w(")\n\n")
+    L_ += _validation_lines(t, m) + _paging_lines(t, m)
 
     # ---- repository
     cols_updatable = [m[c.name] for c in t.columns if not c.primary_key and not c.generated and not c.tenant]
@@ -319,6 +287,57 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
     return "\n".join(L_).rstrip() + "\n"
 
 
+def _validation_lines(t: Table, m: Dict[str, str]) -> List[str]:
+    L_: List[str] = []
+    w = L_.append
+    pk = t.pk
+    pkm = m[pk.name]
+    # ---- validazione
+    w(f"def validate_{snake(t.name)}(e: {t.name}) -> None:")
+    w(f'    """Validazione di modello prima della persistenza (lo schema JSON valida a monte la API)."""')
+    w("    errors: Dict[str, str] = {}")
+    for c in t.columns:
+        mm = m[c.name]
+        if c.tenant:
+            continue  # impostata dal repository con il tenant della sessione
+        if c.required and not (c.primary_key and c.auto) and not c.generated and c.default is None:
+            w(f"    if e.{mm} is None:")
+            w(f'        errors["{c.name}"] = "obbligatorio"')
+        elif c.required and not c.generated and c.default is not None:
+            # assente: vale il default all'inserimento; None esplicito: rifiutato
+            w(f'    if "{mm}" in vars(e) and e.{mm} is None:')
+            w(f'        errors["{c.name}"] = "obbligatorio"')
+        if c.type == "string":
+            w(f"    if e.{mm} is not None and len(e.{mm}) > {c.length}:")
+            w(f'        errors["{c.name}"] = "lunghezza massima {c.length}"')
+    w("    if errors:")
+    w(f'        raise ModelValidationError("{t.name}", errors)')
+    w("\n")
+
+    return L_
+
+
+def _paging_lines(t: Table, m: Dict[str, str]) -> List[str]:
+    L_: List[str] = []
+    w = L_.append
+    pk = t.pk
+    pkm = m[pk.name]
+    # ---- paginazione
+    w(f"PAGING_{snake(t.name).upper()} = PagingSpec(")
+    w(f'    table="{t.name}",')
+    w(f'    entity={t.name},')
+    w(f'    pk=("{pkm}", "{member("typescript", pk.name)}", "{pk.type}"),')
+    sortable = ", ".join(f'"{member("typescript", cn)}": ("{m[cn]}", "{t.col(cn).type}")' for cn in t.pagination.sortable)
+    w(f"    sortable={{{sortable}}},")
+    order = ", ".join(f'("{m[cn]}", "{member("typescript", cn)}", "{t.col(cn).type}", {d})' for cn, d in t.order())
+    w(f"    default_order=[{order}],")
+    w(f"    default_limit={t.pagination.default_limit},")
+    w(f"    max_limit={t.pagination.max_limit},")
+    w(")\n\n")
+
+    return L_
+
+
 def _py_value(col, v) -> str:
     if v is None:
         return "None"
@@ -371,6 +390,15 @@ def _init_file(tables: Dict[str, Table]) -> str:
              "TenantError", "bind_tenant", "database_url_for", "schema_for", "search_path_for", "tenant_of",
              "ArchiveReader", "FileArchiveReader", "archive_of", "archive_path", "bind_archive"] + \
         [x for n in tables for x in (n, base_class(L, n), f"validate_{snake(n)}", f"PAGING_{snake(n).upper()}")]
+    mongo = [n for n, t in tables.items() if t.mongo]
+    if mongo:
+        lines.append("from ._mongo import MongoSession, mongo_session, run_in_mongo_transaction")
+        for n in mongo:
+            lines.append(f"from .{n} import ensure_indexes_{snake(n)}")
+        names += ["MongoSession", "mongo_session", "run_in_mongo_transaction", "ensure_mongo_indexes"]
+        lines += ["", "", "def ensure_mongo_indexes(db) -> None:",
+                  '    """Crea gli indici di tutte le collection MongoDB del modello (idempotente)."""']
+        lines += [f"    ensure_indexes_{snake(n)}(db)" for n in mongo]
     lines.append("\n__all__ = [" + ", ".join(repr(x) for x in names) + "]")
     return "\n".join(lines) + "\n"
 
@@ -394,7 +422,259 @@ def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tu
            f"{GEN_DIR}/_tenant.py": runtime_tenant.python_file(opts.get("tenant_id_type", "uuid")),
            f"{GEN_DIR}/_archive.py": runtime_archive.python_file()}
     for n, t in tables.items():
-        gen[f"{GEN_DIR}/{n}.py"] = _table_file(t, tables, schema_rel[n])
+        gen[f"{GEN_DIR}/{n}.py"] = (_mongo_table_file if t.mongo else _table_file)(t, tables, schema_rel[n])
+    if any(t.mongo for t in tables.values()):
+        gen[f"{GEN_DIR}/_mongo.py"] = runtime_mongo.python_file()
     custom = {custom_file(L, n): custom_stub(t) for n, t in tables.items()}
     custom["__init__.py"] = '"""Modelli e repository: un file per tabella (vedi MODEL_INDEX.md)."""\n'
     return gen, custom
+
+
+# ------------------------------------------------------------------------------------------- MongoDB
+
+def _mongo_cond(t: Table, c, val: str) -> str:
+    """Condizione di una query dichiarata come filtro MongoDB (valori già convertiti con to_bson)."""
+    import mongo_plan
+    f = repr(mongo_plan.field_name(t, t.col(c.column)))
+    return {"eq": f"{{{f}: {val}}}", "ne": f"{{{f}: {{'$nin': [{val}, None]}}}}", "lt": f"{{{f}: {{'$lt': {val}}}}}",
+            "lte": f"{{{f}: {{'$lte': {val}}}}}", "gt": f"{{{f}: {{'$gt': {val}}}}}", "gte": f"{{{f}: {{'$gte': {val}}}}}",
+            "in": f"{{{f}: {{'$in': {val}}}}}", "prefix": f"{{{f}: prefix({val})}}",
+            "is_null": f"{{{f}: None}}", "not_null": f"{{{f}: {{'$ne': None}}}}"}[c.op]
+
+
+def _mongo_table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
+    import mongo_plan
+    m = {c.name: member(L, c.name) for c in t.columns}
+    pk = t.pk
+    pkm, pkt = m[pk.name], PY_TYPE[pk.type]
+    T = t.name
+    tc = tenant_column(t)
+    fields = {m[c.name]: mongo_plan.field_name(t, c) for c in t.columns}
+    L_: List[str] = []
+    w = L_.append
+    w(header(L, schema_rel) + "# ruff: noqa")
+    w(f'"""{T}: entità e repository della collection MongoDB {t.db_name}.{(" " + t.description) if t.description else ""}"""')
+    w("from __future__ import annotations\n")
+    w("import uuid")
+    w("from datetime import date, datetime, timezone")
+    w("from decimal import Decimal")
+    w("from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence\n")
+    w("from ._base import ModelValidationError")
+    w("from ._mongo import MongoSession, find_sorted, from_bson, next_id, now_ms, prefix, run_mongo_page, to_bson")
+    w("from ._paging import Page, PageRequest, PagingSpec")
+    if t.tenancy != "none":
+        w("from ._tenant import tenant_of")
+    targets = sorted({r.target for r in t.relations if r.target != T})
+    if targets:
+        w("\nif TYPE_CHECKING:")
+        for tg in targets:
+            w(f"    from .{tg} import {tg}")
+    w("\n")
+    # ---- entità
+    w(f"class {T}:")
+    w(f'    """Documento della collection {t.db_name}. I valori non indicati valgono il default dello schema o None."""\n')
+    for c in t.columns:
+        typ = PY_TYPE[c.type] if not c.nullable else f"Optional[{PY_TYPE[c.type]}]"
+        w(f"    {m[c.name]}: {typ} = {_lit(c.default) if c.default is not None else 'None'}")
+    w("")
+    w("    def __init__(self, **values: Any) -> None:")
+    w("        for key, value in values.items():")
+    w(f"            FIELDS_{snake(T).upper()}[key]  # KeyError per un campo che la collection non ha")
+    w("            setattr(self, key, value)\n")
+    w("    def __repr__(self) -> str:")
+    w(f'        return f"<{T} {pkm}={{self.{pkm}!r}}>"')
+    w("\n")
+    L_ += _validation_lines(t, m) + _paging_lines(t, m)
+    w(f"FIELDS_{snake(T).upper()} = {{" + ", ".join(f'"{a}": "{f}"' for a, f in fields.items()) + "}\n\n")
+    w(f"def to_document(e: {T}) -> Dict[str, Any]:")
+    w('    """Documento MongoDB del record: le colonne vuote non compaiono."""')
+    w("    doc = {" + ", ".join(f'"{fields[m[c.name]]}": to_bson(e.{m[c.name]}, "{c.type}")' for c in t.columns) + "}")
+    w("    return {k: v for k, v in doc.items() if v is not None}\n\n")
+    w(f"def from_document(d: Dict[str, Any]) -> {T}:")
+    w(f"    return {T}(" + ", ".join(f'{m[c.name]}=from_bson(d.get("{fields[m[c.name]]}"), "{c.type}")' for c in t.columns) + ")\n\n")
+    w(f"def ensure_indexes_{snake(T)}(db: Any) -> None:")
+    w(f'    """Indici della collection (stessi nomi del DDL SQL); idempotente: si chiama all\'avvio o nel deploy."""')
+    w(f'    col = db["{t.db_name}"]')
+    ixs = mongo_plan.indexes(t)
+    if not ixs:
+        w("    del col  # nessun indice oltre a _id")
+    for ix in ixs:
+        args = [f'name="{ix.name}"']
+        if ix.unique:
+            args.append("unique=True")
+        if ix.partial:
+            args.append("partialFilterExpression={" + ", ".join(f'"{f}": {{"$exists": True}}' for f in ix.partial) + "}")
+        if ix.ttl is not None:
+            args.append(f"expireAfterSeconds={ix.ttl}")
+        keys = "[" + ", ".join(f'("{f}", 1)' for f in ix.fields) + "]"
+        w(f"    col.create_index({keys}, {', '.join(args)})")
+    w("\n")
+
+    # ---- repository
+    updatable = [m[c.name] for c in t.columns if not c.primary_key and not c.generated and not c.tenant]
+    parents = [r for r in t.relations if r.kind == "many_to_one"]
+    kids = mongo_plan.children(t, tables)
+    w(f"class {base_class(L, T)}:")
+    w(f'    """CRUD, relazioni e query di {T} su MongoDB. Le transazioni le apre il chiamante (run_in_mongo_transaction)."""\n')
+    w(f"    UPDATABLE = frozenset({{{', '.join(repr(x) for x in updatable)}}})")
+    w(f"    PAGING = PAGING_{snake(T).upper()}")
+    w(f'    COLLECTION = "{t.db_name}"')
+    w(f"    FIELDS = FIELDS_{snake(T).upper()}\n")
+    w("    def __init__(self, session: MongoSession) -> None:")
+    w("        self.session = session")
+    if t.tenancy != "none":
+        w(f"        tenant_of(session)  # tenancy: {t.tenancy}: senza un tenant legato alla sessione il repository non lavora")
+    w("")
+    w("    def _col(self) -> Any:")
+    w("        return self.session.db[self.COLLECTION]\n")
+    w("    def _scope(self, flt: Dict[str, Any]) -> Dict[str, Any]:")
+    if tc:
+        w(f'        return {{"$and": [flt, {{"{tc.db_name}": to_bson(tenant_of(self.session), "{tc.type}")}}]}}\n')
+    else:
+        w("        return flt\n")
+    w(f"    def _find(self, id: {pkt}) -> Optional[{T}]:")
+    w(f'        d = self._col().find_one(self._scope({{"_id": to_bson(id, "{pk.type}")}}), session=self.session.session)')
+    w("        return None if d is None else from_document(d)\n")
+    w(f"    def _check(self, entity: {T}) -> None:")
+    w('        """Tenant della sessione e record collegati esistenti (MongoDB non ha chiavi esterne)."""')
+    if tc:
+        tm = m[tc.name]
+        w("        tenant = tenant_of(self.session)")
+        w(f"        if entity.{tm} is not None and entity.{tm} != tenant:")
+        w(f'            raise ModelValidationError("{T}", {{"{tc.name}": "tenant diverso da quello della sessione"}})')
+        w(f"        entity.{tm} = tenant")
+    w(f"        validate_{snake(T)}(entity)")
+    if parents:
+        w("        errors: Dict[str, str] = {}")
+        for r in parents:
+            tg = tables[r.target]
+            fk = m[r.foreign_key]
+            w(f"        if entity.{fk} is not None:")
+            if r.target != T:
+                w(f"            from .{r.target} import {base_class(L, r.target)}")
+            w(f"            if {base_class(L, r.target)}(self.session)._find(entity.{fk}) is None:")
+            w(f'                errors["{r.foreign_key}"] = "non trovato"')
+        w("        if errors:")
+        w(f'            raise ModelValidationError("{T}", errors)')
+    w("")
+    for meth in methods_of(t):
+        k, _, arg = meth.key.partition(":")
+        name = method_name(L, meth.key)
+        w(f"    # {meth.summary}")
+        if k == "get_by_id":
+            w(f"    def {name}(self, id: {pkt}) -> Optional[{T}]:")
+            w("        return self._find(id)\n")
+        elif k == "list_page":
+            w(f"    def {name}(self, page: PageRequest = PageRequest()) -> Page[{T}]:")
+            w("        return run_mongo_page(self.session, self.COLLECTION, self.PAGING, self.FIELDS, self._scope({}), page, from_document)\n")
+        elif k == "count":
+            w(f"    def {name}(self) -> int:")
+            w("        return self._col().count_documents(self._scope({}), session=self.session.session)\n")
+        elif k == "exists":
+            w(f"    def {name}(self, id: {pkt}) -> bool:")
+            w(f'        return self._col().count_documents(self._scope({{"_id": to_bson(id, "{pk.type}")}}), limit=1, session=self.session.session) > 0\n')
+        elif k == "create":
+            w(f"    def {name}(self, entity: {T}) -> {T}:")
+            w("        self._check(entity)")
+            if pk.auto:
+                gen_id = "uuid.uuid4()" if pk.type == "uuid" else "next_id(self.session, self.COLLECTION)"
+                w(f"        if entity.{pkm} is None:")
+                w(f"            entity.{pkm} = {gen_id}")
+            for c in t.columns:
+                if c.generated:
+                    w(f"        entity.{m[c.name]} = now_ms()")
+            w("        self._col().insert_one(to_document(entity), session=self.session.session)")
+            w("        return entity\n")
+        elif k == "update":
+            w(f"    def {name}(self, id: {pkt}, changes: Dict[str, Any]) -> Optional[{T}]:")
+            w("        unknown = set(changes) - self.UPDATABLE")
+            w("        if unknown:")
+            w(f'            raise ModelValidationError("{T}", {{k: "campo non modificabile" for k in sorted(unknown)}})')
+            w("        entity = self._find(id)")
+            w("        if entity is None:")
+            w("            return None")
+            w("        for key, value in changes.items():")
+            w("            setattr(entity, key, value)")
+            w("        self._check(entity)")
+            for c in t.columns:
+                if c.generated == "on_update":
+                    w(f"        entity.{m[c.name]} = now_ms()")
+            w(f'        self._col().replace_one(self._scope({{"_id": to_bson(id, "{pk.type}")}}), to_document(entity), session=self.session.session)')
+            w("        return entity\n")
+        elif k == "delete":
+            w(f"    def {name}(self, id: {pkt}) -> bool:")
+            w("        if self._find(id) is None:")
+            w("            return False")
+            for c, r in kids:
+                ctc = tenant_column(c)
+                fk_f = mongo_plan.field_name(c, c.col(r.foreign_key))
+                flt = f'{{"{fk_f}": to_bson(id, "{pk.type}")' + (f', "{ctc.db_name}": to_bson(tenant_of(self.session), "{ctc.type}")' if ctc else "") + "}"
+                if r.on_delete == "restrict":
+                    w(f'        if self.session.db["{c.db_name}"].count_documents({flt}, limit=1, session=self.session.session):')
+                    w(f'            raise ModelValidationError("{T}", {{"{mongo_plan.child_label(t, c, r)}": "record collegati"}})')
+                else:
+                    w(f'        self.session.db["{c.db_name}"].update_many({flt}, {{"$unset": {{"{fk_f}": ""}}}}, session=self.session.session)')
+            w(f'        self._col().delete_one(self._scope({{"_id": to_bson(id, "{pk.type}")}}), session=self.session.session)')
+            w("        return True\n")
+        elif k == "find_by":
+            c = t.col(arg)
+            w(f"    def {name}(self, value: {PY_TYPE[c.type]}) -> Optional[{T}]:")
+            w(f'        d = self._col().find_one(self._scope({{"{fields[m[arg]]}": to_bson(value, "{c.type}")}}), session=self.session.session)')
+            w("        return None if d is None else from_document(d)\n")
+        elif k == "list_by":
+            c = t.col(arg)
+            w(f"    def {name}(self, value: {PY_TYPE[c.type]}, page: PageRequest = PageRequest()) -> Page[{T}]:")
+            w(f'        flt = self._scope({{"{fields[m[arg]]}": to_bson(value, "{c.type}")}})')
+            w("        return run_mongo_page(self.session, self.COLLECTION, self.PAGING, self.FIELDS, flt, page, from_document)\n")
+        elif k == "get_rel":
+            r = next(x for x in t.relations if x.name == arg)
+            fk = m[r.foreign_key]
+            w(f'    def {name}(self, id: {pkt}) -> "Optional[{r.target}]":')
+            if r.target != T:
+                w(f"        from .{r.target} import {base_class(L, r.target)}")
+            w("        entity = self._find(id)")
+            w(f"        if entity is None or entity.{fk} is None:" if t.col(r.foreign_key).nullable else "        if entity is None:")
+            w("            return None")
+            w(f"        return {base_class(L, r.target)}(self.session)._find(entity.{fk})\n")
+        elif k == "list_rel":
+            r = next(x for x in t.relations if x.name == arg)
+            w(f'    def {name}(self, id: {pkt}, page: PageRequest = PageRequest()) -> "Page[{r.target}]":')
+            if r.target != T:
+                w(f"        from .{r.target} import {base_class(L, r.target)}")
+            w(f"        return {base_class(L, r.target)}(self.session).{method_name(L, 'list_by:' + r.foreign_key)}(id, page)\n")
+        elif k in ("query_page", "query_list", "query_one"):
+            q = next(x for x in t.queries if x.name == arg)
+            params, conds = [], []
+            for c in q.where:
+                col = t.col(c.column)
+                if c.param:
+                    pn = snake(c.param)
+                    pt = f"Sequence[{PY_TYPE[col.type]}]" if c.op == "in" else PY_TYPE[col.type]
+                    params.append(f"{pn}: {pt}")
+                    raw = pn
+                else:
+                    raw = _py_value(col, c.value) if c.has_value else "None"
+                if c.op == "in":
+                    val = f'[to_bson(x, "{col.type}") for x in {raw}]'
+                elif c.op == "prefix":
+                    val = raw
+                else:
+                    val = f'to_bson({raw}, "{col.type}")'
+                conds.append(_mongo_cond(t, c, val))
+            sig = ", ".join(["self"] + params)
+            order = [(m[cn], member("typescript", cn), t.col(cn).type, d) for cn, d in t.order(q.order_by or None)]
+            order_lit = "[" + ", ".join(f'("{a}", "{j}", "{ty}", {d})' for a, j, ty, d in order) + "]"
+            flt = "self._scope({'$and': [" + ", ".join(conds) + "]})"
+            if k == "query_page":
+                w(f"    def {name}({sig}, page: PageRequest = PageRequest()) -> Page[{T}]:")
+                w(f"        return run_mongo_page(self.session, self.COLLECTION, self.PAGING, self.FIELDS, {flt}, page, from_document,")
+                w(f"                              fixed_order={order_lit})\n")
+            elif k == "query_list":
+                w(f"    def {name}({sig}) -> List[{T}]:")
+                w(f"        docs = find_sorted(self.session, self.COLLECTION, {flt}, self.FIELDS, {order_lit}, self.PAGING.max_limit)")
+                w("        return [from_document(d) for d in docs]\n")
+            else:
+                w(f"    def {name}({sig}) -> Optional[{T}]:")
+                w(f"        docs = find_sorted(self.session, self.COLLECTION, {flt}, self.FIELDS, {order_lit}, 1)")
+                w("        return from_document(docs[0]) if docs else None\n")
+    return "\n".join(L_).rstrip() + "\n"

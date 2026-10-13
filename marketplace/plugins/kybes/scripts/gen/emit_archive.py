@@ -30,7 +30,7 @@ def archive_config(mc: dict) -> dict:
 
 
 def lifecycle_tables(tables: Dict[str, Table]) -> Dict[str, Table]:
-    return {n: t for n, t in tables.items() if t.archive or t.retention}
+    return {n: t for n, t in tables.items() if (t.archive or t.retention) and not t.mongo}  # mongo: indice TTL
 
 
 def location_errors(tables: Dict[str, Table], ac: dict) -> List[str]:

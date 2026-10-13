@@ -10,6 +10,7 @@ Per ogni linguaggio del modello con test generati:
   java        mvn test con JaCoCo (es. libs/db-models/java), su PostgreSQL (KYBES_TEST_DATABASE_URL)
   csharp      dotnet test con coverlet (es. libs/db-models/csharp/tests), su PostgreSQL (KYBES_TEST_DATABASE_URL)
   jobs        pytest + pytest-cov sul motore dei job (jobs/generated/_engine), se una tabella ha archive o retention
+Con collection MongoDB (storage: mongo) i test di ogni linguaggio usano anche KYBES_TEST_MONGO_URL (replica set).
 I report vanno in coverage/: <lingua>.cobertura.xml, java.jacoco.xml. Con --gate-only si controllano solo i report
 già presenti (verification.coverage_reports), per esempio prodotti da una CI con i propri strumenti.
 
@@ -225,7 +226,7 @@ def run_python(proj: Path, tg: dict, report: Path, quiet: bool, out: Outcome) ->
 
 def jobs_target(proj: Path, mc: dict, tables: dict) -> Optional[dict]:
     """Il motore dei job come obiettivo di verifica, se il progetto ha tabelle con archive o retention."""
-    if not any(t.archive or t.retention for t in tables.values()):
+    if not any((t.archive or t.retention) and not t.mongo for t in tables.values()):
         return None
     d = mc.get("jobs_dir", "jobs/generated").rstrip("/") + "/_engine"
     return {"lang": "jobs", "dir": d + "/kybes_jobs"} if (proj / d).is_dir() else None
@@ -360,6 +361,10 @@ def main(argv: List[str]) -> int:
         for tg in mc["targets"]:
             lang = tg["lang"]
             if (only and lang not in only) or lang not in RUNNERS or not G.tests_dir(tg):
+                continue
+            if any(t.mongo for t in tables.values()) and not os.environ.get("KYBES_TEST_MONGO_URL"):
+                out.notes.append(f"{lang}: imposta KYBES_TEST_MONGO_URL (MongoDB con replica set, es. "
+                                 "mongodb://localhost:27017/?replicaSet=rs0) per le collection con storage: mongo: test non eseguiti")
                 continue
             cov_dir.mkdir(exist_ok=True)
             report = cov_dir / REPORT.get(lang, f"{lang}.cobertura.xml")

@@ -1,0 +1,8 @@
+table: Etichette
+description: Etichette condivise, chiave intera generata dal contatore
+storage: mongo
+tenancy: none
+columns:
+  - { name: Id, type: int, primary_key: true }
+  - { name: Nome, type: string, length: 40, required: true, unique: true }
+  - { name: Colore, type: string, length: 7 }

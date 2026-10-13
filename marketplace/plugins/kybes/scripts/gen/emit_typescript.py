@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import json
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import runtime_archive
+import runtime_mongo
 import runtime_tenant
 import runtime_typescript
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
@@ -127,33 +128,7 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, dialect: st
     out[-1] = out[-1].rstrip("\n")
     w("}\n")
 
-    # ---- validazione
-    w(f"/** Validazione di modello prima della persistenza. */")
-    w(f"export function validate{t.name}(e: Partial<{t.name}>): void {{")
-    w("  const errors: Record<string, string> = {};")
-    for c in t.columns:
-        mm = m[c.name]
-        if c.tenant:
-            continue  # impostata dal repository con il tenant dell'EntityManager
-        if c.required and not (c.primary_key and c.auto) and not c.generated and c.default is None:
-            w(f'  if (e.{mm} === undefined || e.{mm} === null) errors["{c.name}"] = "obbligatorio";')
-        elif c.required and not c.generated and c.default is not None:
-            w(f'  if (e.{mm} === null) errors["{c.name}"] = "obbligatorio"; // assente: vale il default')
-        if c.type == "string":
-            w(f'  if (typeof e.{mm} === "string" && e.{mm}.length > {c.length}) errors["{c.name}"] = "lunghezza massima {c.length}";')
-    w(f'  if (Object.keys(errors).length > 0) throw new ModelValidationError("{t.name}", errors);')
-    w("}\n")
-
-    sortable = ", ".join(f'{member(L, cn)}: {{ prop: "{m[cn]}", type: "{t.col(cn).type}" }}' for cn in t.pagination.sortable)
-    order0 = ", ".join(f'{{ prop: "{m[cn]}", json: "{member(L, cn)}", type: "{t.col(cn).type}", desc: {str(d).lower()} }}' for cn, d in t.order())
-    w(f"export const PAGING_{snake(t.name).upper()}: PagingSpec = {{")
-    w(f'  table: "{t.name}",')
-    w(f'  pk: {{ prop: "{pkm}", json: "{member(L, pk.name)}", type: "{pk.type}" }},')
-    w(f"  sortable: {{ {sortable} }},")
-    w(f"  defaultOrder: [{order0}],")
-    w(f"  defaultLimit: {t.pagination.default_limit},")
-    w(f"  maxLimit: {t.pagination.max_limit},")
-    w("};\n")
+    out += _validation_paging_lines(t, m)
 
     updatable = [m[c.name] for c in t.columns if not c.primary_key and not c.generated and not c.tenant]
     T = t.name
@@ -356,6 +331,42 @@ def _base_file() -> str:
             "}\n")
 
 
+def _validation_paging_lines(t: Table, m: Dict[str, str]) -> List[str]:
+    out: List[str] = []
+    w = out.append
+    pk = t.pk
+    pkm = m[pk.name]
+    # ---- validazione
+    w(f"/** Validazione di modello prima della persistenza. */")
+    w(f"export function validate{t.name}(e: Partial<{t.name}>): void {{")
+    w("  const errors: Record<string, string> = {};")
+    for c in t.columns:
+        mm = m[c.name]
+        if c.tenant:
+            continue  # impostata dal repository con il tenant dell'EntityManager
+        if c.required and not (c.primary_key and c.auto) and not c.generated and c.default is None:
+            w(f'  if (e.{mm} === undefined || e.{mm} === null) errors["{c.name}"] = "obbligatorio";')
+        elif c.required and not c.generated and c.default is not None:
+            w(f'  if (e.{mm} === null) errors["{c.name}"] = "obbligatorio"; // assente: vale il default')
+        if c.type == "string":
+            w(f'  if (typeof e.{mm} === "string" && e.{mm}.length > {c.length}) errors["{c.name}"] = "lunghezza massima {c.length}";')
+    w(f'  if (Object.keys(errors).length > 0) throw new ModelValidationError("{t.name}", errors);')
+    w("}\n")
+
+    sortable = ", ".join(f'{member(L, cn)}: {{ prop: "{m[cn]}", type: "{t.col(cn).type}" }}' for cn in t.pagination.sortable)
+    order0 = ", ".join(f'{{ prop: "{m[cn]}", json: "{member(L, cn)}", type: "{t.col(cn).type}", desc: {str(d).lower()} }}' for cn, d in t.order())
+    w(f"export const PAGING_{snake(t.name).upper()}: PagingSpec = {{")
+    w(f'  table: "{t.name}",')
+    w(f'  pk: {{ prop: "{pkm}", json: "{member(L, pk.name)}", type: "{pk.type}" }},')
+    w(f"  sortable: {{ {sortable} }},")
+    w(f"  defaultOrder: [{order0}],")
+    w(f"  defaultLimit: {t.pagination.default_limit},")
+    w(f"  maxLimit: {t.pagination.max_limit},")
+    w("};\n")
+
+    return out
+
+
 def _index_file(tables: Dict[str, Table]) -> str:
     lines = [header(L, "kit") + "/* eslint-disable */\n// Elenco di tutte le entità generate: usalo nella configurazione del DataSource.",
              'export { ModelValidationError } from "./_base";',
@@ -365,11 +376,23 @@ def _index_file(tables: Dict[str, Table]) -> str:
              'export { FileArchiveReader, archiveOf, archivePath, bindArchive } from "./_archive";',
              'export type { ArchiveReader } from "./_archive";',
              'export type { Isolation, TransactionOptions } from "./_uow";']
+    sql = [n for n, t in tables.items() if not t.mongo]
+    mongo = [n for n, t in tables.items() if t.mongo]
     for n in tables:
-        lines.append(f'import {{ {n} }} from "./{n}";')
+        if n in sql:
+            lines.append(f'import {{ {n} }} from "./{n}";')
         lines.append(f'export {{ {n}, {base_class(L, n)}, validate{n}, PAGING_{snake(n).upper()} }} from "./{n}";')
         lines.append(f'export type {{ {n}Changes }} from "./{n}";')
-    lines.append(f"\nexport const ENTITIES = [{', '.join(tables)}];")
+    if mongo:
+        lines.append('export { MongoSession, mongoSession, runInMongoTransaction } from "./_mongo";')
+        lines.append('import type { Db } from "mongodb";')
+        for n in mongo:
+            lines.append(f'import {{ ensureIndexes{n} }} from "./{n}";')
+    lines.append("\n/** Entità TypeORM (tabelle SQL) per la configurazione del DataSource. */")
+    lines.append(f"export const ENTITIES = [{', '.join(sql)}];")
+    if mongo:
+        lines += ["", "/** Crea gli indici di tutte le collection MongoDB del modello (idempotente). */",
+                  "export async function ensureMongoIndexes(db: Db): Promise<void> {"] + [f"  await ensureIndexes{n}(db);" for n in mongo] + ["}"]
     return "\n".join(lines) + "\n"
 
 
@@ -393,7 +416,9 @@ def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tu
            f"{GEN_DIR}/_tenant.ts": runtime_tenant.typescript_file(opts.get("tenant_id_type", "uuid")),
            f"{GEN_DIR}/_archive.ts": runtime_archive.typescript_file()}
     for n, t in tables.items():
-        gen[f"{GEN_DIR}/{n}.ts"] = _table_file(t, tables, schema_rel[n], dialect)
+        gen[f"{GEN_DIR}/{n}.ts"] = _mongo_table_file(t, tables, schema_rel[n]) if t.mongo else _table_file(t, tables, schema_rel[n], dialect)
+    if any(t.mongo for t in tables.values()):
+        gen[f"{GEN_DIR}/_mongo.ts"] = runtime_mongo.typescript_file()
     custom = {custom_file(L, n): custom_stub(t) for n, t in tables.items()}
     return gen, custom
 
@@ -416,3 +441,270 @@ def _ts_cond(prop: str, op: str, key: str, val):
     if op in ("is_null", "not_null"):
         p = ""
     return expr, p
+
+
+# ------------------------------------------------------------------------------------------- MongoDB
+
+def _mongo_cond_ts(field: str, op: str, val: str) -> str:
+    return {"eq": f'{{ "{field}": {val} }}', "ne": f'{{ "{field}": {{ $nin: [{val}, null] }} }}', "lt": f'{{ "{field}": {{ $lt: {val} }} }}',
+            "lte": f'{{ "{field}": {{ $lte: {val} }} }}', "gt": f'{{ "{field}": {{ $gt: {val} }} }}', "gte": f'{{ "{field}": {{ $gte: {val} }} }}',
+            "in": f'{{ "{field}": {{ $in: {val} }} }}', "prefix": f'{{ "{field}": prefix({val}) }}',
+            "is_null": f'{{ "{field}": null }}', "not_null": f'{{ "{field}": {{ $ne: null }} }}'}[op]
+
+
+def _mongo_table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
+    import mongo_plan
+    m = {c.name: member(L, c.name) for c in t.columns}
+    pk = t.pk
+    pkm, pkt = m[pk.name], TS_TYPE[pk.type]
+    T = t.name
+    tc = tenant_column(t)
+    fields = {m[c.name]: mongo_plan.field_name(t, c) for c in t.columns}
+    parents = [r for r in t.relations if r.kind == "many_to_one"]
+    kids = mongo_plan.children(t, tables)
+    out: List[str] = []
+    w = out.append
+    w(header(L, schema_rel) + "/* eslint-disable */")
+    w(f"// {T}: entità e repository della collection MongoDB {t.db_name}.{(' ' + t.description) if t.description else ''}")
+    if pk.auto and pk.type == "uuid":
+        w('import { randomUUID } from "node:crypto";')
+    w('import type { Db, Filter } from "mongodb";')
+    w('import { ModelValidationError } from "./_base";')
+    w('import { findSorted, fromBson, MongoSession, nextId, prefix, runMongoPage, toBson } from "./_mongo";')
+    w('import type { KybesDocument, KybesId } from "./_mongo";')
+    w('import { emptyPage } from "./_paging";')
+    w('import type { OrderItem, Page, PageRequest, PagingSpec } from "./_paging";')
+    if t.tenancy != "none":
+        w('import { tenantOf } from "./_tenant";')
+    for tg in sorted({r.target for r in t.relations if r.target != T}):
+        w(f'import {{ {tg}, {base_class(L, tg)} }} from "./{tg}";')
+    w("")
+    w(f"/** Documento della collection {t.db_name}. I valori non indicati valgono il default dello schema. */")
+    w(f"export class {T} {{")
+    for c in t.columns:
+        if c.default is not None:
+            w(f"  {m[c.name]}: {_ts_type(c)} = {_ts_value(c, c.default)};")
+        else:
+            w(f"  {m[c.name]}!: {_ts_type(c)};")
+    w("}\n")
+    out += _validation_paging_lines(t, m)
+    w(f"export const FIELDS_{snake(T).upper()}: Record<string, string> = {{ " + ", ".join(f'{a}: "{f}"' for a, f in fields.items()) + " };\n")
+    w("/** Documento MongoDB del record: le colonne vuote non compaiono. */")
+    w(f"export function toDocument(e: {T}): KybesDocument {{")
+    w("  const doc: KybesDocument = {")
+    for c in t.columns:
+        w(f'    "{fields[m[c.name]]}": toBson(e.{m[c.name]}, "{c.type}"){" as KybesId" if c.primary_key else ""},')
+    w("  };")
+    w("  return Object.fromEntries(Object.entries(doc).filter(([, v]) => v !== null)) as KybesDocument;")
+    w("}\n")
+    w(f"export function fromDocument(d: KybesDocument): {T} {{")
+    w(f"  return Object.assign(new {T}(), {{")
+    for c in t.columns:
+        w(f'    {m[c.name]}: fromBson(d["{fields[m[c.name]]}"], "{c.type}"),')
+    w(f"  }}) as {T};")
+    w("}\n")
+    w(f"/** Indici della collection (stessi nomi del DDL SQL); idempotente: si chiama all'avvio o nel deploy. */")
+    w(f"export async function ensureIndexes{T}(db: Db): Promise<void> {{")
+    ixs = mongo_plan.indexes(t)
+    if ixs:
+        w(f'  const col = db.collection("{t.db_name}");')
+    for ix in ixs:
+        opts = [f'name: "{ix.name}"']
+        if ix.unique:
+            opts.append("unique: true")
+        if ix.partial:
+            opts.append("partialFilterExpression: { " + ", ".join(f'"{f}": {{ $exists: true }}' for f in ix.partial) + " }")
+        if ix.ttl is not None:
+            opts.append(f"expireAfterSeconds: {ix.ttl}")
+        w(f"  await col.createIndex({{ " + ", ".join(f'"{f}": 1' for f in ix.fields) + " }, { " + ", ".join(opts) + " });")
+    if not ixs:
+        w("  void db; // nessun indice oltre a _id")
+    w("}\n")
+
+    updatable = [m[c.name] for c in t.columns if not c.primary_key and not c.generated and not c.tenant]
+    upd_t = f"Pick<{T}, " + (" | ".join(json.dumps(x) for x in updatable) or "never") + ">"
+    w(f"export type {T}Changes = Partial<{upd_t}>;\n")
+    paging = f"PAGING_{snake(T).upper()}"
+    w(f"/** CRUD, relazioni e query di {T} su MongoDB. Per una transazione passa la sessione di runInMongoTransaction. */")
+    w(f"export class {base_class(L, T)} {{")
+    w(f'  protected static readonly COLLECTION = "{t.db_name}";\n')
+    if t.tenancy != "none":
+        w("  constructor(protected readonly em: MongoSession) {")
+        w(f"    tenantOf(em); // tenancy: {t.tenancy}: senza un tenant legato alla sessione il repository non lavora")
+        w("  }\n")
+    else:
+        w("  constructor(protected readonly em: MongoSession) {}\n")
+    w("  protected get col() {")
+    w(f'    return this.em.collection("{t.db_name}");')
+    w("  }\n")
+    w("  protected scope(filter: Filter<KybesDocument>): Filter<KybesDocument> {")
+    if tc:
+        w(f'    return {{ $and: [filter, {{ "{tc.db_name}": toBson(tenantOf(this.em), "{tc.type}") }}] }};')
+    else:
+        w("    return filter;")
+    w("  }\n")
+    w(f"  /** Lettura per chiave (anche dai repository collegati). */")
+    w(f"  async find(id: {pkt}): Promise<{T} | null> {{")
+    w(f'    const d = await this.col.findOne(this.scope({{ _id: toBson(id, "{pk.type}") as KybesId }}), {{ session: this.em.session }});')
+    w("    return d === null ? null : fromDocument(d);")
+    w("  }\n")
+    w("  /** Tenant della sessione e record collegati esistenti (MongoDB non ha chiavi esterne). */")
+    w(f"  protected async check(entity: {T}): Promise<void> {{")
+    if tc:
+        tm = m[tc.name]
+        w("    const tenant = tenantOf(this.em);")
+        w(f"    if (entity.{tm} !== undefined && entity.{tm} !== null && entity.{tm} !== tenant) {{")
+        w(f'      throw new ModelValidationError("{T}", {{ {tc.name}: "tenant diverso da quello della sessione" }});')
+        w("    }")
+        w(f"    entity.{tm} = tenant;")
+    w(f"    validate{T}(entity);")
+    if parents:
+        w("    const errors: Record<string, string> = {};")
+        for r in parents:
+            fk = m[r.foreign_key]
+            w(f"    if (entity.{fk} !== undefined && entity.{fk} !== null && (await new {base_class(L, r.target)}(this.em).find(entity.{fk})) === null) {{")
+            w(f'      errors["{r.foreign_key}"] = "non trovato";')
+            w("    }")
+        w(f'    if (Object.keys(errors).length > 0) throw new ModelValidationError("{T}", errors);')
+    w("  }\n")
+    for meth in methods_of(t):
+        k, _, arg = meth.key.partition(":")
+        name = method_name(L, meth.key)
+        w(f"  /** {meth.summary} */")
+        if k == "get_by_id":
+            w(f"  async {name}(id: {pkt}): Promise<{T} | null> {{")
+            w("    return this.find(id);")
+        elif k == "list_page":
+            w(f"  async {name}(page: PageRequest = {{}}): Promise<Page<{T}>> {{")
+            w(f'    return runMongoPage(this.em, "{t.db_name}", {paging}, FIELDS_{snake(T).upper()}, this.scope({{}}), page, fromDocument);')
+        elif k == "count":
+            w(f"  async {name}(): Promise<number> {{")
+            w("    return this.col.countDocuments(this.scope({}), { session: this.em.session });")
+        elif k == "exists":
+            w(f"  async {name}(id: {pkt}): Promise<boolean> {{")
+            w(f'    return (await this.col.countDocuments(this.scope({{ _id: toBson(id, "{pk.type}") as KybesId }}), {{ limit: 1, session: this.em.session }})) > 0;')
+        elif k == "create":
+            w(f"  async {name}(data: Partial<{T}>): Promise<{T}> {{")
+            w(f"    const entity = Object.assign(new {T}(), data);")
+            w("    await this.check(entity);")
+            if pk.auto:
+                gen = "randomUUID()" if pk.type == "uuid" else (f'String(await nextId(this.em, "{t.db_name}"))' if pk.type == "bigint" else f'await nextId(this.em, "{t.db_name}")')
+                w(f"    if (entity.{pkm} === undefined || entity.{pkm} === null) entity.{pkm} = {gen};")
+            for c in t.columns:
+                if c.generated:
+                    w(f"    entity.{m[c.name]} = new Date();")
+            w("    await this.col.insertOne(toDocument(entity), { session: this.em.session });")
+            w("    return entity;")
+        elif k == "update":
+            w(f"  async {name}(id: {pkt}, changes: {T}Changes): Promise<{T} | null> {{")
+            w(f"    const allowed = new Set<string>({json.dumps(updatable)});")
+            w("    const unknown = Object.keys(changes).filter((key) => !allowed.has(key));")
+            w(f'    if (unknown.length > 0) throw new ModelValidationError("{T}", Object.fromEntries(unknown.map((key) => [key, "campo non modificabile"])));')
+            w("    const entity = await this.find(id);")
+            w("    if (entity === null) return null;")
+            w("    Object.assign(entity, changes);")
+            w("    await this.check(entity);")
+            for c in t.columns:
+                if c.generated == "on_update":
+                    w(f"    entity.{m[c.name]} = new Date();")
+            w(f'    await this.col.replaceOne(this.scope({{ _id: toBson(id, "{pk.type}") as KybesId }}), toDocument(entity), {{ session: this.em.session }});')
+            w("    return entity;")
+        elif k == "delete":
+            w(f"  async {name}(id: {pkt}): Promise<boolean> {{")
+            w("    if ((await this.find(id)) === null) return false;")
+            for c, r in kids:
+                ctc = tenant_column(c)
+                fk_f = mongo_plan.field_name(c, c.col(r.foreign_key))
+                flt = f'{{ "{fk_f}": toBson(id, "{pk.type}")' + (f', "{ctc.db_name}": toBson(tenantOf(this.em), "{ctc.type}")' if ctc else "") + " }"
+                if r.on_delete == "restrict":
+                    w(f'    if ((await this.em.collection("{c.db_name}").countDocuments({flt}, {{ limit: 1, session: this.em.session }})) > 0) {{')
+                    w(f'      throw new ModelValidationError("{T}", {{ {mongo_plan.child_label(t, c, r)}: "record collegati" }});')
+                    w("    }")
+                else:
+                    w(f'    await this.em.collection("{c.db_name}").updateMany({flt}, {{ $unset: {{ "{fk_f}": "" }} }}, {{ session: this.em.session }});')
+            w(f'    await this.col.deleteOne(this.scope({{ _id: toBson(id, "{pk.type}") as KybesId }}), {{ session: this.em.session }});')
+            w("    return true;")
+        elif k == "find_by":
+            c = t.col(arg)
+            w(f"  async {name}(value: {TS_TYPE[c.type]}): Promise<{T} | null> {{")
+            w(f'    const d = await this.col.findOne(this.scope({{ "{fields[m[arg]]}": toBson(value, "{c.type}") }}), {{ session: this.em.session }});')
+            w("    return d === null ? null : fromDocument(d);")
+        elif k == "list_by":
+            c = t.col(arg)
+            w(f"  async {name}(value: {TS_TYPE[c.type]}, page: PageRequest = {{}}): Promise<Page<{T}>> {{")
+            w(f'    const filter = this.scope({{ "{fields[m[arg]]}": toBson(value, "{c.type}") }});')
+            w(f'    return runMongoPage(this.em, "{t.db_name}", {paging}, FIELDS_{snake(T).upper()}, filter, page, fromDocument);')
+        elif k == "get_rel":
+            r = next(x for x in t.relations if x.name == arg)
+            fk = m[r.foreign_key]
+            w(f"  async {name}(id: {pkt}): Promise<{r.target} | null> {{")
+            w("    const entity = await this.find(id);")
+            if t.col(r.foreign_key).nullable:
+                w(f"    if (entity === null || entity.{fk} === undefined || entity.{fk} === null) return null;")
+            else:
+                w("    if (entity === null) return null;")
+            w(f"    return new {base_class(L, r.target)}(this.em).find(entity.{fk});")
+        elif k == "list_rel":
+            r = next(x for x in t.relations if x.name == arg)
+            w(f"  async {name}(id: {pkt}, page: PageRequest = {{}}): Promise<Page<{r.target}>> {{")
+            w(f"    return new {base_class(L, r.target)}(this.em).{method_name(L, 'list_by:' + r.foreign_key)}(id, page);")
+        elif k in ("query_page", "query_list", "query_one"):
+            q = next(x for x in t.queries if x.name == arg)
+            params, conds, guards = [], [], []
+            for c in q.where:
+                col = t.col(c.column)
+                if c.param:
+                    pn = member(L, c.param)
+                    pt = f"{TS_TYPE[col.type]}[]" if c.op == "in" else TS_TYPE[col.type]
+                    params.append(f"{pn}: {pt}")
+                    raw = pn
+                    if c.op == "in":
+                        guards.append(pn)
+                else:
+                    raw = _ts_value(col, c.value) if c.has_value else "null"
+                if c.op == "in":
+                    val = f'{raw}.map((x) => toBson(x, "{col.type}"))'
+                elif c.op == "prefix":
+                    val = raw
+                else:
+                    val = f'toBson({raw}, "{col.type}")'
+                conds.append(_mongo_cond_ts(mongo_plan.field_name(t, col), c.op, val))
+            order = [(m[cn], member(L, cn), t.col(cn).type, d) for cn, d in t.order(q.order_by or None)]
+            order_lit = "[" + ", ".join(f'{{ prop: "{a}", json: "{j}", type: "{ty}", desc: {str(d).lower()} }}' for a, j, ty, d in order) + "]"
+            if k == "query_page":
+                params.append("page: PageRequest = {}")
+            ret = {"query_page": f"Page<{T}>", "query_list": f"{T}[]", "query_one": f"{T} | null"}[k]
+            w(f"  async {name}({', '.join(params)}): Promise<{ret}> {{")
+            for g in guards:
+                empty = {"query_page": f"emptyPage<{T}>({paging}, page)", "query_list": "[]", "query_one": "null"}[k]
+                w(f"    if ({g}.length === 0) return {empty};")
+            w(f"    const filter = this.scope({{ $and: [{', '.join(conds)}] }});")
+            w(f"    const order: OrderItem[] = {order_lit};")
+            if k == "query_page":
+                w(f'    return runMongoPage(this.em, "{t.db_name}", {paging}, FIELDS_{snake(T).upper()}, filter, page, fromDocument, order);')
+            elif k == "query_list":
+                w(f'    return (await findSorted(this.em, "{t.db_name}", filter, FIELDS_{snake(T).upper()}, order, {paging}.maxLimit)).map(fromDocument);')
+            else:
+                w(f'    const docs = await findSorted(this.em, "{t.db_name}", filter, FIELDS_{snake(T).upper()}, order, 1);')
+                w("    return docs.length > 0 ? fromDocument(docs[0]) : null;")
+        w("  }\n")
+    out[-1] = out[-1].rstrip("\n")
+    w("}")
+    return _prune_mongo_imports("\n".join(out) + "\n")
+
+
+def _prune_mongo_imports(text: str) -> str:
+    """Tiene negli import solo i nomi usati (tsconfig con noUnusedLocals)."""
+    import re
+    lines = text.split("\n")
+    body = "\n".join(x for x in lines if not x.startswith("import "))
+    out = []
+    for x in lines:
+        mt = re.match(r'^import (type )?\{ (.+) \} from "(\./_mongo|\./_paging|mongodb)";$', x)
+        if mt:
+            used = [n for n in mt.group(2).split(", ") if re.search(rf"\b{n}\b", body)]
+            if not used:
+                continue
+            x = f'import {mt.group(1) or ""}{{ {", ".join(used)} }} from "{mt.group(3)}";'
+        out.append(x)
+    return "\n".join(out)

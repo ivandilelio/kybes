@@ -160,14 +160,20 @@ def _after(spec: PagingSpec, order: Sequence[OrderItem], values: Sequence[Any]) 
     return or_(*branches)
 
 
-def run_page(session: Session, stmt: Any, spec: PagingSpec, page: PageRequest,
-             fixed_order: Optional[List[OrderItem]] = None) -> Page[Any]:
+def prepare_page(spec: PagingSpec, page: PageRequest, fixed_order: Optional[List[OrderItem]] = None) -> Tuple[List[OrderItem], int]:
+    """Ordinamento e limite validati di una richiesta di pagina (comune a SQL e MongoDB)."""
     if fixed_order is not None and page.sort:
         raise _invalid(spec, "sort", "questa query ha un ordinamento fisso")
     order = fixed_order if fixed_order is not None else resolve_order(spec, page.sort)
     limit = spec.default_limit if page.limit is None else page.limit
     if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1 or limit > spec.max_limit:
         raise _invalid(spec, "limit", f"tra 1 e {spec.max_limit}")
+    return order, limit
+
+
+def run_page(session: Session, stmt: Any, spec: PagingSpec, page: PageRequest,
+             fixed_order: Optional[List[OrderItem]] = None) -> Page[Any]:
+    order, limit = prepare_page(spec, page, fixed_order)
     if page.cursor:
         stmt = stmt.where(_after(spec, order, decode_cursor(spec, order, page.cursor)))
     rows = list(session.scalars(order_rows(stmt, spec, order).limit(limit + 1)))

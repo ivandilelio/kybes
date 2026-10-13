@@ -142,6 +142,9 @@ def _head(src: str) -> str:
 
 def ddl_files(tables: Dict[str, Table], schema_dir: str) -> Dict[str, str]:
     files = {}
+    tables = {n: t for n, t in tables.items() if not t.mongo}  # le collection MongoDB hanno gli indici nel model (ensure_indexes)
+    if not tables:
+        return files
     for n, t in tables.items():
         body = ddl_table(t) + [""] + ddl_foreign_keys(t, tables) + [""] + ddl_indexes(t)
         files[f"{n}.sql"] = _head(f"{schema_dir}/{n}.yaml") + "-- Per creare lo schema completo usa _all.sql (ordine corretto delle tabelle).\n\n" + \
@@ -194,7 +197,8 @@ def index_report(tables: Dict[str, Table]) -> str:
     warnings = []
     for n, t in tables.items():
         plan = index_plan(t, tables)
-        o += [f"## {n}", "", "| Accesso | Colonne ideali | Indice | Esito |", "|---|---|---|---|"]
+        o += [f"## {n}", ""] + (["Collection MongoDB: gli stessi indici, creati da `ensure_indexes` del model (vedi docs/mongodb.md).", ""] if t.mongo else [])
+        o += ["| Accesso | Colonne ideali | Indice | Esito |", "|---|---|---|---|"]
         for p in plan.paths:
             if not p.ideal:
                 esito, ix = "nessun indice necessario", "—"

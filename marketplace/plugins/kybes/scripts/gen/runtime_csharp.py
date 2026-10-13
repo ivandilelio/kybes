@@ -192,8 +192,9 @@ public static class Paging
         return Expression.Lambda<Func<T, bool>>(any!, p);
     }
 
-    public static async Task<Page<T>> RunPageAsync<T>(IQueryable<T> query, PagingSpec spec, PageRequest? page,
-        IReadOnlyList<OrderItem>? fixedOrder = null, CancellationToken ct = default) where T : class
+    /// <summary>Ordine, limite e valori del cursore validati: comune a SQL e MongoDB.</summary>
+    public static (List<OrderItem> Order, int Limit, IReadOnlyList<object>? After) Prepare(PagingSpec spec, PageRequest? page,
+        IReadOnlyList<OrderItem>? fixedOrder)
     {
         page ??= PageRequest.First;
         if (fixedOrder is not null && !string.IsNullOrWhiteSpace(page.Sort))
@@ -201,7 +202,14 @@ public static class Paging
         var order = fixedOrder?.ToList() ?? ResolveOrder(spec, page.Sort);
         var limit = page.Limit ?? spec.DefaultLimit;
         if (limit < 1 || limit > spec.MaxLimit) throw Invalid(spec, "limit", $"tra 1 e {spec.MaxLimit}");
-        if (!string.IsNullOrEmpty(page.Cursor)) query = query.Where(After<T>(order, DecodeCursor(spec, order, page.Cursor)));
+        return (order, limit, string.IsNullOrEmpty(page.Cursor) ? null : DecodeCursor(spec, order, page.Cursor));
+    }
+
+    public static async Task<Page<T>> RunPageAsync<T>(IQueryable<T> query, PagingSpec spec, PageRequest? page,
+        IReadOnlyList<OrderItem>? fixedOrder = null, CancellationToken ct = default) where T : class
+    {
+        var (order, limit, after) = Prepare(spec, page, fixedOrder);
+        if (after is not null) query = query.Where(After<T>(order, after));
         var rows = await OrderRows(query, order).Take(limit + 1).ToListAsync(ct);
         var more = rows.Count > limit;
         var items = more ? rows.GetRange(0, limit) : rows;

@@ -21,7 +21,7 @@ jobs:
           distribution: temurin
           java-version: "21"
       - name: Dipendenze di test
-        run: pip install sqlalchemy pytest pytest-cov pyyaml pglast tree-sitter tree-sitter-c-sharp pyarrow boto3 moto duckdb azure-storage-blob
+        run: pip install sqlalchemy pytest pytest-cov pyyaml pglast tree-sitter tree-sitter-c-sharp pyarrow boto3 moto duckdb azure-storage-blob pymongo mongomock
       - name: Azurite (Azure Blob locale) per i test dell'archivio
         run: |
           npx --yes azurite@3 azurite-blob --silent --skipApiVersionCheck --disableTelemetry --location "$RUNNER_TEMP/azurite" --blobHost 127.0.0.1 &
@@ -33,7 +33,8 @@ jobs:
           KYBES_TEST_AZURITE: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
         run: tests/run.sh
 
-  # test generati Java ed C# eseguiti davvero: Hibernate e EF Core su PostgreSQL, copertura per ASIL con verify.py
+  # test generati eseguiti davvero: Hibernate, EF Core, SQLAlchemy e TypeORM su PostgreSQL, collection su MongoDB (replica set),
+  # copertura per ASIL con verify.py
   generated-java:
     runs-on: ubuntu-latest
     services:
@@ -48,6 +49,7 @@ jobs:
           --health-cmd "pg_isready -U kybes" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       KYBES_TEST_DATABASE_URL: postgresql://kybes:kybes@localhost:5432/kybes
+      KYBES_TEST_MONGO_URL: mongodb://localhost:27017/?replicaSet=rs0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -59,6 +61,12 @@ jobs:
           java-version: "21"
           cache: maven
           cache-dependency-path: marketplace/plugins/kybes/templates/scaffold/libs/db-models/java/pom.xml
+      - name: MongoDB con replica set (transazioni) per le collection
+        run: |
+          docker run -d --name mongo -p 27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping: 1})' >/dev/null 2>&1 && break; sleep 1; done
+          docker exec mongo mongosh --quiet --eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "localhost:27017"}]})'
+          for i in $(seq 1 30); do [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && break; sleep 1; done
       - name: Progetto di prova (schemi di esempio, modello Java)
         run: |
           mkdir -p "$RUNNER_TEMP/proj" && cd "$RUNNER_TEMP/proj" && git init -q
@@ -72,6 +80,12 @@ jobs:
           "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs java --tenant-id string --ci none
           cp "$GITHUB_WORKSPACE"/tests/fixtures/tenancy/*.yaml schemas/db/ && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
           python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" java-fix --reports libs/db-models/java/target/surefire-reports -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=java
+      - name: Collection MongoDB accanto a una tabella SQL (tests/fixtures/mongo)
+        run: |
+          mkdir -p "$RUNNER_TEMP/mongo" && cd "$RUNNER_TEMP/mongo" && git init -q
+          "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs java --ci none
+          cp "$GITHUB_WORKSPACE"/tests/fixtures/mongo/*.yaml schemas/db/ && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
+          python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" java-mongo --reports libs/db-models/java/target/surefire-reports -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=java
       - name: Report dei test
         if: failure()
         uses: actions/upload-artifact@v4
@@ -80,6 +94,7 @@ jobs:
           path: |
             ${{ runner.temp }}/proj/libs/db-models/java/target/surefire-reports/
             ${{ runner.temp }}/proj/coverage/
+            ${{ runner.temp }}/mongo/libs/db-models/java/target/surefire-reports/
           if-no-files-found: ignore
 
   generated-csharp:
@@ -96,6 +111,7 @@ jobs:
           --health-cmd "pg_isready -U kybes" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       KYBES_TEST_DATABASE_URL: postgresql://kybes:kybes@localhost:5432/kybes
+      KYBES_TEST_MONGO_URL: mongodb://localhost:27017/?replicaSet=rs0
       DOTNET_CLI_TELEMETRY_OPTOUT: "1"
       DOTNET_NOLOGO: "1"
     steps:
@@ -106,6 +122,12 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
+      - name: MongoDB con replica set (transazioni) per le collection
+        run: |
+          docker run -d --name mongo -p 27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping: 1})' >/dev/null 2>&1 && break; sleep 1; done
+          docker exec mongo mongosh --quiet --eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "localhost:27017"}]})'
+          for i in $(seq 1 30); do [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && break; sleep 1; done
       - name: Progetto di prova (schemi di esempio, modello C#)
         run: |
           mkdir -p "$RUNNER_TEMP/proj" && cd "$RUNNER_TEMP/proj" && git init -q
@@ -122,6 +144,13 @@ jobs:
           "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs csharp --tenant-id string --ci none
           cp "$GITHUB_WORKSPACE"/tests/fixtures/tenancy/*.yaml schemas/db/ && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
           python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" csharp-fix -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=csharp
+      - name: Collection MongoDB accanto a una tabella SQL (tests/fixtures/mongo)
+        run: |
+          mkdir -p "$RUNNER_TEMP/mongo" && cd "$RUNNER_TEMP/mongo" && git init -q
+          "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs csharp --ci none
+          cp "$GITHUB_WORKSPACE"/tests/fixtures/mongo/*.yaml schemas/db/ && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
+          (cd libs/db-models/csharp/src && python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" csharp-mongo-build -- dotnet build -warnaserror)
+          python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" csharp-mongo -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=csharp
 
   generated-python-typescript:
     runs-on: ubuntu-latest
@@ -137,6 +166,7 @@ jobs:
           --health-cmd "pg_isready -U kybes" --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       KYBES_TEST_DATABASE_URL: postgresql://kybes:kybes@localhost:5432/kybes
+      KYBES_TEST_MONGO_URL: mongodb://localhost:27017/?replicaSet=rs0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -145,6 +175,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: MongoDB con replica set (transazioni) per le collection
+        run: |
+          docker run -d --name mongo -p 27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+          for i in $(seq 1 30); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping: 1})' >/dev/null 2>&1 && break; sleep 1; done
+          docker exec mongo mongosh --quiet --eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "localhost:27017"}]})'
+          for i in $(seq 1 30); do [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && break; sleep 1; done
       - name: Progetto di prova (schemi di esempio, modello Python e TypeScript, dialetto postgres)
         run: |
           mkdir -p "$RUNNER_TEMP/proj" && cd "$RUNNER_TEMP/proj" && git init -q
@@ -162,5 +198,13 @@ jobs:
           pip install -e "libs/db-models/python[test,postgres]" -e "jobs/generated/_engine[test]"
           (cd libs/db-models/typescript && npm install --no-audit --no-fund)
           python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" py-ts-fix -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py .
+      - name: Collection MongoDB accanto a una tabella SQL (tests/fixtures/mongo)
+        run: |
+          mkdir -p "$RUNNER_TEMP/mongo" && cd "$RUNNER_TEMP/mongo" && git init -q
+          "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs python,typescript --ci none
+          cp "$GITHUB_WORKSPACE"/tests/fixtures/mongo/*.yaml schemas/db/ && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
+          pip install -e "libs/db-models/python[test,postgres,mongo]"
+          (cd libs/db-models/typescript && npm install --no-audit --no-fund)
+          python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" py-ts-mongo -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py .
       - name: DDL multi-tenant su PostgreSQL (row-level security, schema e database per tenant)
         run: python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" tenancy-sql -- python3 -B "$GITHUB_WORKSPACE/tests/sql/tenancy_check.py" "$RUNNER_TEMP/proj" "$RUNNER_TEMP/fix"
