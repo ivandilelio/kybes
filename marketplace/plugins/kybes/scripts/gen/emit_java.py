@@ -139,7 +139,9 @@ def _entity_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str, 
             w(f"        this.{fk} = value == null ? null : value.get{_cap(tpk)}();")
             w("    }")
     w("")
-    sortable_cols = [c for c in t.columns if c.type in SORTABLE_TYPES and not c.nullable]
+    orderable = ({t.pk.name} | set(t.pagination.sortable) | {cn for cn, _ in t.order(None)}
+                 | {cn for q in t.queries for cn, _ in t.order(q.order_by or None)})
+    sortable_cols = [c for c in t.columns if c.name in orderable and c.type in SORTABLE_TYPES and not c.nullable]
     w("    /** Valore di una colonna ordinabile, usato dal cursore di paginazione. */")
     w("    public Object kybesValue(String field) {")
     w("        return switch (field) {")
@@ -175,6 +177,7 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
     w(header(L, schema_rel).rstrip("\n"))
     w(f"package {gpkg};\n")
     w("import jakarta.persistence.EntityManager;")
+    w("import jakarta.persistence.EntityNotFoundException;")
     w("import java.math.BigDecimal;")
     w("import java.time.LocalDate;")
     w("import java.time.OffsetDateTime;")
@@ -241,6 +244,7 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
         elif k == "update":
             w(f"    public {t.name} {name}({t.name} entity) {{")
             w(f'        if (entity.get{_cap(pkm)}() == null) throw new IllegalArgumentException("{t.name}: update senza chiave");')
+            w(f'        if (em.find({t.name}.class, entity.get{_cap(pkm)}()) == null) throw new EntityNotFoundException("{t.name}: record inesistente");')
             if sync:
                 w("        syncRelations(entity);")
             w("        entity.validate();")

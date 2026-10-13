@@ -371,6 +371,17 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
                   "        page = repo.list_page(PageRequest(limit=1, cursor=cursor" + _sort_arg(tc) + "))",
                   f"        seen += [x.{pk} for x in page.items]", "        if not page.has_more:", "            break",
                   "        cursor = page.next_cursor", "    assert built <= set(seen)", "    assert len(seen) == len(set(seen))"]
+        elif k == "page_sort_each":
+            sorts = [(("-" if x.startswith("-") else "") + member("typescript", x.lstrip("-")), _attr(x.lstrip("-"))) for x in tc.args["sorts"]]
+            o += [f"    for _ in range(3):", f"        build_{snake(n)}(session)", f"    repo = {repo}(session)", "    total = repo.count()",
+                  f"    for sort, attr in {sorts!r}:",
+                  "        seen, values, cursor = [], [], None", "        for _ in range(100):",
+                  "            page = repo.list_page(PageRequest(limit=1, cursor=cursor, sort=sort))",
+                  f"            seen += [x.{pk} for x in page.items]", "            values += [getattr(x, attr) for x in page.items]",
+                  "            if not page.has_more:", "                break", "            cursor = page.next_cursor",
+                  "        assert len(seen) == len(set(seen)) == total, sort",
+                  "        pairs = list(zip(values, values[1:]))",
+                  "        assert all(a >= b for a, b in pairs) if sort.startswith('-') else all(a <= b for a, b in pairs), sort"]
         elif k == "page_limit":
             o += ["    with pytest.raises(ModelValidationError) as err:",
                   f"        {repo}(session).list_page(PageRequest(limit={tc.args['limit']}))", "    assert 'limit' in err.value.fields"]

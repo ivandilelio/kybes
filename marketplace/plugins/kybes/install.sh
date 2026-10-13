@@ -186,7 +186,7 @@ cfg = {
         "asil": asil,
         "generate_tests": True,
         "docs_dir": "docs/generated/verification",
-        "coverage_reports": ["coverage/*.cobertura.xml"],
+        "coverage_reports": ["coverage/*.cobertura.xml", "coverage/*.jacoco.xml"],
         "thresholds": {"QM": {}, "A": {"statement": 90}, "B": {"statement": 95, "branch": 90},
                        "C": {"statement": 100, "branch": 95}, "D": {"statement": 100, "branch": 100}},
     },
@@ -263,7 +263,7 @@ fi
 # --------------------------------------------------------------- 5a. .gitignore
 GI="$TARGET/.gitignore"
 touch "$GI"
-for pat in "__pycache__/" "*.pyc" "coverage/" "node_modules/" "libs/db-models/typescript/dist/" ".coverage"; do
+for pat in "__pycache__/" "*.pyc" "coverage/" "node_modules/" "libs/db-models/typescript/dist/" ".coverage" "libs/db-models/java/target/" "libs/db-models/csharp/**/bin/" "libs/db-models/csharp/**/obj/"; do
   grep -qxF "$pat" "$GI" || echo "$pat" >> "$GI"
 done
 

@@ -7,9 +7,10 @@ strutturale e la confronta con le soglie dell'ASIL di ogni tabella.
 Per ogni linguaggio del modello con test generati:
   python      pytest + pytest-cov nella cartella del pacchetto (es. libs/db-models/python)
   typescript  tsc + c8 + node --test nella cartella del pacchetto (es. libs/db-models/typescript)
-I report Cobertura vanno in coverage/<lingua>.cobertura.xml. Con --gate-only si controllano solo i report
-già presenti (verification.coverage_reports), utile per i linguaggi che la CI misura con i propri strumenti
-(coverlet per C#, JaCoCo convertito in Cobertura per Java).
+  java        mvn test con JaCoCo (es. libs/db-models/java), su PostgreSQL (KYBES_TEST_DATABASE_URL)
+  csharp      dotnet test con coverlet (es. libs/db-models/csharp/tests), su PostgreSQL (KYBES_TEST_DATABASE_URL)
+I report vanno in coverage/: <lingua>.cobertura.xml, java.jacoco.xml. Con --gate-only si controllano solo i report
+già presenti (verification.coverage_reports), per esempio prodotti da una CI con i propri strumenti.
 
 Uscita: 0 se test e soglie sono rispettati; 1 se un test fallisce o una soglia non è raggiunta.
 Un linguaggio senza strumenti installati viene segnalato e saltato, non fa fallire.
@@ -18,6 +19,7 @@ from __future__ import annotations
 
 import glob
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -88,6 +90,31 @@ def parse_cobertura(xml_path: Path, proj: Path) -> Dict[str, FileCov]:
     return out
 
 
+def parse_jacoco(xml_path: Path, proj: Path, targets: List[dict]) -> Dict[str, FileCov]:
+    """Report XML di JaCoCo: percorsi package/File.java risolti sotto le cartelle src/main/java dei target Java."""
+    roots = sorted({proj / tg["dir"].split("/src/main/java/")[0] / "src" / "main" / "java"
+                    for tg in targets if tg["lang"] == "java" and "/src/main/java/" in tg["dir"]})
+    out: Dict[str, FileCov] = {}
+    for pkg in ET.parse(xml_path).getroot().iter("package"):
+        for sf in pkg.iter("sourcefile"):
+            name = f"{pkg.get('name')}/{sf.get('name')}"
+            hit = next((r / name for r in roots if (r / name).exists()), None)
+            rel = hit.relative_to(proj).as_posix() if hit else name
+            fc = out.setdefault(rel, FileCov(rel))
+            for ln in sf.iter("line"):
+                fc.lines += 1
+                fc.lines_hit += int(ln.get("ci", "0")) > 0
+                mb, cb = int(ln.get("mb", "0")), int(ln.get("cb", "0"))
+                fc.branches += mb + cb
+                fc.branches_hit += cb
+    return out
+
+
+def parse_report(xml_path: Path, proj: Path, targets: List[dict]) -> Dict[str, FileCov]:
+    root = ET.parse(xml_path).getroot()
+    return parse_jacoco(xml_path, proj, targets) if root.tag == "report" else parse_cobertura(xml_path, proj)
+
+
 def _resolve(fn: str, sources: List[Path], xml_path: Path, proj: Path) -> str:
     cands = [Path(fn)] if Path(fn).is_absolute() else [s / fn for s in sources] + [xml_path.parent / fn, proj / fn]
     for c in cands:
@@ -109,7 +136,10 @@ def file_asil(rel: str, targets: List[dict], tables: dict, default: str) -> Opti
             continue
         name = rel.rsplit("/", 1)[-1]
         stem = name.split(".", 1)[0]
-        tn = stem[: -len("Repository")] if stem.endswith("Repository") and stem[: -len("Repository")] in tables else stem
+        tn = stem
+        for suffix in ("RepositoryBase", "Repository"):
+            if stem.endswith(suffix) and stem[: -len(suffix)] in tables:
+                tn = stem[: -len(suffix)]
         if tn in tables:
             return table_asil(tables[tn], default), tn
         top = max((table_asil(t, default) for t in tables.values()), key=ASIL.index, default=default)
@@ -201,7 +231,52 @@ def _ts_outdir(path: Path) -> str:
         return "dist"
 
 
-RUNNERS = {"python": run_python, "typescript": run_typescript}
+def _db_url(lang: str, out: Outcome) -> bool:
+    if os.environ.get("KYBES_TEST_DATABASE_URL"):
+        return True
+    out.notes.append(f"{lang}: imposta KYBES_TEST_DATABASE_URL (PostgreSQL di test, es. postgresql://kybes:kybes@localhost:5432/kybes): test non eseguiti")
+    return False
+
+
+def run_java(proj: Path, tg: dict, report: Path, quiet: bool, out: Outcome) -> None:
+    pkg = proj / tg["dir"].split("/src/main/java/")[0]
+    mvn = shutil.which("mvn")
+    if not mvn or not (pkg / "pom.xml").exists():
+        out.notes.append(f"java: servono Maven e {pkg.relative_to(proj)}/pom.xml (creato da install.sh --scaffold): test non eseguiti")
+        return
+    if not _db_url("java", out):
+        return
+    rc = _run([mvn, "-q", "-B", "-ntp", "test"], pkg, quiet)
+    jacoco = pkg / "target" / "site" / "jacoco" / "jacoco.xml"
+    if jacoco.exists():
+        shutil.copy(jacoco, report)
+    if rc != 0:
+        out.failures.append(f"java: test falliti in {pkg.relative_to(proj)} (mvn test esce con {rc})")
+
+
+def run_csharp(proj: Path, tg: dict, report: Path, quiet: bool, out: Outcome) -> None:
+    td = proj / G.tests_dir(tg)
+    dotnet = shutil.which("dotnet")
+    projs = sorted(td.glob("*.csproj"))
+    if not dotnet or not projs:
+        out.notes.append(f"csharp: servono il .NET SDK e un progetto di test in {td.relative_to(proj)} (creato da install.sh --scaffold): test non eseguiti")
+        return
+    if not _db_url("csharp", out):
+        return
+    tmp = report.parent / ".coverlet-csharp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    rc = _run([dotnet, "test", str(projs[0]), "--nologo", "--collect:XPlat Code Coverage", "--results-directory", str(tmp)], td, quiet)
+    found = sorted(tmp.rglob("coverage.cobertura.xml"))
+    if found:
+        shutil.move(str(found[0]), report)
+    shutil.rmtree(tmp, ignore_errors=True)
+    if rc != 0:
+        out.failures.append(f"csharp: test falliti in {td.relative_to(proj)} (dotnet test esce con {rc})")
+
+
+RUNNERS = {"python": run_python, "typescript": run_typescript, "java": run_java, "csharp": run_csharp}
+REPORT = {"java": "java.jacoco.xml"}
+DEFAULT_REPORTS = ["coverage/*.cobertura.xml", "coverage/*.jacoco.xml"]
 
 
 def main(argv: List[str]) -> int:
@@ -233,18 +308,18 @@ def main(argv: List[str]) -> int:
             if (only and lang not in only) or lang not in RUNNERS or not G.tests_dir(tg):
                 continue
             cov_dir.mkdir(exist_ok=True)
-            report = cov_dir / f"{lang}.cobertura.xml"
+            report = cov_dir / REPORT.get(lang, f"{lang}.cobertura.xml")
             if report.exists():
                 report.unlink()
             RUNNERS[lang](proj, tg, report, quiet, out)
             if report.exists():
                 ran.append((lang, tg["dir"].rstrip("/") + "/", report))
     covs: Dict[str, FileCov] = {}
-    reports = sorted({Path(p) for pat in vc.get("coverage_reports") or ["coverage/*.cobertura.xml"]
+    reports = sorted({Path(p) for pat in vc.get("coverage_reports") or DEFAULT_REPORTS
                       for p in glob.glob(str(proj / pat))})
     for rp in reports:
         try:
-            covs.update(parse_cobertura(rp, proj))
+            covs.update(parse_report(rp, proj, mc["targets"]))
         except (ET.ParseError, OSError) as exc:
             out.failures.append(f"report di copertura illeggibile {rp.relative_to(proj)}: {exc}")
     for lang, d, rp in ran:

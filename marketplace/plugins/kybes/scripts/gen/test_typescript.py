@@ -243,6 +243,8 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
           ' } from "./kybes_builders";', "",
           "const invalid = (field: string) => (e: unknown) => e instanceof ModelValidationError && field in e.fields;",
           "void [cmp, different, greater, nextN, smaller, textValue];"]
+    if any(tc.kind == "page_sort_each" for tc in cat.for_table(n)):
+        o.insert(o.index('import { withDb } from "./_db";'), 'import type { Kind } from "./kybes_builders";')
     compare = [(c.name, c.type) for c in t.columns if c.type not in ("datetime", "json") and not c.generated]
     for tc in cat.for_table(n):
         o += ["", f"test({json.dumps(tc.id + ' · ' + ', '.join(tc.reqs) + ' · ' + METHODS[tc.method] + ': ' + tc.title)}, () =>",
@@ -324,6 +326,19 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
                   "    for (let i = 0; i < 100; i++) {", "      const page = await repo.listPage({ limit: 1, cursor" + _sort_arg(tc) + " });",
                   f"      seen.push(...page.items.map((x) => x.{pk}));", "      if (!page.nextCursor) break;", "      cursor = page.nextCursor;", "    }",
                   "    assert.ok([...built].every((id) => seen.includes(id)));", "    assert.equal(new Set(seen).size, seen.length);"]
+        elif k == "page_sort_each":
+            sorts = ", ".join(f'["{_sort_json(x)}", "{_a(x.lstrip("-"))}", "{t.col(x.lstrip("-")).type}"]' for x in tc.args["sorts"])
+            o += [f"    for (let i = 0; i < 3; i++) await {b}(em);", f"    const repo = new {repo}(em);", "    const total = await repo.count();",
+                  f"    for (const [sort, prop, kind] of [{sorts}] as const) {{",
+                  "      const seen: unknown[] = [];", "      const values: unknown[] = [];", "      let cursor: string | null = null;",
+                  "      for (let i = 0; i < 100; i++) {", "        const page = await repo.listPage({ limit: 1, cursor, sort });",
+                  f"        seen.push(...page.items.map((x) => x.{pk}));",
+                  "        values.push(...page.items.map((x) => (x as unknown as Record<string, unknown>)[prop]));",
+                  "        if (!page.nextCursor) break;", "        cursor = page.nextCursor;", "      }",
+                  "      assert.equal(new Set(seen).size, seen.length, sort);", "      assert.equal(seen.length, total, sort);",
+                  "      for (let i = 1; i < values.length; i++) {",
+                  "        const c = cmp(values[i - 1], values[i], kind as Kind);",
+                  '        assert.ok(sort.startsWith("-") ? c >= 0 : c <= 0, sort);', "      }", "    }"]
         elif k == "page_limit":
             o += [f'    await assert.rejects(new {repo}(em).listPage({{ limit: {tc.args["limit"]} }}), invalid("limit"));']
         elif k == "page_limit_ok":
@@ -339,6 +354,10 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
             raise ValueError(k)
         o.append("  }));")
     return _drop_unused_repos(o, [repo_class(L, x) for x in others])
+
+
+def _sort_json(x: str) -> str:
+    return ("-" if x.startswith("-") else "") + member(L, x.lstrip("-"))
 
 
 def _sort_arg(tc: TestCase) -> str:

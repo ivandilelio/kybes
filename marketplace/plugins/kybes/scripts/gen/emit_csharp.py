@@ -170,6 +170,8 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
             empty = "Guid.Empty" if pk.type == "uuid" else ("null" if pk.type == "string" else "0")
             w(f'        if (entity.{pk.name} == {empty}) throw new ArgumentException("{t.name}: update senza chiave", nameof(entity));')
             w(f"        {t.name}Validation.Validate(entity);")
+            w(f"        var key = entity.{pk.name};")
+            w(f'        if (!await Set.AnyAsync(x => x.{pk.name} == key, ct)) throw new KeyNotFoundException("{t.name}: record inesistente");')
             w("        Db.Entry(entity).State = EntityState.Modified; // solo il record, non il grafo collegato")
             w("        await Db.SaveChangesAsync(ct);")
             if any(c.generated == "on_create" for c in gen_cols):

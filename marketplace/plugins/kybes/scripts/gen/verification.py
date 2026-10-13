@@ -111,9 +111,12 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B") -> Catalog:
             add(TestCase(f"TC-{n}-UPDATE-ALLOWED", n, [r_update], "req", "update_allowed",
                          f"aggiornamento del campo {upd.name}", "il nuovo valore è persistito", {"column": upd.name}))
         add(TestCase(f"TC-{n}-UPDATE-MISSING", n, [r_update], "eg", "update_missing",
-                     "aggiornamento di un record inesistente", "nessun record restituito, nessun errore"))
+                     "aggiornamento di un record inesistente",
+                     "nessun record aggiornato né creato; il chiamante lo sa (Python e TypeScript: nessun risultato; Java e C#: errore record inesistente)"))
         add(TestCase(f"TC-{n}-UPDATE-KEY", n, [r_update], "eq", "update_key",
-                     "aggiornamento della chiave primaria (classe non valida)", "errore di validazione: campo non modificabile"))
+                     "tentativo di cambiare la chiave primaria (classe non valida)",
+                     "rifiutato, la chiave resta quella originale (Python e TypeScript: errore di validazione; Java: la chiave non ha setter "
+                     "e un aggiornamento senza chiave è rifiutato; C#: l'aggiornamento non trova il record)"))
         add(TestCase(f"TC-{n}-DELETE", n, [r_delete], "req", "delete",
                      "cancellazione di un record esistente e poi inesistente", "prima vero, poi falso; il record non è più leggibile"))
         for c in t.columns:
@@ -162,6 +165,12 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B") -> Catalog:
                              f"pagina dei {r.target} collegati", "contiene il figlio e solo figli di quel record", {"relation": r.name}))
         add(TestCase(f"TC-{n}-PAGE-WALK", n, [r_page], "req", "page_walk",
                      "scorrimento completo con limite 1", "ogni record una sola volta, ultimo cursore nullo"))
+        if t.pagination.sortable:
+            add(TestCase(f"TC-{n}-PAGE-SORT-EACH", n, [r_page], "eq", "page_sort_each",
+                         "scorrimento completo per ogni colonna ordinabile, crescente e decrescente: "
+                         + ", ".join(t.pagination.sortable),
+                         "per ogni ordinamento ogni record una sola volta, nell'ordine richiesto",
+                         {"sorts": [s for c in t.pagination.sortable for s in (c, "-" + c)]}))
         if len(t.pagination.sortable) >= 2:
             s1, s2 = t.pagination.sortable[:2]
             add(TestCase(f"TC-{n}-PAGE-WALK-SORT", n, [r_page], "req", "page_walk",
