@@ -69,3 +69,38 @@ jobs:
             ${{ runner.temp }}/proj/libs/db-models/java/target/surefire-reports/
             ${{ runner.temp }}/proj/coverage/
           if-no-files-found: ignore
+
+  generated-csharp:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kybes
+          POSTGRES_PASSWORD: kybes
+          POSTGRES_DB: kybes
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kybes" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      KYBES_TEST_DATABASE_URL: postgresql://kybes:kybes@localhost:5432/kybes
+      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+      DOTNET_NOLOGO: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - name: Progetto di prova (schemi di esempio, modello C#)
+        run: |
+          mkdir -p "$RUNNER_TEMP/proj" && cd "$RUNNER_TEMP/proj" && git init -q
+          "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --examples --no-plugin --model-langs csharp --ci none
+      - name: Compilazione del modello (avvisi come errori)
+        working-directory: ${{ runner.temp }}/proj/libs/db-models/csharp/src
+        run: python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" csharp-build -- dotnet build -warnaserror
+      - name: Test xUnit generati e copertura (coverlet) entro le soglie ASIL
+        working-directory: ${{ runner.temp }}/proj
+        run: python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" csharp -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=csharp

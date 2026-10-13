@@ -29,6 +29,27 @@ PG="$WORK/proj-pg"; make_project "$PG" postgres
 
 if python3 -B "$P/tools/kybes/plugins/kybes/scripts/gen/gen.py" "$P" --check >/dev/null; then pass "generatore idempotente (gen --check)"; else fail "gen --check"; fi
 if python3 -B "$P/tools/kybes/plugins/kybes/scripts/arch_check.py" "$P" --strict >/dev/null; then pass "arch_check pulito sul progetto generato"; else fail "arch_check"; fi
+# il lettore YAML di riserva (senza PyYAML) deve dare lo stesso risultato di PyYAML sugli schemi di esempio
+if python3 -B - "$KIT/marketplace/plugins/kybes/scripts/gen" "$KIT/marketplace/plugins/kybes/templates/esempi-schemi" <<'PY'
+import datetime, glob, sys
+sys.path.insert(0, sys.argv[1])
+import miniyaml
+try:
+    import yaml
+except ImportError:
+    yaml = None
+def norm(v):
+    if isinstance(v, dict): return {k: norm(x) for k, x in v.items()}
+    if isinstance(v, list): return [norm(x) for x in v]
+    return v.isoformat() if isinstance(v, datetime.date) else v
+for f in sorted(glob.glob(sys.argv[2] + "/*.yaml")):
+    text = open(f, encoding="utf-8").read()
+    mine = miniyaml.loads(text)
+    assert mine, f
+    if yaml is not None:
+        assert norm(yaml.safe_load(text)) == mine, f
+PY
+then pass "lettore YAML senza PyYAML equivalente a PyYAML sugli schemi di esempio"; else fail "miniyaml"; fi
 
 if want python; then
   if python3 -c "import sqlalchemy" 2>/dev/null; then

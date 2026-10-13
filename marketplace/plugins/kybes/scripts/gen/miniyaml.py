@@ -1,7 +1,7 @@
 """Lettore YAML minimale per gli schemi delle tabelle (usato solo se PyYAML non è installato).
 
-Supporta il sottoinsieme usato in schemas/db: mappe, liste con "- ", liste inline [a, b],
-stringhe (anche tra virgolette), interi, decimali, booleani, null e commenti "#".
+Supporta il sottoinsieme usato in schemas/db: mappe, liste con "- ", liste inline [a, b], mappe inline
+{ chiave: valore } (anche annidate), stringhe (anche tra virgolette), interi, decimali, booleani, null e commenti "#".
 """
 from __future__ import annotations
 
@@ -36,6 +36,15 @@ def _scalar(tok: str) -> Any:
     if t.startswith("[") and t.endswith("]"):
         inner = t[1:-1].strip()
         return [] if not inner else [_scalar(x) for x in _split_inline(inner)]
+    if t.startswith("{") and t.endswith("}"):
+        inner = t[1:-1].strip()
+        out = {}
+        for part in (_split_inline(inner) if inner else []):
+            kv = _split_inline(part, ":", 1)
+            if len(kv) != 2:
+                raise YamlError(f"mappa inline non valida: '{t}'")
+            out[_scalar(kv[0])] = _scalar(kv[1])
+        return out
     low = t.lower()
     if low in ("true", "yes"):
         return True
@@ -50,8 +59,9 @@ def _scalar(tok: str) -> Any:
     return t
 
 
-def _split_inline(s: str) -> List[str]:
-    parts, cur, quote = [], [], None
+def _split_inline(s: str, sep: str = ",", maxsplit: int = -1) -> List[str]:
+    """Divide su sep fuori da virgolette, [ ] e { }."""
+    parts, cur, quote, depth = [], [], None, 0
     for c in s:
         if quote:
             cur.append(c)
@@ -60,9 +70,16 @@ def _split_inline(s: str) -> List[str]:
         elif c in ("'", '"'):
             quote = c
             cur.append(c)
-        elif c == ",":
+        elif c in "[{":
+            depth += 1
+            cur.append(c)
+        elif c in "]}":
+            depth -= 1
+            cur.append(c)
+        elif c == sep and depth == 0 and maxsplit != 0:
             parts.append("".join(cur))
             cur = []
+            maxsplit -= 1
         else:
             cur.append(c)
     parts.append("".join(cur))

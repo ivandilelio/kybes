@@ -24,6 +24,7 @@ sys.path.insert(0, str(HERE.parent))
 import emit_csharp  # noqa: E402
 import emit_db  # noqa: E402
 import test_python  # noqa: E402
+import test_csharp  # noqa: E402
 import test_java  # noqa: E402
 import test_typescript  # noqa: E402
 import verification  # noqa: E402
@@ -56,8 +57,9 @@ DEFAULT_VERIFICATION = {
                    "C": {"statement": 100, "branch": 95}, "D": {"statement": 100, "branch": 100}},
 }
 
-TEST_EMITTERS = {"python": test_python, "typescript": test_typescript, "java": test_java}
-TEST_FILE = {"python": lambda n: f"test_{snake_name(n)}.py", "typescript": lambda n: f"{n}.test.ts", "java": lambda n: f"{n}Test.java"}
+TEST_EMITTERS = {"python": test_python, "typescript": test_typescript, "java": test_java, "csharp": test_csharp}
+TEST_FILE = {"python": lambda n: f"test_{snake_name(n)}.py", "typescript": lambda n: f"{n}.test.ts", "java": lambda n: f"{n}Test.java",
+             "csharp": lambda n: f"{n}Tests.cs"}
 
 
 def verification_config(cfg: dict) -> dict:
@@ -287,6 +289,8 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
                     files = em.emit(cat, tables, vc["asil"], tg.get("dialect", "postgres"))
                 elif tg["lang"] == "java":
                     files = em.emit(cat, tables, vc["asil"], gen_options(tg)["package"])
+                elif tg["lang"] == "csharp":
+                    files = em.emit(cat, tables, vc["asil"], gen_options(tg)["namespace"])
                 else:
                     files = em.emit(cat, tables, vc["asil"])
                 for rel, text in files.items():

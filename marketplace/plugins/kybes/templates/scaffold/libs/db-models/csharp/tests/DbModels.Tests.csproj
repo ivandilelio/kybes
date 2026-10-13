@@ -1,0 +1,22 @@
+<!--
+  Test della libreria DB-Models: generated/ (generati da kybes, ISO 26262-6) e custom/ (test dei metodi custom).
+  Girano sul PostgreSQL indicato da KYBES_TEST_DATABASE_URL; coverlet misura la copertura per le soglie ASIL.
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="coverlet.collector" Version="6.0.2" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../src/DbModels.csproj" />
+  </ItemGroup>
+</Project>
