@@ -18,3 +18,14 @@ pagination:
   sortable: [Nome, Sede, Posti, Dipendenti, Budget, ApertoIl, RevisioneIl]
 transactions:
   isolation: serializable
+queries:
+  - name: ConPosti
+    returns: list
+    where:
+      - { column: Posti, op: gte, param: Minimo }
+    order_by: [Nome]
+  - name: PiuGrande
+    returns: one
+    where:
+      - { column: Dipendenti, op: gt, param: Oltre }
+    order_by: [{ column: Dipendenti, dir: desc }]

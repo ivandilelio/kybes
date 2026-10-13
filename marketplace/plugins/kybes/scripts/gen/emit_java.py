@@ -581,7 +581,7 @@ def _mongo_entity_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg:
     w("        Document d = new Document();")
     for c in t.columns:
         f = mongo_plan.field_name(t, c)
-        w(f'        if ({m[c.name]} != null) d.append("{f}", MongoSession.toBson({m[c.name]}, "{c.type}"));' if c.nullable or (c.primary_key and c.auto) or c.generated
+        w(f'        if ({m[c.name]} != null) d.append("{f}", MongoSession.toBson({m[c.name]}, "{c.type}"));' if c.nullable
           else f'        d.append("{f}", MongoSession.toBson({m[c.name]}, "{c.type}"));')
     w("        return d;")
     w("    }\n")

@@ -517,7 +517,7 @@ def _mongo_table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: s
     w("        var d = new BsonDocument();")
     for c in t.columns:
         line = f'd["{fields[c.name]}"] = MongoSession.ToBson({c.name}, "{c.type}");'
-        w(f"        if ({c.name} is not null) {line}" if c.nullable or c.type in REF_TYPES else f"        {line}")
+        w(f"        if ({c.name} is not null) {line}" if c.nullable else f"        {line}")
     w("        return d;")
     w("    }\n")
     w(f"    public static {T} FromDocument(BsonDocument d) => new()")

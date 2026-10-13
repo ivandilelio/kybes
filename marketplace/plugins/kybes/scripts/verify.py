@@ -260,6 +260,9 @@ def run_typescript(proj: Path, tg: dict, report: Path, quiet: bool, out: Outcome
         out.notes.append(f"typescript: manca {pkg.relative_to(proj)}/tsconfig.json: test non eseguiti")
         return
     outdir = _ts_outdir(pkg / "tsconfig.json")
+    built = (pkg / outdir).resolve()
+    if outdir not in ("", ".", "src", "tests") and built.parent == pkg.resolve():
+        shutil.rmtree(built, ignore_errors=True)  # niente test compilati di tabelle rimosse
     if _run([str(bins / "tsc"), "-p", "."], pkg, quiet) != 0:
         out.failures.append(f"typescript: compilazione fallita in {pkg.relative_to(proj)}")
         return

@@ -999,6 +999,7 @@ def runtime_file(ns: str, cat: Catalog, tables: Dict[str, Table]) -> str:
         })
         o = [x.replace("private readonly AppDbContext db = KybesDb.Open();", "private readonly MongoSession db = KybesMongo.Open();")
              .replace("public void Dispose() => db.Dispose();", "public void Dispose() => KybesMongo.Close(db);") for x in o]
+    if mongo:
         o[o.index("using Xunit;"):o.index("using Xunit;")] = ["using MongoDB.Bson;", "using MongoDB.Driver;"]
     for tc in cat.for_table("_runtime"):
         body = bodies[tc.kind]
