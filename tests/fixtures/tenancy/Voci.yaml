@@ -1,0 +1,18 @@
+table: Voci
+description: Voci di un registro, nel database del tenant
+tenancy: database
+columns:
+  - { name: Id, type: uuid, primary_key: true }
+  - { name: RegistroId, type: int, required: true }
+  - { name: Testo, type: text, required: true }
+  - { name: Data, type: date, required: true }
+relations:
+  - { name: Registro, kind: many_to_one, target: Registri, foreign_key: RegistroId }
+queries:
+  - name: DelRegistroDal
+    where:
+      - { column: RegistroId, op: eq, param: RegistroId }
+      - { column: Data, op: gte, param: DaData }
+    order_by: [{ column: Data, dir: desc }]
+pagination:
+  sortable: [Data]

@@ -319,7 +319,9 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
             desired[f"{mc['db_dir']}/indexes.md"] = emit_db.index_report(tables)
             if "postgres" in mc.get("ddl_dialects", []):
                 for rel, text in emit_db.ddl_files(tables, mc["schema_dir"]).items():
-                    desired[f"{mc['db_dir']}/ddl/postgres/{rel}"] = text
+                    # tenancy/: policy e DDL per tenant in db/generated/tenancy, il resto in db/generated/ddl/postgres
+                    target = f"{mc['db_dir']}/{rel}" if rel.startswith("tenancy/") else f"{mc['db_dir']}/ddl/postgres/{rel}"
+                    desired[target] = text
 
     # file custom: si creano una volta sola, poi sono del progetto
     for rel, text in customs_to_create.items():

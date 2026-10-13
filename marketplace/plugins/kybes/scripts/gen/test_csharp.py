@@ -115,9 +115,13 @@ public static class KybesDb
         return cs;
     }}
 
-    /// <summary>Un contesto nuovo sullo stesso database, senza svuotarlo: per rileggere i dati.</summary>
-    public static AppDbContext NewContext() =>
-        new(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(ConnectionString()).Options);
+    /// <summary>Un contesto nuovo sullo stesso database, senza svuotarlo, legato al tenant di prova A: per rileggere i dati.</summary>
+    public static AppDbContext NewContext()
+    {{
+        var db = new AppDbContext(new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(ConnectionString()).Options);
+        db.BindTenant(KybesBuilders.TENANT_A);
+        return db;
+    }}
 
     /// <summary>Tabelle vuote e un contesto nuovo.</summary>
     public static AppDbContext Open()
@@ -134,7 +138,6 @@ public static class KybesDb
         }}
         var db = NewContext();
         db.Database.ExecuteSqlRaw("TRUNCATE TABLE {names} RESTART IDENTITY CASCADE");
-        db.BindTenant(KybesBuilders.TENANT_A); // le tabelle multi-tenant richiedono un tenant legato
         return db;
     }}
 
@@ -428,7 +431,8 @@ def test_file(ns: str, t: Table, cat: Catalog, tables: Dict[str, Table], default
                     op = "== 0" if g == "on_create" else ">= 0"
                     o.append(f'        Assert.True(Cmp(again.{cn}, before.{cn}) {op}, "{cn}");')
         elif k == "tenant_required":
-            o += ["        using var unbound = KybesDb.NewContext();", f"        Assert.Throws<TenantException>(() => new {repo}(unbound));",
+            o += ["        using var unbound = KybesDb.NewContext();", "        unbound.BindTenant(null);",
+                  f"        Assert.Throws<TenantException>(() => new {repo}(unbound));",
                   "        await Task.CompletedTask;"]
         elif k == "tenant_isolation":
             o += [f"        var e = await {b}(db);", f"        var repo = new {repo}(db);"]
@@ -571,7 +575,8 @@ def runtime_file(ns: str, cat: Catalog, tables: Dict[str, Table]) -> str:
                                  "            var got = await UnitOfWork.RunAsync(db, (d, ct) => d.Database",
                                  "                .SqlQueryRaw<string>(\"SELECT current_setting('transaction_isolation') AS \\\"Value\\\"\").SingleAsync(ct), isolation: level);",
                                  "            Assert.Equal(name, got);", "        }"],
-        "rt_tenant_bind": ["        using var fresh = KybesDb.NewContext();", "        Assert.Throws<TenantException>(() => fresh.RequireTenant());",
+        "rt_tenant_bind": ["        using var fresh = KybesDb.NewContext();", "        fresh.BindTenant(null);",
+                           "        Assert.Throws<TenantException>(() => fresh.RequireTenant());",
                            "        fresh.BindTenant(TENANT_A);", "        Assert.Equal(TENANT_A, fresh.RequireTenant());",
                            "        fresh.BindTenant(TENANT_B.ToString());", "        Assert.Equal(TENANT_B, fresh.RequireTenant());",
                            "        fresh.BindTenant(null);", "        Assert.Throws<TenantException>(() => fresh.RequireTenant());",

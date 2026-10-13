@@ -5,7 +5,7 @@ import json
 from typing import Dict, List
 
 from naming import MARKER
-from schema import Table, index_plan, snake
+from schema import Table, index_plan, snake, tenant_column
 
 PG_TYPE = {"uuid": "uuid", "text": "text", "int": "integer", "bigint": "bigint", "bool": "boolean",
            "date": "date", "datetime": "timestamptz", "json": "jsonb"}
@@ -32,7 +32,7 @@ def _pg_default(c) -> str:
     return "'" + str(v).replace("'", "''") + "'"
 
 
-def ddl_table(t: Table) -> List[str]:
+def ddl_table(t: Table, prefix: str = "") -> List[str]:
     cols = []
     for c in t.columns:
         parts = [_q(c.db_name), _pg_type(c)]
@@ -50,21 +50,23 @@ def ddl_table(t: Table) -> List[str]:
     for s in plan.specs:
         if s.unique:
             cols.append(f"    CONSTRAINT {_q(s.name)} UNIQUE ({', '.join(_q(t.col(c).db_name) for c in s.columns)})")
-    out = [f"CREATE TABLE {_q(t.db_name)} (", ",\n".join(cols), ");"]
+    out = [f"CREATE TABLE {prefix}{_q(t.db_name)} (", ",\n".join(cols), ");"]
     if t.description:
-        out.append(f"COMMENT ON TABLE {_q(t.db_name)} IS '{t.description.replace(chr(39), chr(39) * 2)}';")
+        out.append(f"COMMENT ON TABLE {prefix}{_q(t.db_name)} IS '{t.description.replace(chr(39), chr(39) * 2)}';")
     return out
 
 
-def ddl_foreign_keys(t: Table, tables: Dict[str, Table]) -> List[str]:
+def ddl_foreign_keys(t: Table, tables: Dict[str, Table], prefix: str = "", shared_prefix: str = "") -> List[str]:
+    """prefix qualifica le tabelle dello stesso gruppo; shared_prefix quelle condivise (tenancy none) per gli schemi per tenant."""
     out = []
     for r in t.relations:
         if r.kind != "many_to_one":
             continue
         tg = tables[r.target]
+        tp = shared_prefix if (tg.tenancy == "none" and t.tenancy == "schema") else prefix
         od = {"restrict": "RESTRICT", "cascade": "CASCADE", "set_null": "SET NULL"}[r.on_delete]
-        out.append(f"ALTER TABLE {_q(t.db_name)} ADD CONSTRAINT {_q('fk_' + t.db_name + '_' + t.col(r.foreign_key).db_name)} "
-                   f"FOREIGN KEY ({_q(t.col(r.foreign_key).db_name)}) REFERENCES {_q(tg.db_name)} ({_q(tg.pk.db_name)}) ON DELETE {od};")
+        out.append(f"ALTER TABLE {prefix}{_q(t.db_name)} ADD CONSTRAINT {_q('fk_' + t.db_name + '_' + t.col(r.foreign_key).db_name)} "
+                   f"FOREIGN KEY ({_q(t.col(r.foreign_key).db_name)}) REFERENCES {tp}{_q(tg.db_name)} ({_q(tg.pk.db_name)}) ON DELETE {od};")
     return out
 
 
@@ -75,9 +77,50 @@ def _ix_col(t: Table, s, c: str) -> str:
     return _q(t.col(c).db_name)
 
 
-def ddl_indexes(t: Table) -> List[str]:
-    return [f"CREATE INDEX {_q(s.name)} ON {_q(t.db_name)} ({', '.join(_ix_col(t, s, c) for c in s.columns)});"
+def ddl_indexes(t: Table, prefix: str = "") -> List[str]:
+    return [f"CREATE INDEX {_q(s.name)} ON {prefix}{_q(t.db_name)} ({', '.join(_ix_col(t, s, c) for c in s.columns)});"
             for s in index_plan(t).specs if not s.unique]
+
+
+def ddl_rls(t: Table) -> List[str]:
+    """Row-level security per tenancy: column: ogni riga è visibile solo con app.tenant_id uguale al suo TenantId."""
+    tc = tenant_column(t)
+    cast = "::uuid" if tc.type == "uuid" else ""
+    cond = f"{_q(tc.db_name)} = current_setting('app.tenant_id', true){cast}"
+    name = _q(t.db_name)
+    return [f"ALTER TABLE {name} ENABLE ROW LEVEL SECURITY;",
+            f"ALTER TABLE {name} FORCE ROW LEVEL SECURITY;",
+            f"CREATE POLICY {_q('tenant_isolation_' + t.db_name)} ON {name}",
+            f"    USING ({cond})", f"    WITH CHECK ({cond});"]
+
+
+def _group(tables: Dict[str, Table], prefix: str = "", shared_prefix: str = "") -> List[str]:
+    out: List[str] = []
+    for t in tables.values():
+        out += ddl_table(t, prefix) + [""]
+    for t in tables.values():
+        out += ddl_foreign_keys(t, {**tables, **_ALL}, prefix, shared_prefix)
+    out.append("")
+    for t in tables.values():
+        out += ddl_indexes(t, prefix)
+    return out
+
+
+_ALL: Dict[str, Table] = {}
+
+
+def _in_function(statements: List[str]) -> List[str]:
+    """Ogni istruzione eseguita con format(): %1$I è lo schema del tenant."""
+    out, cur = [], []
+    for line in statements:
+        if not line.strip():
+            continue
+        cur.append(line)
+        if line.rstrip().endswith(";"):
+            sql = "\n".join(cur).rstrip().rstrip(";").replace("%", "%%").replace("%%1$I", "%1$I").replace("'", "''")
+            out.append(f"    EXECUTE format('{sql}', p_schema);")
+            cur = []
+    return out
 
 
 def _head(src: str) -> str:
@@ -90,15 +133,41 @@ def ddl_files(tables: Dict[str, Table], schema_dir: str) -> Dict[str, str]:
         body = ddl_table(t) + [""] + ddl_foreign_keys(t, tables) + [""] + ddl_indexes(t)
         files[f"{n}.sql"] = _head(f"{schema_dir}/{n}.yaml") + "-- Per creare lo schema completo usa _all.sql (ordine corretto delle tabelle).\n\n" + \
             "\n".join(body).strip() + "\n"
-    allp = [_head(schema_dir) + "-- Schema completo PostgreSQL 13+: tabelle, poi chiavi esterne, poi indici.\n"]
-    for t in tables.values():
-        allp += ddl_table(t) + [""]
-    for t in tables.values():
-        allp += ddl_foreign_keys(t, tables)
-    allp.append("")
-    for t in tables.values():
-        allp += ddl_indexes(t)
-    files["_all.sql"] = "\n".join(allp).strip() + "\n"
+    _ALL.clear()
+    _ALL.update(tables)
+    shared = {n: t for n, t in tables.items() if t.tenancy in ("none", "column")}
+    per_schema = {n: t for n, t in tables.items() if t.tenancy == "schema"}
+    per_db = {n: t for n, t in tables.items() if t.tenancy == "database"}
+    allp = [_head(schema_dir) + "-- Schema PostgreSQL 13+ del database condiviso: tabelle, poi chiavi esterne, poi indici.\n"
+            "-- Comprende le tabelle con tenancy none e column; quelle per schema o per database sono in tenancy/.\n"]
+    files["_all.sql"] = "\n".join(allp + _group(shared)).strip() + "\n"
+    col = [t for t in tables.values() if t.tenancy == "column"]
+    if col:
+        rls = [_head(schema_dir) + "-- Row-level security per le tabelle con tenancy: column (difesa in profondità: i repository filtrano già).\n"
+               "-- Ogni transazione deve impostare app.tenant_id: lo fa la Unit of Work con il tenant (set_config locale).\n"
+               "-- Il ruolo dell'applicazione non deve avere BYPASSRLS.\n"]
+        for t in col:
+            rls += ddl_rls(t) + [""]
+        files["tenancy/_rls.sql"] = "\n".join(rls).strip() + "\n"
+    if per_schema:
+        body = ["CREATE OR REPLACE FUNCTION kybes_create_tenant_schema(p_schema text) RETURNS void",
+                "LANGUAGE plpgsql AS $$", "BEGIN",
+                "    IF p_schema !~ '^tenant_[a-z0-9_]{1,48}$' THEN",
+                "        RAISE EXCEPTION 'nome di schema non valido: %', p_schema;", "    END IF;",
+                "    EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I', p_schema);"]
+        body += _in_function(_group(per_schema, "%1$I.", "public."))
+        body += ["END", "$$;"]
+        files["tenancy/_schema_per_tenant.sql"] = (
+            _head(schema_dir) + "-- Tabelle con tenancy: schema. Crea lo schema di un tenant con le sue tabelle:\n"
+            "--   SELECT kybes_create_tenant_schema('tenant_<chiave>');   (il nome lo dà schema_for/schemaFor/SchemaFor)\n"
+            "-- Le connessioni del tenant usano search_path = \"tenant_<chiave>\", public.\n\n" + "\n".join(body) + "\n")
+    if per_db:
+        files["tenancy/_database_per_tenant.sql"] = (
+            _head(schema_dir) + "-- Tabelle con tenancy: database. Da eseguire in ogni database di tenant (URL da database_url_for).\n\n"
+            + "\n".join(_group(per_db)).strip() + "\n")
+    for n, t in tables.items():
+        if t.tenancy == "column":
+            files[f"tenancy/{n}.sql"] = _head(f"{schema_dir}/{n}.yaml") + "-- Row-level security della tabella (incluso in _rls.sql).\n\n" + "\n".join(ddl_rls(t)) + "\n"
     return files
 
 

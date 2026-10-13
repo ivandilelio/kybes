@@ -106,8 +106,10 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B", tenant_id_t
                      "lettura per chiave, esistenza e conteggio di un record esistente", "il record è restituito, exists è vero, count ≥ 1"))
         add(TestCase(f"TC-{n}-READ-MISSING", n, [r_read], "eg", "read_missing",
                      "lettura per chiave di un record inesistente", "nessun record, exists è falso"))
-        upd = next((c for c in t.columns if not c.primary_key and not c.generated and not c.tenant and c.name not in t.fk_columns()
-                    and c.type in ("string", "text", "int", "bigint", "decimal") and not c.unique), None)
+        cands = [c for c in t.columns if not c.primary_key and not c.generated and not c.tenant and c.name not in t.fk_columns()
+                 and c.type in ("string", "text", "int", "bigint", "decimal")]
+        # di preferenza una colonna non univoca; altrimenti quella univoca (il valore nuovo è comunque diverso)
+        upd = next((c for c in cands if not c.unique), None) or next((c for c in cands if c.type == "string"), None)
         if upd:
             add(TestCase(f"TC-{n}-UPDATE-ALLOWED", n, [r_update], "req", "update_allowed",
                          f"aggiornamento del campo {upd.name}", "il nuovo valore è persistito", {"column": upd.name}))

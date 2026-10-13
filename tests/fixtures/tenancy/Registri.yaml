@@ -1,0 +1,8 @@
+table: Registri
+description: Registri di ogni Organization, nel database del tenant
+tenancy: database
+columns:
+  - { name: Id, type: int, primary_key: true }
+  - { name: Nome, type: string, length: 60, required: true, unique: true }
+relations:
+  - { name: Voci, kind: one_to_many, target: Voci, foreign_key: RegistroId }

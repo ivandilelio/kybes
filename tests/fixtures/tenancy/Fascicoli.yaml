@@ -1,0 +1,13 @@
+table: Fascicoli
+description: Fascicoli di ogni Organization, nello schema del tenant
+tenancy: schema
+columns:
+  - { name: Id, type: uuid, primary_key: true }
+  - { name: Titolo, type: string, length: 80, required: true }
+  - { name: TipologiaId, type: uuid, required: true }
+  - { name: Chiuso, type: bool, required: true, default: false }
+relations:
+  - { name: Tipologia, kind: many_to_one, target: Tipologie, foreign_key: TipologiaId }
+  - { name: Documenti, kind: one_to_many, target: Documenti, foreign_key: FascicoloId }
+pagination:
+  sortable: [Titolo]

@@ -24,6 +24,12 @@ make_project() {  # $1 cartella, $2 dialetto TS
   fi
 }
 P="$WORK/proj"; make_project "$P" sqlite
+# progetto con tabelle per schema e per database (tests/fixtures/tenancy), Python e TypeScript su SQLite
+FIX="$WORK/fix"; mkdir -p "$FIX" && (cd "$FIX" && git init -q)
+"$KIT/install.sh" --target "$FIX" --scaffold --no-plugin --model-langs python,typescript --ci none >/dev/null
+cp "$KIT"/tests/fixtures/tenancy/*.yaml "$FIX/schemas/db/"
+sed -i.bak 's/"dialect": "postgres"/"dialect": "sqlite"/' "$FIX/.claude/kybes.config.json" && rm -f "$FIX/.claude/kybes.config.json.bak"
+python3 -B "$FIX/tools/kybes/plugins/kybes/scripts/gen/gen.py" "$FIX" --quiet
 VERIFY="$P/tools/kybes/plugins/kybes/scripts/verify.py"
 PG="$WORK/proj-pg"; make_project "$PG" postgres
 
@@ -57,6 +63,7 @@ if want python; then
     if python3 -B "$KIT/tests/python/test_access.py" "$P"; then pass "python: paginazione keyset, query dichiarate, Unit of Work"; else fail "python access"; fi
     if python3 -c "import pytest, pytest_cov" 2>/dev/null; then
       if python3 -B "$VERIFY" "$P" --lang=python --quiet; then pass "python: test ISO 26262-6 generati nel progetto, copertura entro le soglie ASIL"; else fail "python: test generati o copertura"; fi
+      if python3 -B "$VERIFY" "$FIX" --lang=python --quiet; then pass "python: test generati con tabelle per schema e per database"; else fail "python: progetto tenancy"; fi
     else skip "python: test generati non eseguiti (pip install pytest pytest-cov)"; fi
   else skip "python: SQLAlchemy non installato (pip install sqlalchemy)"; fi
 fi
@@ -76,6 +83,9 @@ if want typescript; then
       ln -s "$T/node_modules" "$P/libs/db-models/typescript/node_modules"
       if python3 -B "$VERIFY" "$P" --lang=typescript --quiet; then pass "typescript: test ISO 26262-6 generati nel progetto, copertura entro le soglie ASIL"; else fail "typescript: test generati o copertura"; fi
       rm -f "$P/libs/db-models/typescript/node_modules"
+      ln -s "$T/node_modules" "$FIX/libs/db-models/typescript/node_modules"
+      if python3 -B "$VERIFY" "$FIX" --lang=typescript --quiet; then pass "typescript: test generati con tabelle per schema e per database"; else fail "typescript: progetto tenancy"; fi
+      rm -f "$FIX/libs/db-models/typescript/node_modules"
       ln -s "$T/node_modules" "$PG/libs/db-models/typescript/node_modules"
       if (cd "$PG/libs/db-models/typescript" && "$T/node_modules/.bin/tsc" -p . --noEmit); then pass "typescript: compilazione strict dialetto postgres (model e test generati)"; else fail "typescript postgres"; fi
       rm -f "$PG/libs/db-models/typescript/node_modules"
@@ -110,6 +120,7 @@ fi
 if want sql; then
   if python3 -c "import pglast" 2>/dev/null; then
     if python3 -c "import pglast,sys; pglast.parse_sql(open(sys.argv[1]).read())" "$PG/db/generated/ddl/postgres/_all.sql"; then pass "sql: DDL PostgreSQL valido (parser di PostgreSQL)"; else fail "sql DDL"; fi
+    if python3 -c "import pglast,sys; [pglast.parse_sql(open(f).read()) for f in sys.argv[1:]]" "$PG"/db/generated/tenancy/*.sql "$FIX"/db/generated/tenancy/*.sql "$FIX/db/generated/ddl/postgres/_all.sql"; then pass "sql: row-level security, schema e database per tenant validi (parser di PostgreSQL)"; else fail "sql tenancy"; fi
   else skip "sql: pglast non installato (pip install pglast)"; fi
 fi
 

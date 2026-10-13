@@ -183,6 +183,10 @@ export async function applyTenantSetting(em: EntityManager): Promise<void> {
 # ------------------------------------------------------------------------------------------- Java
 
 def java_file(pkg: str, id_type: str) -> str:
+    key_java = ("        return String.valueOf(coerce(tenant)).replace('-', '_'); // un UUID è sempre un nome valido\n" if id_type == "uuid" else
+                "        String key = String.valueOf(coerce(tenant)).toLowerCase(Locale.ROOT).replace('-', '_');\n"
+                '        if (!NAME.matcher(key).matches()) throw new TenantException("tenant non utilizzabile come nome di schema o database");\n'
+                "        return key;\n")
     jt = "UUID" if id_type == "uuid" else "String"
     coerce = ('''        try {
             return tenant instanceof UUID u ? u : UUID.fromString(String.valueOf(tenant));
@@ -235,10 +239,7 @@ public final class Tenancy {{
 
     /** Il tenant come parte di un nome di schema o di database ({NAME_RULE}). */
     public static String key(Object tenant) {{
-        String key = String.valueOf(coerce(tenant)).toLowerCase(Locale.ROOT).replace('-', '_');
-        if (!NAME.matcher(key).matches()) throw new TenantException("tenant non utilizzabile come nome di schema o database");
-        return key;
-    }}
+{key_java}    }}
 
     public static String schemaFor(Object tenant) {{
         return "tenant_" + key(tenant);
@@ -275,6 +276,10 @@ public final class Tenancy {{
 # ------------------------------------------------------------------------------------------- C#
 
 def csharp_file(ns: str, id_type: str) -> str:
+    key_cs = ("        return Coerce(tenant).ToString()!.Replace('-', '_'); // un UUID è sempre un nome valido\n" if id_type == "uuid" else
+              "        var key = Convert.ToString(Coerce(tenant), CultureInfo.InvariantCulture)!.ToLowerInvariant().Replace('-', '_');\n"
+              '        if (!Name.IsMatch(key)) throw new TenantException("tenant non utilizzabile come nome di schema o database");\n'
+              "        return key;\n")
     ct = "Guid" if id_type == "uuid" else "string"
     coerce = ('''        if (tenant is Guid g) return g;
         if (Guid.TryParse(tenant.ToString(), out var parsed)) return parsed;
@@ -317,10 +322,7 @@ public static class Tenancy
     /// <summary>Il tenant come parte di un nome di schema o di database ({NAME_RULE}).</summary>
     public static string Key(object? tenant)
     {{
-        var key = Convert.ToString(Coerce(tenant), CultureInfo.InvariantCulture)!.ToLowerInvariant().Replace('-', '_');
-        if (!Name.IsMatch(key)) throw new TenantException("tenant non utilizzabile come nome di schema o database");
-        return key;
-    }}
+{key_cs}    }}
 
     public static string SchemaFor(object? tenant) => "tenant_" + Key(tenant);
 

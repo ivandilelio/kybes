@@ -657,6 +657,8 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
                             '        assertEquals("jdbc:postgresql://h/app_" + key, Tenancy.databaseUrlFor("jdbc:postgresql://h/app_{tenant}", TENANT_A));',
                             '        assertThrows(Tenancy.TenantException.class, () -> Tenancy.databaseUrlFor("jdbc:postgresql://h/app", TENANT_A));'] + extra_names,
         "rt_tenant_uow": ["        assertEquals(TENANT_A, UnitOfWork.run(emf(), Tenancy::of, List.of(), null, 0, 0, TENANT_A));",
+                          "        // senza tenant: lavoro che non tocca tabelle multi-tenant",
+                          "        int one = UnitOfWork.run(emf(), w -> 1, List.of());", "        assertEquals(1, one);",
                           "        Object setting = UnitOfWork.run(emf(), w -> w.createNativeQuery(\"SELECT current_setting('app.tenant_id', true)\").getSingleResult(),",
                           "                List.of(), null, 0, 0, TENANT_A);", "        assertEquals(String.valueOf(TENANT_A), setting);"],
         "rt_commit": [f'        {first.pk and J_TYPE[first.pk.type]} id = UnitOfWork.run(emf(), w -> build{n}(w).{pk}(), List.of("{n}"), null, 3, 50, TENANT_A);',

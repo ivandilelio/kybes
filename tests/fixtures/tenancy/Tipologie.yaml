@@ -1,0 +1,6 @@
+table: Tipologie
+description: Tipologie di fascicolo condivise da tutte le Organization
+tenancy: none
+columns:
+  - { name: Id, type: uuid, primary_key: true }
+  - { name: Nome, type: string, length: 40, required: true, unique: true }
