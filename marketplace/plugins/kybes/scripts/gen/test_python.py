@@ -308,7 +308,7 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
          "", f"Specifica e tracciabilità: docs/generated/verification/{n}.md. I test dei metodi custom vanno in tests/custom/.", '"""',
          "import uuid", "from datetime import date, datetime, timedelta, timezone", "from decimal import Decimal", "",
          "import pytest", "from sqlalchemy.exc import IntegrityError", "",
-         "from model.generated import ModelValidationError, PageRequest, TenantError, bind_tenant"]
+         "import json", "from model.generated import FileArchiveReader, ModelValidationError, PageRequest, TenantError, archive_path, bind_archive, bind_tenant"]
     others = sorted({r.target for r in t.relations} | {n})
     for o_n in others:
         o.append(f"from model.{o_n} import {o_n}, {repo_class(L, o_n)}")
@@ -316,7 +316,8 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
              ", different, greater, next_n, smaller, text_value, TENANT_A, TENANT_B)")
     compare = [_attr(c.name) for c in t.columns if c.type not in ("datetime",) and not c.generated]
     for tc in tcs:
-        o += ["", "", f"def test_{tc.slug}(session, session_factory):",
+        fixtures = "session, session_factory, tmp_path" if tc.kind.startswith("archive_") else "session, session_factory"
+        o += ["", "", f"def test_{tc.slug}({fixtures}):",
               f'    r"""{tc.id} · {", ".join(tc.reqs)} · {METHODS[tc.method]}: {tc.title}. Atteso: {tc.expected}."""']
         k = tc.kind
         if k == "create_valid":
@@ -478,9 +479,55 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
                   f"        {repo}(session).list_page(PageRequest(cursor='kybes-non-valido'))", "    assert 'cursor' in err.value.fields"]
         elif k in ("query_match", "query_mcdc", "query_empty_in"):
             o += _query_case(t, tc, tables)
+        elif k.startswith("archive_"):
+            o += _archive_case(t, tc, cat)
         else:
             raise ValueError(k)
     return "\n".join(o) + "\n"
+
+
+def _py_lit(c, v) -> str:
+    """Valore Python atteso per un valore JSON del formato dell'archivio."""
+    if v is None:
+        return "None"
+    if c.type == "uuid":
+        return f"uuid.UUID({v!r})"
+    if c.type == "bigint":
+        return str(int(v))
+    if c.type == "decimal":
+        return f"Decimal({v!r})"
+    if c.type == "date":
+        return f"date.fromisoformat({v!r})"
+    if c.type == "datetime":
+        return f"datetime.fromisoformat({v!r})"
+    return repr(v)
+
+
+def _archive_case(t: Table, tc: TestCase, cat: Catalog) -> List[str]:
+    import emit_archive
+    doc, path = emit_archive.archive_sample(t, cat.tenant_id_type)
+    n, repo, pk = t.name, repo_class(L, t.name), t.pk
+    key = _py_lit(pk, doc[pk.name])
+    o = [f"    doc = {doc!r}", "    root = tmp_path / 'archivio'"]
+    write = ["    target = root / path", "    target.parent.mkdir(parents=True, exist_ok=True)", "    target.write_text(json.dumps(doc))"]
+    if tc.kind == "archive_read":
+        o += [f"    path = {path!r}"] + write + ["    bind_archive(session, FileArchiveReader(root))",
+              f"    got = {repo}(session).get_by_id({key})", "    assert got is not None and got not in session"]
+        for c in t.columns:
+            o.append(f"    assert got.{_attr(c.name)} == {_py_lit(c, doc[c.name])}")
+    elif tc.kind == "archive_read_miss":
+        o += [f"    path = {path!r}", f"    repo = {repo}(session)", "    bind_archive(session, FileArchiveReader(root))",
+              f"    assert repo.get_by_id({key}) is None"] + write + ["    bind_archive(session, None)", f"    assert repo.get_by_id({key}) is None"]
+    elif tc.kind == "archive_hot_first":
+        ten = "TENANT_A" if t.tenancy != "none" else "None"
+        o += [f"    e = build_{snake(n)}(session)", f"    doc[{pk.name!r}] = str(e.{_attr(pk.name)})",
+              f"    path = archive_path({t.db_name!r}, {ten}, e.{_attr(pk.name)})"] + write + [
+              "    bind_archive(session, FileArchiveReader(root))", f"    assert {repo}(session).get_by_id(e.{_attr(pk.name)}) is e"]
+    else:  # archive_read_tenant
+        o += [f"    path = {path!r}"] + write + ["    bind_archive(session, FileArchiveReader(root))", "    bind_tenant(session, TENANT_B)",
+              f"    assert {repo}(session).get_by_id({key}) is None", "    bind_tenant(session, TENANT_A)",
+              f"    assert {repo}(session).get_by_id({key}) is not None"]
+    return o
 
 
 def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
@@ -564,6 +611,24 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
                           "    assert calls == [{'tenant': str(TENANT_A)}]",
                           "    Dialect.name = 'sqlite'  # altri database: nessuna impostazione",
                           "    apply_tenant_setting(fake)", "    assert len(calls) == 1"],
+        "rt_archive_path": ["    assert archive_segment('ab-C_9') == 'ab-C_9'", "    assert archive_segment('a/b c%è') == 'a%2Fb%20c%25%C3%A8'",
+                            "    assert archive_path('t', None, 5) == 't/_keys/5.json'",
+                            "    assert archive_path('t', 'x y', uuid.UUID(int=1)) == 't/_keys/tenant=x%20y/00000000-0000-0000-0000-000000000001.json'"],
+        "rt_archive_file": ["    import tempfile", "    from pathlib import Path", "    with tempfile.TemporaryDirectory() as d:",
+                            "        (Path(d) / 't' / '_keys').mkdir(parents=True)", "        (Path(d) / 't' / '_keys' / 'a.json').write_bytes(b'{}')",
+                            "        reader = FileArchiveReader(d)",
+                            "        assert reader.fetch('t/_keys/a.json') == b'{}' and reader.fetch('t/_keys/b.json') is None",
+                            "        with pytest.raises(ValueError):", "            reader.fetch('../fuori.json')",
+                            "        with session_factory() as s:", "            assert archive_of(s) is None and read_archived(s, 't', None, 'a') is None",
+                            "            bind_archive(s, reader)", "            assert archive_of(s) is reader",
+                            "            assert read_archived(s, 't', None, 'a') == {} and read_archived(s, 't', None, 'b') is None",
+                            "            bind_archive(s, None)", "            assert archive_of(s) is None"],
+        "rt_archive_decode": ["    assert as_uuid(None) is None and as_uuid('00000000-0000-0000-0000-00000000000a') == uuid.UUID(int=10)",
+                              "    assert as_int(None) is None and as_int('9007199254740993') == 9007199254740993",
+                              "    assert as_decimal(None) is None and as_decimal('12.30') == Decimal('12.30')",
+                              "    assert as_date(None) is None and as_date('2020-01-31') == date(2020, 1, 31)",
+                              "    assert as_datetime(None) is None",
+                              "    assert as_datetime('2020-01-31T10:20:30.123000+00:00') == datetime(2020, 1, 31, 10, 20, 30, 123000, tzinfo=timezone.utc)"],
         "rt_commit": [f"    key = run_in_transaction(session_factory, lambda s: build_{snake(n)}(s).{_attr(first.pk.name)}, tables=['{n}'], levels=isolation_levels, tenant=TENANT_A)",
                       f"    assert {repo}(session).get_by_id(key) is not None",
                       f"    key = run_in_transaction(session_factory, lambda s: build_{snake(n)}(s).{_attr(first.pk.name)}, isolation='serializable', levels=isolation_levels, tenant=TENANT_A)",
@@ -592,6 +657,8 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
          "from model.generated import ModelValidationError, PageRequest",
          "from model.generated._paging import PagingSpec, decode_cursor, encode_cursor, like_prefix, resolve_order, run_page",
          "from model.generated._uow import ISOLATION, isolation_for, run_in_transaction, transaction",
+         "from model.generated._archive import (FileArchiveReader, archive_of, archive_path, archive_segment, as_date, as_datetime,",
+         "                                      as_decimal, as_int, as_uuid, bind_archive, read_archived)",
          "from model.generated._tenant import (KEY, TenantError, apply_tenant_setting, bind_tenant, coerce_tenant, database_url_for,",
          "                                     schema_for, search_path_for, tenant_key, tenant_of)",
          "from sqlalchemy import text",

@@ -123,6 +123,19 @@ def _in_function(statements: List[str]) -> List[str]:
     return out
 
 
+def ddl_archive_runs() -> List[str]:
+    """Registro dei passaggi d'archivio confermati: il job lo scrive nella stessa transazione che cancella le righe hot."""
+    return ["-- Passaggi d'archivio confermati (motore dei job, jobs/generated/_engine): usato per il recupero dopo un'interruzione.",
+            'CREATE TABLE IF NOT EXISTS "kybes_archive_runs" (',
+            '    "run_id" varchar(64) NOT NULL PRIMARY KEY,',
+            '    "table_name" varchar(128) NOT NULL,',
+            '    "tenant" varchar(256),',
+            '    "rows" integer NOT NULL,',
+            '    "files" integer NOT NULL,',
+            '    "committed_at" timestamptz NOT NULL',
+            ");"]
+
+
 def _head(src: str) -> str:
     return f"-- {MARKER}. NON MODIFICARE: rigenerato da {src}.\n"
 
@@ -140,7 +153,8 @@ def ddl_files(tables: Dict[str, Table], schema_dir: str) -> Dict[str, str]:
     per_db = {n: t for n, t in tables.items() if t.tenancy == "database"}
     allp = [_head(schema_dir) + "-- Schema PostgreSQL 13+ del database condiviso: tabelle, poi chiavi esterne, poi indici.\n"
             "-- Comprende le tabelle con tenancy none e column; quelle per schema o per database sono in tenancy/.\n"]
-    files["_all.sql"] = "\n".join(allp + _group(shared)).strip() + "\n"
+    runs_shared = any(t.archive and t.tenancy != "database" for t in tables.values())
+    files["_all.sql"] = "\n".join(allp + _group(shared) + (["", *ddl_archive_runs()] if runs_shared else [])).strip() + "\n"
     col = [t for t in tables.values() if t.tenancy == "column"]
     if col:
         rls = [_head(schema_dir) + "-- Row-level security per le tabelle con tenancy: column (difesa in profondità: i repository filtrano già).\n"
@@ -164,7 +178,7 @@ def ddl_files(tables: Dict[str, Table], schema_dir: str) -> Dict[str, str]:
     if per_db:
         files["tenancy/_database_per_tenant.sql"] = (
             _head(schema_dir) + "-- Tabelle con tenancy: database. Da eseguire in ogni database di tenant (URL da database_url_for).\n\n"
-            + "\n".join(_group(per_db)).strip() + "\n")
+            + "\n".join(_group(per_db) + (["", *ddl_archive_runs()] if any(t.archive for t in per_db.values()) else [])).strip() + "\n")
     for n, t in tables.items():
         if t.tenancy == "column":
             files[f"tenancy/{n}.sql"] = _head(f"{schema_dir}/{n}.yaml") + "-- Row-level security della tabella (incluso in _rls.sql).\n\n" + "\n".join(ddl_rls(t)) + "\n"

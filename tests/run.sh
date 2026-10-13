@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Suite di test del kit: installa kybes in progetti temporanei e verifica il codice generato.
 #   tests/run.sh            tutti i test disponibili sulla macchina
-#   tests/run.sh python     solo un gruppo (python, typescript, java, csharp, sql, hooks)
+#   tests/run.sh python     solo un gruppo (python, jobs, typescript, java, csharp, sql, hooks)
 set -euo pipefail
 KIT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ONLY="${1:-all}"
@@ -66,6 +66,16 @@ if want python; then
       if python3 -B "$VERIFY" "$FIX" --lang=python --quiet; then pass "python: test generati con tabelle per schema e per database"; else fail "python: progetto tenancy"; fi
     else skip "python: test generati non eseguiti (pip install pytest pytest-cov)"; fi
   else skip "python: SQLAlchemy non installato (pip install sqlalchemy)"; fi
+fi
+
+if want jobs; then
+  if python3 -c "import pyarrow, sqlalchemy, pytest, pytest_cov" 2>/dev/null; then
+    ENG="$KIT/marketplace/plugins/kybes/scripts/gen/engine"
+    if (cd "$ENG" && python3 -m pytest -q -p no:cacheprovider tests >/dev/null); then pass "jobs: test del motore nel kit"; else fail "jobs: motore nel kit"; fi
+    if python3 -B "$VERIFY" "$P" --lang=jobs --quiet; then pass "jobs: test del motore e dei job generati nel progetto, copertura entro le soglie ASIL"; else fail "jobs: progetto"; fi
+    if python3 -B "$VERIFY" "$FIX" --lang=jobs --quiet; then pass "jobs: archivio con tabelle per schema e per database di tenant"; else fail "jobs: progetto tenancy"; fi
+    if python3 -B "$KIT/tests/python/test_archive.py" "$P" "$KIT"; then pass "jobs: validazione, formato, job reale, read-through, layout Hive, S3, manifest"; else fail "jobs: archivio end-to-end"; fi
+  else skip "jobs: dipendenze del motore non installate (pip install pyarrow sqlalchemy pytest pytest-cov)"; fi
 fi
 
 if want typescript; then

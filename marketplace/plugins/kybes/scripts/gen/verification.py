@@ -9,7 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from schema import ASIL, Cond, Query, Table
+import re
+from pathlib import Path
+
+from schema import ASIL, Cond, Query, Table, lifecycle_children
 
 METHODS = {
     "req": "analisi dei requisiti",
@@ -39,6 +42,7 @@ class TestCase:
     title: str
     expected: str
     args: Dict = field(default_factory=dict)
+    scope: str = "model"   # model: test del modello nei linguaggi; jobs: test del motore dei job (pytest)
 
     @property
     def slug(self) -> str:
@@ -51,8 +55,8 @@ class Catalog:
     tests: List[TestCase]
     tenant_id_type: str = "uuid"
 
-    def for_table(self, name: str) -> List[TestCase]:
-        return [t for t in self.tests if t.table == name]
+    def for_table(self, name: str, scope: str = "model") -> List[TestCase]:
+        return [t for t in self.tests if t.table == name and (scope == "all" or t.scope == scope)]
 
 
 def table_asil(t: Table, default: str) -> str:
@@ -187,6 +191,8 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B", tenant_id_t
                              f"pagina dei {r.target} collegati", "contiene il figlio e solo figli di quel record", {"relation": r.name}))
         if t.tenancy != "none":
             _tenancy_cases(t, tables, reqs, add, src, asil)
+        if t.archive or t.retention:
+            _lifecycle_cases(t, tables, reqs, add, src, asil)
         add(TestCase(f"TC-{n}-PAGE-WALK", n, [r_page], "req", "page_walk",
                      "scorrimento completo con limite 1", "ogni record una sola volta, ultimo cursore nullo"))
         if t.pagination.sortable:
@@ -230,11 +236,92 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B", tenant_id_t
                                  f"query {q.name}: solo la condizione {i + 1} ({c.column} {c.op}) è falsa",
                                  "il record non è nel risultato: la condizione determina da sola l'esito",
                                  {"query": q.name, "flip": i}))
-    _runtime(reqs, tests, max((table_asil(t, default_asil) for t in tables.values()), key=ASIL.index, default=default_asil))
+    top = max((table_asil(t, default_asil) for t in tables.values()), key=ASIL.index, default=default_asil)
+    _runtime(reqs, tests, top)
+    if any(t.archive or t.retention for t in tables.values()):
+        _jobs_runtime(reqs, tests, top)
     return Catalog(reqs, tests, tenant_id_type)
 
 
 RUNTIME = "_runtime"
+JOBS = "_jobs"
+ENGINE_TESTS = Path(__file__).resolve().parent / "engine" / "tests" / "test_engine.py"
+JOB_REQS = {
+    "CONFIG": "La configurazione del job (config.json e variabili d'ambiente) è validata prima di toccare i dati; le età si calcolano "
+              "con giorni esatti e mesi e anni di calendario.",
+    "FORMAT": "I file Parquet hanno i tipi delle colonne della tabella; gli oggetti per chiave usano il formato documentato, uguale in tutti i linguaggi.",
+    "STORAGE": "L'archivio su file, S3 e Azure Blob scrive, legge, elenca e cancella gli stessi percorsi; {tenant} separa le Organization.",
+    "ARCHIVE": "Le righe più vecchie del limite passano nell'archivio a lotti, partizionate; un record con figli resta nella tabella hot.",
+    "SAFE": "Lo spostamento è sicuro: file verificati (righe, chiavi, SHA-256) prima di cancellare; un errore prima del commit lascia le righe "
+            "nella tabella hot, un'interruzione dopo il commit è completata dal job successivo.",
+    "RETENTION": "La conservazione cancella le partizioni dell'archivio finite prima del limite (o le righe hot scadute, senza archivio).",
+    "TENANT": "Il job elabora ogni tenant separatamente (colonna, schema o database) e scrive l'archivio separato per tenant.",
+    "LOCK": "Un solo job alla volta lavora su una tabella (lock consultivo PostgreSQL); con la row-level security serve un ruolo che veda tutti i tenant.",
+    "CLI": "La riga di comando esegue un passaggio o resta attiva, con codici di uscita distinti per errore di lavoro e di configurazione.",
+}
+
+
+def engine_test_cases() -> List[tuple]:
+    """(caso, requisito, metodo, titolo, atteso) dai docstring di engine/tests/test_engine.py: un'unica fonte."""
+    names = {v: k for k, v in METHODS.items()}
+    out = []
+    rx = re.compile(r'"""(TC-KYBES-JOB-[A-Z0-9-]+) · (REQ-KYBES-JOB-[A-Z]+) · ([^:]+): (.*?)\. Atteso: (.*?)\."""', re.S)
+    for m in rx.finditer(ENGINE_TESTS.read_text(encoding="utf-8")):
+        out.append((m.group(1), m.group(2), names[m.group(3)], " ".join(m.group(4).split()), " ".join(m.group(5).split())))
+    return out
+
+
+def _jobs_runtime(reqs: List[Requirement], tests: List[TestCase], asil: str) -> None:
+    for key, text in JOB_REQS.items():
+        reqs.append(Requirement(f"REQ-KYBES-JOB-{key}", JOBS, text, "motore dei job generato (jobs/generated/_engine)", asil))
+    for tid, rid, method, title, expected in engine_test_cases():
+        tests.append(TestCase(tid, JOBS, [rid], method, "engine", title, expected, scope="jobs"))
+
+
+def _lifecycle_cases(t: Table, tables: Dict[str, Table], reqs: List[Requirement], add, src: str, asil: str) -> None:
+    n = t.name
+    a, r = t.archive, t.retention
+    if a:
+        parts = ", ".join(a.partition_by) or "nessuna"
+        rid = _req(reqs, t, "ARCHIVE", f"I record di {n} con {a.on} più vecchia di {a.after} passano nell'archivio {a.target} in Parquet "
+                   f"(partizioni: {parts}) e lasciano la tabella hot solo dopo la verifica dei file; un record con figli resta nella tabella hot.",
+                   f"{src}: archive", asil)
+        add(TestCase(f"TC-{n}-JOB-ARCHIVE", n, [rid], "req", "job_archive",
+                     f"un record più vecchio del limite e uno più recente, job {t.job_name}",
+                     "il primo è nell'archivio nella sua partizione" + (" e come oggetto per chiave" if a.read_through else "")
+                     + ", il secondo resta nella tabella hot", scope="jobs"))
+        add(TestCase(f"TC-{n}-JOB-SAFE", n, [rid], "eg", "job_safe", "archivio non scrivibile durante lo spostamento",
+                     "errore; il record resta nella tabella hot e l'archivio resta vuoto", scope="jobs"))
+        if r:
+            rr = _req(reqs, t, "RETENTION", f"Le partizioni dell'archivio di {n} sono cancellate quando finiscono prima di {r.delete_after} fa, "
+                      "insieme ai loro oggetti per chiave.", f"{src}: retention", asil)
+            add(TestCase(f"TC-{n}-JOB-RETENTION", n, [rr], "bv", "job_purge", f"job eseguito oltre {r.delete_after} dopo l'archiviazione",
+                         "la partizione e gli oggetti per chiave non esistono più", scope="jobs"))
+        if a.read_through:
+            rd = _req(reqs, t, "ARCHIVE-READ", f"La lettura per chiave di {n} cerca nell'archivio un record che non è più nella tabella hot.",
+                      f"{src}: archive.read_through", asil)
+            add(TestCase(f"TC-{n}-ARCHIVE-READ", n, [rd], "req", "archive_read", "record solo nell'archivio, lettore legato alla sessione",
+                         "getById restituisce il record con i valori archiviati"))
+            add(TestCase(f"TC-{n}-ARCHIVE-READ-MISS", n, [rd], "eg", "archive_read_miss",
+                         "record né nella tabella hot né nell'archivio; poi record nell'archivio ma nessun lettore legato",
+                         "nessun record in entrambi i casi"))
+            add(TestCase(f"TC-{n}-ARCHIVE-HOT-FIRST", n, [rd], "eq", "archive_hot_first",
+                         "stessa chiave nella tabella hot e nell'archivio", "restituito il record della tabella hot"))
+            if t.tenancy != "none":
+                add(TestCase(f"TC-{n}-ARCHIVE-READ-TENANT", n, [rd], "eg", "archive_read_tenant",
+                             "record nell'archivio del tenant A letto con il tenant B legato", "nessun record per il tenant B"))
+    else:
+        rr = _req(reqs, t, "RETENTION", f"I record di {n} con {r.on} più vecchia di {r.delete_after} sono cancellati dalla tabella hot.",
+                  f"{src}: retention", asil)
+        add(TestCase(f"TC-{n}-JOB-TTL", n, [rr], "req", "job_ttl", f"un record scaduto e uno no, job {t.job_name}",
+                     "il primo è cancellato, il secondo resta", scope="jobs"))
+    rid = f"REQ-{n}-ARCHIVE" if a else f"REQ-{n}-RETENTION"
+    for c, rel in lifecycle_children(t, tables):
+        if c.name == n or (not a and rel.on_delete != "restrict"):
+            continue
+        add(TestCase(f"TC-{n}-JOB-CHILD-{c.name}-{rel.name}", n, [rid], "eg", "job_children",
+                     f"record con un figlio in {c.name} ({rel.name}, {rel.on_delete})", "il record resta nella tabella hot",
+                     {"relation": rel.name, "child": c.name}, scope="jobs"))
 
 
 def _tenancy_cases(t: Table, tables: Dict[str, Table], reqs: List[Requirement], add, src: str, asil: str) -> None:
@@ -280,6 +367,9 @@ def _runtime(reqs: List[Requirement], tests: List[TestCase], asil: str) -> None:
     api = req("API", "Il modello espone da punti d'ingresso stabili (indice generato e un file per tabella) entità, repository, validatori e specifiche di paginazione.")
     tenant = req("TENANT", "Il contesto del tenant si lega alla sessione e se ne scollega; i nomi di schema e database derivati "
                  "dal tenant sono sicuri; la Unit of Work lega il tenant alla transazione.")
+    arch = req("ARCHIVE-READ", "Il percorso di un oggetto per chiave dell'archivio è sicuro e uguale a quello scritto dal job; "
+               "il lettore su file restituisce l'oggetto o nessun dato e rifiuta percorsi fuori dalla sua cartella; "
+               "ogni tipo del formato dell'archivio si decodifica nel tipo del linguaggio.")
     retry = req("UOW-RETRY", "La Unit of Work ripete il lavoro solo sui conflitti di serializzazione e sui deadlock, entro il numero massimo di tentativi.")
     for tid, r, m, kind, title, exp in [
         ("TC-KYBES-TENANT-BIND", tenant, "eq", "rt_tenant_bind", "tenant legato, cambiato, scollegato, non valido",
@@ -288,6 +378,12 @@ def _runtime(reqs: List[Requirement], tests: List[TestCase], asil: str) -> None:
          "nomi con sole minuscole, cifre e _; modello di URL senza {tenant} rifiutato"),
         ("TC-KYBES-TENANT-UOW", tenant, "req", "rt_tenant_uow", "Unit of Work con tenant",
          "la sessione della transazione è legata al tenant (su PostgreSQL anche app.tenant_id)"),
+        ("TC-KYBES-ARCHIVE-PATH", arch, "eq", "rt_archive_path", "chiavi e tenant con caratteri sicuri e non sicuri",
+         "lettere, cifre, _ e - restano; il resto diventa %XX in UTF-8"),
+        ("TC-KYBES-ARCHIVE-FILE", arch, "eg", "rt_archive_file", "lettura di un oggetto presente, assente e fuori dalla cartella",
+         "contenuto, poi nessun dato, poi errore"),
+        ("TC-KYBES-ARCHIVE-DECODE", arch, "eq", "rt_archive_decode", "decodifica di ogni tipo del formato dell'archivio, con valore e nullo",
+         "valori nel tipo del linguaggio; nullo resta nullo"),
         ("TC-KYBES-API-EXPORTS", api, "req", "rt_exports", "lettura di ogni simbolo esportato dall'indice e dai file per tabella",
          "ogni simbolo è definito; per ogni tabella esistono entità e repository"),
         ("TC-KYBES-SORT-KEY", sort, "eq", "rt_sort_key", "ordinamento sulla chiave, discendente", "solo la chiave, discendente"),
@@ -319,7 +415,7 @@ def verification_docs(cat: Catalog, tables: Dict[str, Table], test_files: Dict[s
     head = f"<!-- {MARKER}. NON MODIFICARE: rigenerato dagli schemi. -->\n"
     docs: Dict[str, str] = {}
     langs = list(test_files)
-    title = {"python": "Python", "typescript": "TypeScript", "csharp": "C#", "java": "Java"}
+    title = {"python": "Python", "typescript": "TypeScript", "csharp": "C#", "java": "Java", "jobs": "Job (pytest)"}
 
     o = [head + "# Requisiti di unità", "",
          "Requisiti derivati dagli schemi in `schemas/db`. L'ID è stabile: dipende dai nomi, non dall'ordine.", "",
@@ -328,12 +424,20 @@ def verification_docs(cat: Catalog, tables: Dict[str, Table], test_files: Dict[s
         o.append(f"| `{r.id}` | {r.asil} | {r.text} | `{r.source}` |")
     docs["requirements.md"] = "\n".join(o) + "\n"
 
-    for n, t in list(tables.items()) + [(RUNTIME, None)]:
-        tcs = cat.for_table(n)
+    for n, t in list(tables.items()) + [(RUNTIME, None), (JOBS, None)]:
+        tcs = cat.for_table(n, "all")
         if not tcs:
             continue
+        if n == JOBS:
+            o = [head + "# Specifica dei test di unità: motore dei job (archiviazione e conservazione)", "",
+                 f"{len(tcs)} casi di test · `jobs/generated/_engine/tests/test_engine.py`", "",
+                 "| Caso | Requisiti | Metodo di derivazione | Descrizione | Esito atteso |", "|---|---|---|---|---|"]
+            for tc in tcs:
+                o.append(f"| `{tc.id}` | {', '.join(f'`{r}`' for r in tc.reqs)} | {METHODS[tc.method]} | {tc.title} | {tc.expected} |")
+            docs["kybes-jobs.md"] = "\n".join(o) + "\n"
+            continue
         if t is None:
-            o = [head + "# Specifica dei test di unità: moduli comuni (paginazione, Unit of Work)", "",
+            o = [head + "# Specifica dei test di unità: moduli comuni (paginazione, Unit of Work, archivio)", "",
                  f"{len(tcs)} casi di test", "", "| Caso | Requisiti | Metodo di derivazione | Descrizione | Esito atteso |", "|---|---|---|---|---|"]
             for tc in tcs:
                 o.append(f"| `{tc.id}` | {', '.join(f'`{r}`' for r in tc.reqs)} | {METHODS[tc.method]} | {tc.title} | {tc.expected} |")
@@ -362,7 +466,9 @@ def verification_docs(cat: Catalog, tables: Dict[str, Table], test_files: Dict[s
             by_req.setdefault(r, []).append(tc)
     for r in cat.requirements:
         tcs = by_req.get(r.id, [])
-        files = [f"`{test_files[lg].get(r.table, '—')}`" for lg in langs]
+        scopes = {tc.scope for tc in tcs}
+        files = [f"`{test_files[lg][r.table]}`" if r.table in test_files[lg] and ("jobs" if lg == "jobs" else "model") in scopes else "—"
+                 for lg in langs]
         o.append(f"| `{r.id}` | {r.asil} | {', '.join(f'`{tc.id}`' for tc in tcs) or '**nessuno**'} | " + " | ".join(files) + " |")
     uncovered = [r.id for r in cat.requirements if r.id not in by_req]
     o += ["", f"Requisiti senza casi di test: **{len(uncovered)}**."]

@@ -509,11 +509,74 @@ def test_file(ns: str, t: Table, cat: Catalog, tables: Dict[str, Table], default
             o += [f'        await KybesDb.AssertInvalid("cursor", () => new {repo}(db).ListPageAsync(new PageRequest(Cursor: "kybes-non-valido")));']
         elif k in ("query_match", "query_mcdc", "query_empty_in"):
             o += _query_case(t, tc, tables)
+        elif k.startswith("archive_"):
+            o += _archive_case(t, tc, cat)
         else:
             raise ValueError(k)
         o.append("    }")
+    if any(tc.kind.startswith("archive_") for tc in cat.for_table(n)):
+        o += ["", "    /// <summary>Scrive un oggetto per chiave in un archivio su cartella temporanea e ne restituisce la radice.</summary>",
+              "    private static string ArchiveWith(string path, string content)", "    {",
+              '        var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kybes-archivio-" + Guid.NewGuid().ToString("N"));',
+              "        var file = System.IO.Path.Combine(root, path);", "        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(file)!);",
+              "        System.IO.File.WriteAllText(file, content);", "        return root;", "    }"]
     o.append("}")
     return "\n".join(o) + "\n"
+
+
+def _cs_expect(c, v, got: str) -> str:
+    if v is None:
+        return f"        Assert.Null({got});"
+    if c.type == "uuid":
+        return f"        Assert.Equal(Guid.Parse({_cs(v)}), {got});"
+    if c.type == "bool":
+        return f"        Assert.{'True' if v else 'False'}({got});"
+    if c.type == "int":
+        return f"        Assert.Equal({v}, {got});"
+    if c.type == "bigint":
+        return f"        Assert.Equal({v}L, {got});"
+    if c.type == "decimal":
+        return f"        Assert.Equal(decimal.Parse({_cs(v)}, System.Globalization.CultureInfo.InvariantCulture), {got});"
+    if c.type == "date":
+        return f"        Assert.Equal(DateOnly.Parse({_cs(v)}, System.Globalization.CultureInfo.InvariantCulture), {got});"
+    if c.type == "datetime":
+        return f"        Assert.Equal(DateTimeOffset.Parse({_cs(v)}, System.Globalization.CultureInfo.InvariantCulture), {got});"
+    if c.type == "json":
+        return (f"        Assert.True(System.Text.Json.Nodes.JsonNode.DeepEquals(System.Text.Json.Nodes.JsonNode.Parse({_cs(json.dumps(v))}), "
+                f"System.Text.Json.Nodes.JsonNode.Parse({got}!)));")
+    return f"        Assert.Equal({_cs(v)}, {got});"
+
+
+def _cs_key(c, v) -> str:
+    return {"uuid": f"Guid.Parse({_cs(v)})", "int": str(v), "bigint": f"{v}L"}.get(c.type, _cs(v))
+
+
+def _archive_case(t: Table, tc: TestCase, cat: Catalog) -> List[str]:
+    import emit_archive
+    doc, path = emit_archive.archive_sample(t, cat.tenant_id_type)
+    repo, pk, n = repo_class(L, t.name), t.pk, t.name
+    key = _cs_key(pk, doc[pk.name])
+    body = _cs(json.dumps(doc, ensure_ascii=False))
+    if tc.kind == "archive_read":
+        o = [f"        db.BindArchive(new FileArchiveReader(ArchiveWith({_cs(path)}, {body})));",
+             f"        var got = await new {repo}(db).GetByIdAsync({key});", "        Assert.NotNull(got);",
+             "        Assert.Equal(EntityState.Detached, db.Entry(got!).State);"]
+        o += [_cs_expect(c, doc[c.name], f"got!.{c.name}") for c in t.columns]
+    elif tc.kind == "archive_read_miss":
+        o = [f"        var repo = new {repo}(db);", '        db.BindArchive(new FileArchiveReader(ArchiveWith("altro/x.json", "{}")));',
+             f"        Assert.Null(await repo.GetByIdAsync({key}));",
+             f"        db.BindArchive(new FileArchiveReader(ArchiveWith({_cs(path)}, {body})));", "        db.BindArchive(null);",
+             f"        Assert.Null(await repo.GetByIdAsync({key}));"]
+    elif tc.kind == "archive_hot_first":
+        ten = "TENANT_A" if t.tenancy != "none" else "null"
+        o = [f"        var e = await Build{n}(db);",
+             f'        db.BindArchive(new FileArchiveReader(ArchiveWith(Archive.PathOf("{t.db_name}", {ten}, e.{pk.name}), "{{non json")));',
+             f"        Assert.Same(e, await new {repo}(db).GetByIdAsync(e.{pk.name}));"]
+    else:
+        o = [f"        db.BindArchive(new FileArchiveReader(ArchiveWith({_cs(path)}, {body})));", "        db.BindTenant(TENANT_B);",
+             f"        Assert.Null(await new {repo}(db).GetByIdAsync({key}));", "        db.BindTenant(TENANT_A);",
+             f"        Assert.NotNull(await new {repo}(db).GetByIdAsync({key}));"]
+    return o
 
 
 # ------------------------------------------------------------------------------------------- moduli comuni
@@ -609,6 +672,34 @@ def runtime_file(ns: str, cat: Catalog, tables: Dict[str, Table]) -> str:
                            "            calls++;", '            throw new Conflict("23505");', "        }, backoffMs: 0));", "        Assert.Equal(1, calls);",
                            '        Assert.False(UnitOfWork.IsRetryable(new InvalidOperationException("x", new Conflict(null))));'],
     }
+    bodies.update({
+        "rt_archive_path": ['        Assert.Equal("ab-C_9", Archive.Segment("ab-C_9"));',
+                            '        Assert.Equal("a%2Fb%20c%25%C3%A8%F0%9F%98%80", Archive.Segment("a/b c%è\\U0001F600"));',
+                            '        Assert.Equal("t/_keys/5.json", Archive.PathOf("t", null, 5));',
+                            '        Assert.Equal("t/_keys/tenant=x%20y/00000000-0000-0000-0000-000000000001.json", '
+                            'Archive.PathOf("t", "x y", Guid.Parse("00000000-0000-0000-0000-000000000001")));', "        await Task.CompletedTask;"],
+        "rt_archive_file": ['        var root = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "kybes-archivio-" + Guid.NewGuid().ToString("N"));',
+                            '        System.IO.Directory.CreateDirectory(System.IO.Path.Combine(root, "t", "_keys"));',
+                            '        System.IO.File.WriteAllText(System.IO.Path.Combine(root, "t", "_keys", "a.json"), "{}");',
+                            "        var reader = new FileArchiveReader(root);",
+                            '        Assert.Equal("{}", System.Text.Encoding.UTF8.GetString((await reader.FetchAsync("t/_keys/a.json"))!));',
+                            '        Assert.Null(await reader.FetchAsync("t/_keys/b.json"));',
+                            '        await Assert.ThrowsAsync<ArgumentException>(() => reader.FetchAsync("../fuori.json"));',
+                            "        Assert.Null(db.KybesArchive);", '        Assert.Null(await Archive.ReadAsync(db, "t", null, "a"));',
+                            "        db.BindArchive(reader);", "        Assert.Same(reader, db.KybesArchive);",
+                            '        Assert.Equal(System.Text.Json.JsonValueKind.Object, (await Archive.ReadAsync(db, "t", null, "a"))!.Value.ValueKind);',
+                            '        Assert.Null(await Archive.ReadAsync(db, "t", null, "b"));', "        db.BindArchive(null);", "        Assert.Null(db.KybesArchive);"],
+        "rt_archive_decode": ['        using var parsed = System.Text.Json.JsonDocument.Parse("{\\"u\\": \\"00000000-0000-0000-0000-00000000000a\\", '
+                              '\\"l\\": \\"9007199254740993\\", \\"d\\": \\"12.30\\", \\"g\\": \\"2020-01-31\\", '
+                              '\\"t\\": \\"2020-01-31T10:20:30.123000+00:00\\", \\"j\\": {\\"a\\": [1]}, \\"n\\": null}");',
+                              "        var doc = parsed.RootElement;",
+                              '        Assert.Equal(Guid.Parse("00000000-0000-0000-0000-00000000000a"), Archive.Get<Guid>(doc, "u"));',
+                              '        Assert.Equal(9007199254740993L, Archive.Get<long>(doc, "l"));', '        Assert.Equal(12.30m, Archive.Get<decimal>(doc, "d"));',
+                              '        Assert.Equal(new DateOnly(2020, 1, 31), Archive.Get<DateOnly>(doc, "g"));',
+                              '        Assert.Equal(new DateTimeOffset(2020, 1, 31, 10, 20, 30, 123, TimeSpan.Zero), Archive.Get<DateTimeOffset>(doc, "t"));',
+                              '        Assert.Equal("{\\"a\\": [1]}", Archive.Json(doc, "j"));', '        Assert.Null(Archive.Json(doc, "n"));',
+                              '        Assert.Null(Archive.Get<int?>(doc, "n"));', "        await Task.CompletedTask;"],
+    })
     o = [header(L, "kit") + "// <auto-generated />", "#nullable enable", *USINGS, "using System.Data;", "using System.Data.Common;",
          f"using {ns};", f"using static {_ns(ns)}.KybesBuilders;", "", f"namespace {_ns(ns)};", "",
          "/// <summary>Test di unità generati per i moduli comuni: paginazione (Paging), Unit of Work (UnitOfWork) e API del modello.</summary>",

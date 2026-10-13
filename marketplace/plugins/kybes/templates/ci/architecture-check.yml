@@ -46,6 +46,7 @@ jobs:
       - name: Dipendenze dei test del modello
         run: |
           if [ -f libs/db-models/python/pyproject.toml ]; then pip install -e "libs/db-models/python[test,postgres]"; fi
+          if [ -f jobs/generated/_engine/pyproject.toml ]; then pip install -e "jobs/generated/_engine[test]"; fi
           if [ -f libs/db-models/typescript/package.json ]; then (cd libs/db-models/typescript && npm install --no-audit --no-fund); fi
       - name: Test di unità del modello e copertura per ASIL (ISO 26262-6), su PostgreSQL
         env:

@@ -9,6 +9,7 @@ Per ogni linguaggio del modello con test generati:
   typescript  tsc + c8 + node --test nella cartella del pacchetto (es. libs/db-models/typescript)
   java        mvn test con JaCoCo (es. libs/db-models/java), su PostgreSQL (KYBES_TEST_DATABASE_URL)
   csharp      dotnet test con coverlet (es. libs/db-models/csharp/tests), su PostgreSQL (KYBES_TEST_DATABASE_URL)
+  jobs        pytest + pytest-cov sul motore dei job (jobs/generated/_engine), se una tabella ha archive o retention
 I report vanno in coverage/: <lingua>.cobertura.xml, java.jacoco.xml. Con --gate-only si controllano solo i report
 già presenti (verification.coverage_reports), per esempio prodotti da una CI con i propri strumenti.
 
@@ -148,13 +149,15 @@ def file_asil(rel: str, targets: List[dict], tables: dict, default: str) -> Opti
             continue
         name = rel.rsplit("/", 1)[-1]
         stem = name.split(".", 1)[0]
+        top = max((table_asil(t, default) for t in tables.values()), key=ASIL.index, default=default)
+        if tg["lang"] == "jobs":
+            return top, "motore dei job"
         tn = stem
         for suffix in ("RepositoryBase", "Repository"):
             if stem.endswith(suffix) and stem[: -len(suffix)] in tables:
                 tn = stem[: -len(suffix)]
         if tn in tables:
             return table_asil(tables[tn], default), tn
-        top = max((table_asil(t, default) for t in tables.values()), key=ASIL.index, default=default)
         return top, "moduli comuni"
     return None
 
@@ -218,6 +221,31 @@ def run_python(proj: Path, tg: dict, report: Path, quiet: bool, out: Outcome) ->
                f"--cov-report=xml:{report}", Path(td).name], pkg, quiet)
     if rc != 0:
         out.failures.append(f"python: test falliti in {td} (pytest esce con {rc})")
+
+
+def jobs_target(proj: Path, mc: dict, tables: dict) -> Optional[dict]:
+    """Il motore dei job come obiettivo di verifica, se il progetto ha tabelle con archive o retention."""
+    if not any(t.archive or t.retention for t in tables.values()):
+        return None
+    d = mc.get("jobs_dir", "jobs/generated").rstrip("/") + "/_engine"
+    return {"lang": "jobs", "dir": d + "/kybes_jobs"} if (proj / d).is_dir() else None
+
+
+def run_jobs(proj: Path, tg: dict, report: Path, quiet: bool, out: Outcome) -> None:
+    pkg = proj / Path(tg["dir"]).parent
+    try:
+        import pyarrow  # noqa: F401
+        import pytest  # noqa: F401
+        import pytest_cov  # noqa: F401
+        import sqlalchemy  # noqa: F401
+    except ImportError:
+        rel = pkg.relative_to(proj).as_posix()
+        out.notes.append(f"jobs: dipendenze del motore non installate (pip install -e \"{rel}[test]\"): test non eseguiti")
+        return
+    rc = _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--cov=kybes_jobs", "--cov-branch",
+               f"--cov-report=xml:{report}", "tests"], pkg, quiet)
+    if rc != 0:
+        out.failures.append(f"jobs: test falliti in {pkg.relative_to(proj).as_posix()}/tests (pytest esce con {rc})")
 
 
 def run_typescript(proj: Path, tg: dict, report: Path, quiet: bool, out: Outcome) -> None:
@@ -340,19 +368,29 @@ def main(argv: List[str]) -> int:
             RUNNERS[lang](proj, tg, report, quiet, out)
             if report.exists():
                 ran.append((lang, tg["dir"].rstrip("/") + "/", report))
+    jt = jobs_target(proj, mc, tables)
+    targets = mc["targets"] + ([jt] if jt else [])
+    if jt and not gate_only and (not only or "jobs" in only):
+        cov_dir.mkdir(exist_ok=True)
+        report = cov_dir / "jobs.cobertura.xml"
+        if report.exists():
+            report.unlink()
+        run_jobs(proj, jt, report, quiet, out)
+        if report.exists():
+            ran.append(("jobs", jt["dir"] + "/", report))
     covs: Dict[str, FileCov] = {}
     reports = sorted({Path(p) for pat in vc.get("coverage_reports") or DEFAULT_REPORTS
                       for p in glob.glob(str(proj / pat))})
     for rp in reports:
         try:
-            covs.update(parse_report(rp, proj, mc["targets"]))
+            covs.update(parse_report(rp, proj, targets))
         except (ET.ParseError, OSError) as exc:
             out.failures.append(f"report di copertura illeggibile {rp.relative_to(proj)}: {exc}")
     for lang, d, rp in ran:
         if not any(k.startswith(d) for k in covs):
             out.failures.append(f"{lang}: {rp.relative_to(proj)} non contiene file di {d} "
                                 "(per TypeScript serve sourceMap: true nel tsconfig): copertura non verificabile")
-    fails, rows = gate(covs, mc["targets"], tables, vc)
+    fails, rows = gate(covs, targets, tables, vc)
     out.failures += fails
     if not quiet and rows:
         print("Copertura strutturale per file del modello:")

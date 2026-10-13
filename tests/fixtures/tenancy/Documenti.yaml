@@ -6,6 +6,7 @@ columns:
   - { name: FascicoloId, type: uuid, required: true }
   - { name: Nome, type: string, length: 120, required: true }
   - { name: Protocollo, type: string, length: 20, unique: true }
+  - { name: CaricatoIl, type: datetime, generated: on_create }
 relations:
   - { name: Fascicolo, kind: many_to_one, target: Fascicoli, foreign_key: FascicoloId, on_delete: cascade }
 queries:
@@ -13,3 +14,10 @@ queries:
     where:
       - { column: Nome, op: prefix, param: Prefisso }
     order_by: [Nome]
+archive:
+  after: 2y
+  column: CaricatoIl
+  target: blob
+  partition_by: [year, month, day]
+  read_through: true
+  job: { mode: engine, interval: 600 }

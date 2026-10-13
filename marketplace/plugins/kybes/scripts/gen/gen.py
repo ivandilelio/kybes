@@ -21,6 +21,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
+import emit_archive  # noqa: E402
 import emit_csharp  # noqa: E402
 import emit_db  # noqa: E402
 import test_python  # noqa: E402
@@ -45,6 +46,8 @@ DEFAULT_MODEL = {
     "db_dir": "db/generated",
     "ddl_dialects": ["postgres"],
     "tenancy": {"default": "none", "id_type": "uuid"},
+    "jobs_dir": "jobs/generated",
+    "archive": {},
     "targets": [],
 }
 
@@ -200,6 +203,16 @@ def build_index(tables: Dict[str, Table], targets: List[dict], customs: Dict[Tup
                "schema": "per tenant nello schema `tenant_<chiave>`: la sessione va aperta con il search_path del tenant",
                "database": "per tenant in un database dedicato: la sessione va aperta sul database del tenant"}[t.tenancy or "none"]
         o += [f"Multi-tenant: **{t.tenancy or 'none'}**, {ten}.", ""]
+        if t.archive or t.retention:
+            jd = mc.get("jobs_dir", "jobs/generated").rstrip("/")
+            life = []
+            if t.archive:
+                a = t.archive
+                life.append(f"archivio dopo {a.after} su `{a.on}` ({a.target}, Parquet, partizioni {', '.join(a.partition_by) or 'nessuna'}"
+                            + (", letture per chiave anche dall'archivio" if a.read_through else "") + ")")
+            if t.retention:
+                life.append(f"cancellazione dopo {t.retention.delete_after}" + ("" if t.archive else f" su `{t.retention.on}`"))
+            o += [f"Ciclo di vita: {'; '.join(life)} · job `{jd}/{t.job_name}/` ({t.job.mode}).", ""]
         o += ["| Colonna | Tipo | Obbligatoria | Note |", "|---|---|---|---|"]
         for c in t.columns:
             notes = []
@@ -315,6 +328,16 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
                 for rel, make in getattr(em, "CUSTOM_ONCE", {}).items():
                     customs_to_create[f"{td}/{rel}"] = make()
                 test_files[tg["lang"]] = {n: f"{td}/{GEN_DIR}/{TEST_FILE[tg['lang']](n)}" for n in tables}
+        id_type = {"id_type": "uuid", **(mc.get("tenancy") or {})}["id_type"]
+        life = emit_archive.lifecycle_tables(tables)
+        managed_dirs.append(proj / mc["jobs_dir"])
+        if life:
+            res.problems += emit_archive.location_errors(tables, emit_archive.archive_config(mc))
+            for rel, text in emit_archive.emit(tables, mc, cat, vc["asil"], id_type).items():
+                desired[rel] = text
+            jd = mc["jobs_dir"].rstrip("/")
+            test_files["jobs"] = {n: f"{jd}/_engine/tests/test_{snake_name(n)}_job.py" for n in life}
+            test_files["jobs"][verification.JOBS] = f"{jd}/_engine/tests/test_engine.py"
         managed_dirs.append(proj / vc["docs_dir"])
         for rel, text in verification.verification_docs(cat, tables, test_files, vc["asil"], vc["thresholds"]).items():
             desired[f"{vc['docs_dir']}/{rel}"] = text

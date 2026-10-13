@@ -1,0 +1,30 @@
+# Registro degli eventi applicativi: nessun archivio, cancellazione dopo 400 giorni.
+table: Eventi
+description: Eventi applicativi per l'audit operativo
+tenancy: column
+columns:
+  - name: Id
+    type: bigint
+    primary_key: true
+  - name: Tipo
+    type: string
+    length: 40
+    required: true
+  - name: Dettagli
+    type: json
+  - name: AvvenutoIl
+    type: datetime
+    required: true
+queries:
+  - name: PerTipo
+    where: [Tipo]
+    order_by: [{ column: AvvenutoIl, dir: desc }]
+pagination:
+  default_order: [{ column: AvvenutoIl, dir: desc }]
+  sortable: [AvvenutoIl]
+retention:
+  delete_after: 400d
+  column: AvvenutoIl
+  job:
+    mode: keda                  # ScaledJob KEDA: parte quando ci sono righe scadute
+    interval: 600

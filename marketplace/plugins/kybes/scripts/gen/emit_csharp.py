@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, Tuple
 
+import runtime_archive
 import runtime_csharp
 import runtime_tenant
 from naming import GEN_DIR, custom_file, header, member, method_name, repo_class
@@ -178,7 +179,25 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
         k, _, arg = meth.key.partition(":")
         name = method_name(L, meth.key)
         w(f"    /// <summary>{meth.summary}</summary>")
-        if k == "get_by_id":
+        if k == "get_by_id" and t.archive and t.archive.read_through:
+            ten = "Db.RequireTenant()" if t.tenancy != "none" else "null"
+            w(f"    public async Task<{t.name}?> {name}({pkt} id, CancellationToken ct = default) =>")
+            w(f"        await {S}.FirstOrDefaultAsync(x => x.{pk.name} == id, ct) ?? await FromArchiveAsync(id, ct);\n")
+            w("    /// <summary>Record archiviato (archive.read_through): non tracciato dal contesto, in sola lettura.</summary>")
+            w(f"    private async Task<{t.name}?> FromArchiveAsync({pkt} id, CancellationToken ct)")
+            w("    {")
+            w(f'        if (await Archive.ReadAsync(Db, "{t.db_name}", {ten}, id, ct) is not {{ }} doc) return null;')
+            w(f"        return new {t.name}")
+            w("        {")
+            for c in t.columns:
+                if c.type == "json":
+                    v = f'Archive.Json(doc, "{c.name}")' + ("" if c.nullable else "!")
+                else:
+                    v = f'Archive.Get<{_prop_type(c)}>(doc, "{c.name}")'
+                w(f"            {c.name} = {v},")
+            w("        };")
+            w("    }")
+        elif k == "get_by_id":
             w(f"    public Task<{t.name}?> {name}({pkt} id, CancellationToken ct = default) =>")
             w(f"        {S}.FirstOrDefaultAsync(x => x.{pk.name} == id, ct);")
         elif k == "list_page":
@@ -384,7 +403,8 @@ def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tu
     ns, dialect = opts["namespace"], opts.get("dialect", "postgres")
     gen = {f"{GEN_DIR}/AppDbContext.cs": _context_file(tables, ns), f"{GEN_DIR}/ModelValidationException.cs": _common_file(ns),
            f"{GEN_DIR}/Paging.cs": runtime_csharp.paging_file(ns), f"{GEN_DIR}/UnitOfWork.cs": runtime_csharp.uow_file(ns, tables),
-           f"{GEN_DIR}/Tenancy.cs": runtime_tenant.csharp_file(ns, opts.get("tenant_id_type", "uuid"))}
+           f"{GEN_DIR}/Tenancy.cs": runtime_tenant.csharp_file(ns, opts.get("tenant_id_type", "uuid")),
+           f"{GEN_DIR}/Archive.cs": runtime_archive.csharp_file(ns)}
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.cs"] = _table_file(t, tables, schema_rel[n], ns, dialect)
     custom = {custom_file(L, n): custom_stub(t, ns) for n, t in tables.items()}

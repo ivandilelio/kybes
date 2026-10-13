@@ -69,5 +69,16 @@ pagination:
   max_limit: 200
 transactions:
   isolation: repeatable_read
+archive:                        # gli ordini più vecchi di 5 anni passano su S3 in Parquet (un ordine con righe resta hot)
+  after: 5y
+  column: Data
+  target: s3
+  partition_by: [year, month]   # più tenant, implicita con tenancy: column
+  read_through: true            # getById li trova anche nell'archivio
+  job:
+    mode: cron
+    schedule: "17 3 * * *"
+retention:
+  delete_after: 10y             # poi spariscono anche dall'archivio
 verification:
   asil: C

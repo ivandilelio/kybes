@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, Tuple
 
+import runtime_archive
 import runtime_java
 import runtime_tenant
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
@@ -143,6 +144,14 @@ def _entity_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str, 
     orderable = ({t.pk.name} | set(t.pagination.sortable) | {cn for cn, _ in t.order(None)}
                  | {cn for q in t.queries for cn, _ in t.order(q.order_by or None)})
     sortable_cols = [c for c in t.columns if c.name in orderable and c.type in SORTABLE_TYPES and not c.nullable]
+    if t.archive and t.archive.read_through:
+        w("    /** Record archiviato (archive.read_through): entità non gestita dall'EntityManager, in sola lettura. */")
+        w(f"    static {t.name} kybesFromArchive(com.fasterxml.jackson.databind.JsonNode doc) {{")
+        w(f"        {t.name} e = new {t.name}();")
+        for c in t.columns:
+            w(f'        e.{m[c.name]} = Archive.{runtime_archive.JAVA_DECODE[c.type]}(doc.get("{c.name}"));')
+        w("        return e;")
+        w("    }\n")
     w("    /** Valore di una colonna ordinabile, usato dal cursore di paginazione. */")
     w("    public Object kybesValue(String field) {")
     w("        return switch (field) {")
@@ -175,6 +184,7 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
     pk = t.pk
     pkm, pkt = m[pk.name], J_TYPE[pk.type]
     base = base_class(L, t.name)
+    rt = bool(t.archive and t.archive.read_through)
     out = []
     w = out.append
     w(header(L, schema_rel).rstrip("\n"))
@@ -259,7 +269,22 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
         k, _, arg = meth.key.partition(":")
         name = method_name(L, meth.key)
         w(f"    /** {meth.summary} */")
-        if k == "get_by_id":
+        if k == "get_by_id" and rt:
+            ten = "Tenancy.of(em)" if t.tenancy != "none" else "null"
+            w(f"    public Optional<{t.name}> {name}({pkt} id) {{")
+            w(f"        Optional<{t.name}> found = kybesHot(id);")
+            w(f"        if (found.isPresent()) return found;")
+            w(f'        com.fasterxml.jackson.databind.JsonNode doc = Archive.read(em, "{t.db_name}", {ten}, id);')
+            w(f"        return doc == null ? Optional.empty() : Optional.of({t.name}.kybesFromArchive(doc));")
+            w("    }\n")
+            w("    /** Lettura dalla tabella hot: aggiornamento e cancellazione non toccano l'archivio. */")
+            w(f"    private Optional<{t.name}> kybesHot({pkt} id) {{")
+            if tc:
+                w(f'        return em.createQuery("SELECT e FROM {T} e WHERE e.{pkm} = :id{tq}", {T}.class)')
+                w(f'                .setParameter("id", id){tset}.setMaxResults(1).getResultStream().findFirst();')
+            else:
+                w(f"        return Optional.ofNullable(em.find({t.name}.class, id));")
+        elif k == "get_by_id":
             w(f"    public Optional<{t.name}> {name}({pkt} id) {{")
             if tc:
                 w(f'        return em.createQuery("SELECT e FROM {T} e WHERE e.{pkm} = :id{tq}", {T}.class)')
@@ -315,7 +340,7 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
         elif k == "delete":
             w(f"    public boolean {name}({pkt} id) {{")
             if tc:
-                w(f"        {t.name} entity = {method_name(L, 'get_by_id')}(id).orElse(null);")
+                w(f"        {t.name} entity = {'kybesHot' if rt else method_name(L, 'get_by_id')}(id).orElse(null);")
             else:
                 w(f"        {t.name} entity = em.find({t.name}.class, id);")
             w("        if (entity == null) return false;")
@@ -444,7 +469,8 @@ def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tu
     gen = {f"{GEN_DIR}/ModelValidationException.java": _common_file(pkg),
            f"{GEN_DIR}/Paging.java": runtime_java.paging_file(pkg),
            f"{GEN_DIR}/UnitOfWork.java": runtime_java.uow_file(pkg, tables, dialect),
-           f"{GEN_DIR}/Tenancy.java": runtime_tenant.java_file(pkg, opts.get("tenant_id_type", "uuid"))}
+           f"{GEN_DIR}/Tenancy.java": runtime_tenant.java_file(pkg, opts.get("tenant_id_type", "uuid")),
+           f"{GEN_DIR}/Archive.java": runtime_archive.java_file(pkg)}
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.java"] = _entity_file(t, tables, schema_rel[n], pkg, dialect)
         gen[f"{GEN_DIR}/{base_class(L, n)}.java"] = _repo_file(t, tables, schema_rel[n], pkg)

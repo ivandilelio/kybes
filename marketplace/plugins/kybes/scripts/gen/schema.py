@@ -18,7 +18,7 @@ RETURNS = {"page", "list", "one"}
 ISOLATION = {"read_committed", "repeatable_read", "serializable"}
 ISOLATION_RANK = {"read_committed": 0, "repeatable_read": 1, "serializable": 2}
 SORTABLE_TYPES = {"uuid", "string", "int", "bigint", "decimal", "date", "datetime"}
-RESERVED_KEYS = {"archive": 5, "retention": 5, "storage": 6}
+RESERVED_KEYS = {"storage": 6}
 TENANCY = ("none", "column", "schema", "database")
 TENANT_COL = "TenantId"
 TENANT_ID_TYPES = ("uuid", "string")
@@ -26,6 +26,12 @@ TENANT_ID_TYPES = ("uuid", "string")
 TENANCY_LINKS = {("none", "none"), ("column", "none"), ("column", "column"), ("schema", "none"), ("schema", "schema"),
                  ("database", "database")}
 ASIL = ("QM", "A", "B", "C", "D")
+# archivio e conservazione (fase 5)
+DURATION = re.compile(r"^([1-9][0-9]{0,4})([dmy])$")
+ARCHIVE_TARGETS = ("s3", "blob")
+PARTITIONS = ("tenant", "year", "month", "day")
+JOB_MODES = ("cron", "keda", "engine")
+CRON = re.compile(r"^\S+(\s+\S+){4}$")
 DEFAULT_LIMIT = 50
 DEFAULT_MAX_LIMIT = 100
 IDENT = re.compile(r"^[A-Z][A-Za-z0-9]*$")
@@ -112,6 +118,35 @@ class Pagination:
 
 
 @dataclass
+class Job:
+    mode: str = "cron"                   # cron (CronJob) | keda (ScaledJob KEDA) | engine (Deployment sempre attivo)
+    schedule: str = "17 3 * * *"         # cron: passaggio pianificato; keda: passaggio giornaliero di sicurezza
+    interval: int = 300                  # secondi: polling di KEDA o pausa del motore sempre attivo
+    batch_size: int = 1000               # righe per transazione
+
+
+@dataclass
+class Archive:
+    after: str                           # durata: 90d, 12m, 5y
+    on: str                              # archive.column: colonna date/datetime su cui si misura l'età
+    target: str = "s3"
+    format: str = "parquet"
+    partition_by: List[str] = field(default_factory=lambda: ["year", "month"])
+    read_through: bool = False
+
+
+@dataclass
+class Retention:
+    delete_after: str
+    on: Optional[str] = None             # solo senza archivio: cancellazione dalla tabella hot
+
+
+def duration_days(d: str) -> int:
+    n, u = DURATION.match(d).groups()
+    return int(n) * {"d": 1, "m": 30, "y": 365}[u]
+
+
+@dataclass
 class Table:
     name: str
     db_name: str
@@ -125,6 +160,14 @@ class Table:
     isolation: str = "read_committed"
     asil: Optional[str] = None           # None = livello predefinito della configurazione
     tenancy: Optional[str] = None        # None = livello predefinito della configurazione
+    archive: Optional[Archive] = None
+    retention: Optional[Retention] = None
+    job: Optional[Job] = None
+
+    @property
+    def job_name(self) -> str:
+        """Nome Kubernetes del job di archiviazione o conservazione (es. righe-ordine-archive)."""
+        return snake(self.name).replace("_", "-") + ("-archive" if self.archive else "-retention")
 
     @property
     def pk(self) -> Column:
@@ -159,7 +202,7 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
     if not isinstance(data, dict):
         return None, [f"{f}: il file deve contenere una mappa con 'table' e 'columns'"]
     allowed = {"table", "db_name", "description", "columns", "relations", "indexes", "queries", "pagination", "transactions",
-               "verification", "tenancy"}
+               "verification", "tenancy", "archive", "retention"}
     for k in data:
         if k in RESERVED_KEYS:
             errs.append(f"{f}: la chiave '{k}' è prevista nella fase {RESERVED_KEYS[k]} della roadmap e non è ancora supportata")
@@ -318,10 +361,112 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
     if any(c.name == TENANT_COL for c in cols):
         errs.append(f"{f}: la colonna {TENANT_COL} è riservata: la aggiunge il generatore alle tabelle con tenancy: column")
 
+    archive, retention, job = _parse_lifecycle(f, data.get("archive"), data.get("retention"), errs)
     t = Table(name=name, db_name=data.get("db_name") or snake(name), description=str(data.get("description") or ""),
               columns=cols, relations=rels, indexes=idx, source=str(path), queries=queries,
-              pagination=pagination, isolation=isolation, asil=asil, tenancy=tenancy)
+              pagination=pagination, isolation=isolation, asil=asil, tenancy=tenancy,
+              archive=archive, retention=retention, job=job)
     return t, errs
+
+
+def _duration(where: str, v: Any, errs: List[str]) -> Optional[str]:
+    if not isinstance(v, str) or not DURATION.match(v):
+        errs.append(f"{where}: durata non valida {v!r} (es. 90d, 12m, 5y)")
+        return None
+    return v
+
+
+def _parse_job(where: str, raw: Any, errs: List[str]) -> Job:
+    j = Job()
+    if raw is None:
+        return j
+    if not isinstance(raw, dict):
+        errs.append(f"{where}: deve essere una mappa")
+        return j
+    for k in raw:
+        if k not in {"mode", "schedule", "interval", "batch_size"}:
+            errs.append(f"{where}: chiave sconosciuta '{k}' (ammesse: batch_size, interval, mode, schedule)")
+    mode = raw.get("mode", "cron")
+    if mode not in JOB_MODES:
+        errs.append(f"{where}.mode ammette {', '.join(JOB_MODES)}")
+    else:
+        j.mode = mode
+    if "schedule" in raw:
+        if mode == "engine":
+            errs.append(f"{where}.schedule vale con mode: cron (passaggio pianificato) o keda (passaggio giornaliero di sicurezza)")
+        elif not isinstance(raw["schedule"], str) or not CRON.match(raw["schedule"].strip()):
+            errs.append(f"{where}.schedule deve essere un'espressione cron di 5 campi (es. \"17 3 * * *\")")
+        else:
+            j.schedule = raw["schedule"].strip()
+    for key, lo, hi in (("interval", 30, 86400), ("batch_size", 1, 10000)):
+        if key in raw:
+            v = raw[key]
+            if not isinstance(v, int) or isinstance(v, bool) or not lo <= v <= hi:
+                errs.append(f"{where}.{key} deve essere un intero tra {lo} e {hi}")
+            else:
+                setattr(j, key, v)
+    if "interval" in raw and mode == "cron":
+        errs.append(f"{where}.interval vale solo con mode: keda o engine")
+    return j
+
+
+def _parse_lifecycle(f: str, raw_a: Any, raw_r: Any, errs: List[str]):
+    """Sezioni archive e retention; i controlli sulle colonne e sul tenant sono in _check_lifecycle."""
+    archive = retention = job = None
+    if raw_a is not None:
+        w = f"{f}: archive"
+        if not isinstance(raw_a, dict):
+            errs.append(f"{w}: deve essere una mappa")
+        else:
+            for k in raw_a:
+                if k not in {"after", "column", "target", "format", "partition_by", "read_through", "job"}:
+                    errs.append(f"{w}: chiave sconosciuta '{k}' (ammesse: after, column, format, job, partition_by, read_through, target)")
+            after = _duration(f"{w}.after", raw_a.get("after"), errs)
+            on = raw_a.get("column")
+            if not isinstance(on, str):
+                errs.append(f"{w}.column: serve la colonna date o datetime su cui si misura l'età")
+            target = raw_a.get("target", "s3")
+            if target not in ARCHIVE_TARGETS:
+                errs.append(f"{w}.target ammette {', '.join(ARCHIVE_TARGETS)}")
+            if raw_a.get("format", "parquet") != "parquet":
+                errs.append(f"{w}.format ammette solo parquet")
+            parts = raw_a.get("partition_by", ["year", "month"])
+            if not isinstance(parts, list) or not all(isinstance(p, str) for p in parts):
+                errs.append(f"{w}.partition_by deve essere un elenco tra {', '.join(PARTITIONS)}")
+                parts = ["year", "month"]
+            for p in parts:
+                if p not in PARTITIONS:
+                    errs.append(f"{w}.partition_by: '{p}' non valido (ammessi: {', '.join(PARTITIONS)})")
+            if len(set(parts)) != len(parts):
+                errs.append(f"{w}.partition_by: partizioni ripetute")
+            if "month" in parts and "year" not in parts or "day" in parts and "month" not in parts:
+                errs.append(f"{w}.partition_by: le partizioni di data sono gerarchiche (day richiede month, month richiede year)")
+            rt = _bool(raw_a.get("read_through"), f"{w}.read_through", errs)
+            job = _parse_job(f"{w}.job", raw_a.get("job"), errs)
+            if after and isinstance(on, str) and target in ARCHIVE_TARGETS:
+                archive = Archive(after=after, on=on, target=target, partition_by=[p for p in PARTITIONS if p in parts], read_through=rt)
+    if raw_r is not None:
+        w = f"{f}: retention"
+        if not isinstance(raw_r, dict):
+            errs.append(f"{w}: deve essere una mappa")
+        else:
+            for k in raw_r:
+                if k not in {"delete_after", "column", "job"}:
+                    errs.append(f"{w}: chiave sconosciuta '{k}' (ammesse: column, delete_after, job)")
+            da = _duration(f"{w}.delete_after", raw_r.get("delete_after"), errs)
+            on = raw_r.get("column")
+            if raw_a is not None:
+                if on is not None:
+                    errs.append(f"{w}.column: con un archivio l'età si misura su archive.column (togli retention.column)")
+                if "job" in raw_r:
+                    errs.append(f"{w}.job: con un archivio la conservazione la esegue il job dell'archivio (archive.job)")
+            else:
+                if not isinstance(on, str):
+                    errs.append(f"{w}.column: senza archivio serve la colonna date o datetime su cui si misura l'età")
+                job = _parse_job(f"{w}.job", raw_r.get("job"), errs)
+            if da:
+                retention = Retention(delete_after=da, on=on if isinstance(on, str) else None)
+    return archive, retention, job
 
 
 def _parse_order(where: str, raw: Any, errs: List[str]) -> List[tuple]:
@@ -482,7 +627,48 @@ def _cross_check(tables: Dict[str, Table]) -> List[str]:
                 r.on_delete = back[0].on_delete
     for t in tables.values():
         errs += _check_access(t)
+        errs += _check_lifecycle(t)
     return errs
+
+
+def _check_age_col(t: Table, cn: str, where: str) -> List[str]:
+    c = t.col(cn)
+    if not c:
+        return [f"{where}: colonna {cn} inesistente"]
+    if c.type not in ("date", "datetime"):
+        return [f"{where}: {cn} è di tipo {c.type}, serve date o datetime"]
+    if c.nullable and c.generated != "on_create":
+        return [f"{where}: {cn} deve essere required (o generated: on_create): un record senza data non verrebbe mai archiviato"]
+    return []
+
+
+def _check_lifecycle(t: Table) -> List[str]:
+    errs: List[str] = []
+    a, r = t.archive, t.retention
+    if a:
+        errs += _check_age_col(t, a.on, f"{t.name}.archive.column")
+        clash = sorted({c.db_name for c in t.columns} & set(PARTITIONS))
+        if clash:
+            errs.append(f"{t.name}.archive: le colonne {', '.join(clash)} hanno lo stesso nome di una partizione: rinominale con db_name")
+    if r:
+        if a and "year" not in a.partition_by:
+            errs.append(f"{t.name}.retention: la conservazione cancella partizioni di data intere, serve year in archive.partition_by")
+        if a and duration_days(r.delete_after) <= duration_days(a.after):
+            errs.append(f"{t.name}.retention.delete_after ({r.delete_after}) deve superare archive.after ({a.after})")
+        if not a and r.on:
+            errs += _check_age_col(t, r.on, f"{t.name}.retention.column")
+    return errs
+
+
+def lifecycle_children(t: Table, tables: Dict[str, "Table"]) -> List[tuple]:
+    """[(tabella figlia, relazione many_to_one)] che puntano a t: un record con figli resta nella tabella hot."""
+    return [(c, r) for c in tables.values() for r in c.relations if r.kind == "many_to_one" and r.target == t.name]
+
+
+def age_column(t: Table) -> Optional[str]:
+    if t.archive:
+        return t.archive.on
+    return t.retention.on if t.retention else None
 
 
 def _check_sort_col(t: Table, cn: str, where: str) -> List[str]:
@@ -560,6 +746,17 @@ def apply_tenancy(tables: Dict[str, Table], default: str = "none", id_type: str 
             pair = (t.tenancy, tables[r.target].tenancy)
             if pair not in TENANCY_LINKS:
                 errs.append(f"{t.name}.relations.{r.name}: una tabella '{pair[0]}' non può riferirsi a {r.target} ('{pair[1]}'): {why[pair[0]]}")
+    for t in tables.values():
+        a = t.archive
+        if a and t.tenancy != "none" and "tenant" not in a.partition_by:
+            a.partition_by.insert(0, "tenant")   # implicita: l'archivio è separato per Organization
+        if a and t.tenancy == "none" and "tenant" in a.partition_by:
+            errs.append(f"{t.name}.archive.partition_by: tenant vale solo per le tabelle multi-tenant (tenancy: none)")
+        if (t.archive or t.retention) and t.tenancy == "none":
+            for c, r in lifecycle_children(t, tables):
+                if c.tenancy in ("schema", "database"):
+                    errs.append(f"{t.name}: archive/retention non ammessi: {c.name} ({c.tenancy}) si riferisce a {t.name} da schemi o "
+                                "database di tenant, che il job non può controllare")
     return errs
 
 
@@ -699,6 +896,9 @@ def access_paths(t: Table, tables: Dict[str, "Table"]) -> List[AccessPath]:
     for cn in t.pagination.sortable:
         if [cn] != default[:1]:
             paths.append(AccessPath("sort", f"ordinamento per {cn}", tp + [cn]))
+    age = age_column(t)
+    if age:
+        paths.append(AccessPath("archive", f"{'archiviazione' if t.archive else 'conservazione'} per {age}", tp + [age]))
     for q in t.queries:
         eq = [c.column for c in q.where if c.op in ("eq", "is_null")]
         eq = list(dict.fromkeys(eq))
@@ -759,6 +959,8 @@ def index_plan(t: Table, tables: Optional[Dict[str, "Table"]] = None) -> IndexPl
                 origin = "query"
             elif p.kind == "list_by":
                 name, origin = nm("ix", p.ideal), "fk"
+            elif p.kind == "archive":
+                name, origin = nm("ix", p.ideal), "archivio"
             else:
                 name, origin = nm("ix", p.ideal), "ordinamento"
             spec = IndexSpec(name, list(p.ideal), False, origin)

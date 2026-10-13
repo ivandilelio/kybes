@@ -21,10 +21,16 @@ jobs:
           distribution: temurin
           java-version: "21"
       - name: Dipendenze di test
-        run: pip install sqlalchemy pytest pytest-cov pyyaml pglast tree-sitter tree-sitter-c-sharp
+        run: pip install sqlalchemy pytest pytest-cov pyyaml pglast tree-sitter tree-sitter-c-sharp pyarrow boto3 moto duckdb azure-storage-blob
+      - name: Azurite (Azure Blob locale) per i test dell'archivio
+        run: |
+          npx --yes azurite@3 azurite-blob --silent --skipApiVersionCheck --disableTelemetry --location "$RUNNER_TEMP/azurite" --blobHost 127.0.0.1 &
+          for i in $(seq 1 30); do (echo > /dev/tcp/127.0.0.1/10000) 2>/dev/null && break; sleep 1; done
       - name: Validazione del plugin
         run: npx --yes @anthropic-ai/claude-code plugin validate ./marketplace || echo "validazione non disponibile in CI"
       - name: Suite del kit
+        env:
+          KYBES_TEST_AZURITE: "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
         run: tests/run.sh
 
   # test generati Java ed C# eseguiti davvero: Hibernate e EF Core su PostgreSQL, copertura per ASIL con verify.py
@@ -143,9 +149,9 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/proj" && cd "$RUNNER_TEMP/proj" && git init -q
           "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --examples --no-plugin --model-langs python,typescript --ci none
-          pip install -e "libs/db-models/python[test,postgres]"
+          pip install -e "libs/db-models/python[test,postgres]" -e "jobs/generated/_engine[test]"
           (cd libs/db-models/typescript && npm install --no-audit --no-fund)
-      - name: Test generati su PostgreSQL e copertura entro le soglie ASIL
+      - name: Test generati su PostgreSQL (modello e motore dei job) e copertura entro le soglie ASIL
         working-directory: ${{ runner.temp }}/proj
         run: python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" py-ts -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py .
       - name: Stesso controllo con tabelle per schema e per database (tests/fixtures/tenancy)
@@ -153,7 +159,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/fix" && cd "$RUNNER_TEMP/fix" && git init -q
           "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs python,typescript --tenant-id string --ci none
           cp "$GITHUB_WORKSPACE"/tests/fixtures/tenancy/*.yaml schemas/db/ && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
-          pip install -e "libs/db-models/python[test,postgres]"
+          pip install -e "libs/db-models/python[test,postgres]" -e "jobs/generated/_engine[test]"
           (cd libs/db-models/typescript && npm install --no-audit --no-fund)
           python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" py-ts-fix -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py .
       - name: DDL multi-tenant su PostgreSQL (row-level security, schema e database per tenant)

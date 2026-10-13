@@ -417,10 +417,57 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
             o += [f'    await assert.rejects(new {repo}(em).listPage({{ cursor: "kybes-non-valido" }}), invalid("cursor"));']
         elif k in ("query_match", "query_mcdc", "query_empty_in"):
             o += _query_case(t, tc, tables)
+        elif k.startswith("archive_"):
+            o += _archive_case(t, tc, cat)
         else:
             raise ValueError(k)
         o.append("  }));")
+    if any(tc.kind.startswith("archive_") for tc in cat.for_table(n)):
+        at = o.index('import { withDb } from "./_db";')
+        o[at:at] = ['import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";', 'import { tmpdir } from "node:os";',
+                    'import { dirname, join } from "node:path";',
+                    'import { FileArchiveReader, archivePath, bindArchive } from "../../src/model/generated";']
+        o += ["", "/** Scrive un oggetto per chiave in un archivio su cartella temporanea e ne restituisce la radice. */",
+              "function archiveWith(path: string, content: string): string {",
+              '  const root = mkdtempSync(join(tmpdir(), "kybes-archivio-"));', "  mkdirSync(dirname(join(root, path)), { recursive: true });",
+              "  writeFileSync(join(root, path), content);", "  return root;", "}", "void archivePath;"]
     return _drop_unused_repos(o, [repo_class(L, x) for x in others])
+
+
+def _ts_expect(c, v, got: str) -> str:
+    """Asserzione sul valore decodificato in TypeScript (uuid, decimal, bigint e date sono stringhe nel modello)."""
+    if c.type == "datetime":
+        return f"    assert.equal(({got} as Date).getTime(), Date.parse({json.dumps(v)}));"
+    if c.type == "json":
+        return f"    assert.deepEqual({got}, {json.dumps(v)});"
+    return f"    assert.equal({got}, {json.dumps(v)});"
+
+
+def _archive_case(t: Table, tc: TestCase, cat: Catalog) -> List[str]:
+    import emit_archive
+    doc, path = emit_archive.archive_sample(t, cat.tenant_id_type)
+    repo, pk = repo_class(L, t.name), t.pk
+    key = json.dumps(doc[pk.name]) if pk.type != "int" else str(doc[pk.name])
+    o = [f"    const doc = {json.dumps(doc, ensure_ascii=False)};"]
+    if tc.kind == "archive_read":
+        o += [f"    bindArchive(em, new FileArchiveReader(archiveWith({json.dumps(path)}, JSON.stringify(doc))));",
+              f"    const got = await new {repo}(em).getById({key});", "    assert.ok(got);"]
+        o += [_ts_expect(c, doc[c.name], f"got.{_a(c.name)}") for c in t.columns]
+    elif tc.kind == "archive_read_miss":
+        o += [f"    const repo = new {repo}(em);", '    bindArchive(em, new FileArchiveReader(archiveWith("altro/x.json", "{}")));',
+              f"    assert.equal(await repo.getById({key}), null);",
+              f"    bindArchive(em, new FileArchiveReader(archiveWith({json.dumps(path)}, JSON.stringify(doc))));",
+              "    bindArchive(em, null);", f"    assert.equal(await repo.getById({key}), null);"]
+    elif tc.kind == "archive_hot_first":
+        ten = "TENANT_A" if t.tenancy != "none" else "null"
+        o += [f"    const e = await build{t.name}(em);", "    void doc;",
+              f'    bindArchive(em, new FileArchiveReader(archiveWith(archivePath("{t.db_name}", {ten}, e.{_a(pk.name)}), "{{non json")));',
+              f"    const got = await new {repo}(em).getById(e.{_a(pk.name)});", f"    assert.equal(got?.{_a(pk.name)}, e.{_a(pk.name)});"]
+    else:
+        o += [f"    bindArchive(em, new FileArchiveReader(archiveWith({json.dumps(path)}, JSON.stringify(doc))));",
+              "    bindTenant(em, TENANT_B);", f"    assert.equal(await new {repo}(em).getById({key}), null);",
+              "    bindTenant(em, TENANT_A);", f"    assert.ok(await new {repo}(em).getById({key}));"]
+    return o
 
 
 def _sort_json(x: str) -> str:
@@ -535,7 +582,25 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
                            '      throw Object.assign(new Error("duplicato"), { code: "23505" });', "    }, { ...LEVELS_SQLITE, tenant: TENANT_A, backoffMs: 0 }), /duplicato/);",
                            "    assert.equal(calls, 1);"],
     }
+    bodies.update({
+        "rt_archive_path": ['    assert.equal(archiveSegment("ab-C_9"), "ab-C_9");', '    assert.equal(archiveSegment("a/b c%è"), "a%2Fb%20c%25%C3%A8");',
+                            '    assert.equal(archivePath("t", null, 5), "t/_keys/5.json");',
+                            '    assert.equal(archivePath("t", "x y", "k"), "t/_keys/tenant=x%20y/k.json");'],
+        "rt_archive_file": ['    const root = mkdtempSync(join(tmpdir(), "kybes-archivio-"));', '    mkdirSync(join(root, "t", "_keys"), { recursive: true });',
+                            '    writeFileSync(join(root, "t", "_keys", "a.json"), "{}");', "    const reader = new FileArchiveReader(root);",
+                            '    assert.equal(Buffer.from((await reader.fetch("t/_keys/a.json")) as Uint8Array).toString(), "{}");',
+                            '    assert.equal(await reader.fetch("t/_keys/b.json"), null);',
+                            '    await assert.rejects(reader.fetch("../fuori.json"), /fuori/);',
+                            "    assert.equal(archiveOf(em), null);", '    assert.equal(await readArchived(em, "t", null, "a"), null);',
+                            "    bindArchive(em, reader);", "    assert.equal(archiveOf(em), reader);",
+                            '    assert.deepEqual(await readArchived(em, "t", null, "a"), {});', '    assert.equal(await readArchived(em, "t", null, "b"), null);',
+                            "    bindArchive(em, null);", "    assert.equal(archiveOf(em), null);"],
+        "rt_archive_decode": ["    assert.equal(asDateTime(null), null);",
+                              '    assert.equal((asDateTime("2020-01-31T10:20:30.123000+00:00") as Date).toISOString(), "2020-01-31T10:20:30.123Z");'],
+    })
     o = [header(L, "kit") + HEAD_LINT + "// Test di unità generati per i moduli comuni: paginazione (_paging) e Unit of Work (_uow).",
+         'import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";', 'import { tmpdir } from "node:os";', 'import { join } from "node:path";',
+         'import { FileArchiveReader, archiveOf, archivePath, archiveSegment, asDateTime, bindArchive, readArchived } from "../../src/model/generated/_archive";',
          'import { test } from "node:test";', 'import assert from "node:assert/strict";',
          f'import {{ ModelValidationError, {n}, {spec} }} from "../../src/model/generated";',
          'import { decodeCursor, emptyPage, encodeCursor, likePrefix, resolveOrder, runPage } from "../../src/model/generated/_paging";',

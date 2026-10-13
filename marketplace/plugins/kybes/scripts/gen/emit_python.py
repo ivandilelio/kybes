@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Dict, List, Tuple
 
+import runtime_archive
 import runtime_python
 import runtime_tenant
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
@@ -48,6 +49,10 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
     tm = m[tc.name] if tc else None
     if t.tenancy != "none":
         w("from ._tenant import tenant_of")
+    rt = bool(t.archive and t.archive.read_through)
+    if rt:
+        decs = sorted({runtime_archive.PY_DECODE[c.type] for c in t.columns if c.type in runtime_archive.PY_DECODE})
+        w("from ._archive import " + ", ".join(decs + ["read_archived"]))
     if targets:
         w("\nif TYPE_CHECKING:")
         for tg in targets:
@@ -149,7 +154,8 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
         """Con tenancy: column ogni lettura filtra per il tenant della sessione."""
         return f"self._scoped({expr})" if tc else expr
 
-    get_entity = f"self.{method_name(L, 'get_by_id')}(id)" if tc else f"self.session.get({T}, id)"
+    hot_get = f"self.session.scalars(self._scoped(select({T}).where({T}.{pkm} == id))).first()" if tc else f"self.session.get({T}, id)"
+    get_entity = hot_get  # aggiornamento e cancellazione lavorano solo sulla tabella hot
     parents = [r for r in t.relations if r.kind == "many_to_one" and tables[r.target].tenancy == "column"] if tc else []
     w(f"class {base_class(L, t.name)}:")
     w(f'    """CRUD, relazioni e query di {t.name}. La transazione la gestisce il chiamante (vedi _uow.py)."""\n')
@@ -190,10 +196,25 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
         w(f"    # {meth.summary}")
         if k == "get_by_id":
             w(f"    def {name}(self, id: {pkt}) -> Optional[{t.name}]:")
-            if tc:
-                w(f"        return self.session.scalars(self._scoped(select({T}).where({T}.{pkm} == id))).first()\n")
+            if rt:
+                w(f"        found = {hot_get}")
+                w("        return found if found is not None else self._from_archive(id)\n")
+                ten = "tenant_of(self.session)" if t.tenancy != "none" else "None"
+                w(f"    def _from_archive(self, id: {pkt}) -> Optional[{t.name}]:")
+                w('        """Record archiviato (archive.read_through): oggetto non collegato alla sessione, in sola lettura."""')
+                w(f'        doc = read_archived(self.session, "{t.db_name}", {ten}, id)')
+                w("        if doc is None:")
+                w("            return None")
+                args = []
+                for c in t.columns:
+                    dec = runtime_archive.PY_DECODE.get(c.type)
+                    v = f'doc.get("{c.name}")'
+                    args.append(f"{m[c.name]}={dec}({v})" if dec else f"{m[c.name]}={v}")
+                w(f"        return {T}(")
+                for i, a in enumerate(args):
+                    w(f"            {a}" + ("," if i < len(args) - 1 else ")\n"))
             else:
-                w(f"        return self.session.get({t.name}, id)\n")
+                w(f"        return {hot_get}\n")
         elif k == "list_page":
             w(f"    def {name}(self, page: PageRequest = PageRequest()) -> Page[{t.name}]:")
             w(f"        return run_page(self.session, {scoped(f'select({T})')}, self.PAGING, page)\n")
@@ -342,11 +363,13 @@ def _init_file(tables: Dict[str, Table]) -> str:
              "from ._base import Base, ModelValidationError",
              "from ._paging import Page, PageRequest",
              "from ._uow import isolation_for, run_in_transaction, transaction",
-             "from ._tenant import TenantError, bind_tenant, database_url_for, schema_for, search_path_for, tenant_of"]
+             "from ._tenant import TenantError, bind_tenant, database_url_for, schema_for, search_path_for, tenant_of",
+             "from ._archive import ArchiveReader, FileArchiveReader, archive_of, archive_path, bind_archive"]
     for n in tables:
         lines.append(f"from .{n} import {n}, {base_class(L, n)}, validate_{snake(n)}, PAGING_{snake(n).upper()}")
     names = ["Base", "ModelValidationError", "Page", "PageRequest", "isolation_for", "run_in_transaction", "transaction",
-             "TenantError", "bind_tenant", "database_url_for", "schema_for", "search_path_for", "tenant_of"] + \
+             "TenantError", "bind_tenant", "database_url_for", "schema_for", "search_path_for", "tenant_of",
+             "ArchiveReader", "FileArchiveReader", "archive_of", "archive_path", "bind_archive"] + \
         [x for n in tables for x in (n, base_class(L, n), f"validate_{snake(n)}", f"PAGING_{snake(n).upper()}")]
     lines.append("\n__all__ = [" + ", ".join(repr(x) for x in names) + "]")
     return "\n".join(lines) + "\n"
@@ -368,7 +391,8 @@ def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tu
     """Restituisce (file generati, file custom da creare se mancano) con percorsi relativi alla cartella model."""
     gen = {f"{GEN_DIR}/_base.py": _base_file(), f"{GEN_DIR}/__init__.py": _init_file(tables),
            f"{GEN_DIR}/_paging.py": runtime_python.paging_file(), f"{GEN_DIR}/_uow.py": runtime_python.uow_file(tables),
-           f"{GEN_DIR}/_tenant.py": runtime_tenant.python_file(opts.get("tenant_id_type", "uuid"))}
+           f"{GEN_DIR}/_tenant.py": runtime_tenant.python_file(opts.get("tenant_id_type", "uuid")),
+           f"{GEN_DIR}/_archive.py": runtime_archive.python_file()}
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.py"] = _table_file(t, tables, schema_rel[n])
     custom = {custom_file(L, n): custom_stub(t) for n, t in tables.items()}

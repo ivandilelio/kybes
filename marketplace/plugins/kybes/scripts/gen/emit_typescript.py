@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import Dict, Tuple
 
+import runtime_archive
 import runtime_tenant
 import runtime_typescript
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
@@ -78,6 +79,8 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, dialect: st
     tm = m[tc.name] if tc else None
     if t.tenancy != "none":
         w('import { tenantOf } from "./_tenant";')
+    if t.archive and t.archive.read_through:
+        w('import { ' + ("asDateTime, " if any(c.type == "datetime" for c in t.columns) else "") + 'readArchived } from "./_archive";')
     paging_names = ["runPage", "orderRows", "likePrefix", "emptyPage"]
     w('import { ' + ", ".join(sorted(paging_names)) + ' } from "./_paging";')
     w('import type { OrderItem, Page, PageRequest, PagingSpec } from "./_paging";')
@@ -194,7 +197,23 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, dialect: st
         w(f"  /** {meth.summary} */")
         if k == "get_by_id":
             w(f"  async {name}(id: {pkt}): Promise<{t.name} | null> {{")
-            w(f"    return this.repo.findOneBy({{ {pkm}: id{tw} }});")
+            if t.archive and t.archive.read_through:
+                ten = "tenantOf(this.em)" if t.tenancy != "none" else "null"
+                key = "id.toLowerCase()" if pk.type == "uuid" else ("String(id)" if pkt != "string" else "id")
+                w(f"    const found = await this.repo.findOneBy({{ {pkm}: id{tw} }});")
+                w("    return found ?? this.fromArchive(id);")
+                w("  }\n")
+                w("  /** Record archiviato (archive.read_through): oggetto non collegato all'EntityManager, in sola lettura. */")
+                w(f"  protected async fromArchive(id: {pkt}): Promise<{t.name} | null> {{")
+                w(f'    const doc = await readArchived(this.em, "{t.db_name}", {ten}, {key});')
+                w("    if (doc === null) return null;")
+                w("    return this.repo.create({")
+                for c in t.columns:
+                    v = f'doc["{c.name}"]'
+                    w(f"      {m[c.name]}: " + (f"asDateTime({v})" if c.type == "datetime" else v) + ",")
+                w(f"    }} as DeepPartial<{t.name}>);")
+            else:
+                w(f"    return this.repo.findOneBy({{ {pkm}: id{tw} }});")
         elif k == "list_page":
             w(f"  async {name}(page: PageRequest = {{}}): Promise<Page<{t.name}>> {{")
             if tc:
@@ -343,6 +362,8 @@ def _index_file(tables: Dict[str, Table]) -> str:
              'export type { Page, PageRequest } from "./_paging";',
              'export { runInTransaction, isolationFor } from "./_uow";',
              'export { TenantError, bindTenant, databaseUrlFor, schemaFor, searchPathFor, tenantOf } from "./_tenant";',
+             'export { FileArchiveReader, archiveOf, archivePath, bindArchive } from "./_archive";',
+             'export type { ArchiveReader } from "./_archive";',
              'export type { Isolation, TransactionOptions } from "./_uow";']
     for n in tables:
         lines.append(f'import {{ {n} }} from "./{n}";')
@@ -369,7 +390,8 @@ def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tu
         raise ValueError(f"dialect TypeScript non supportato: {dialect} (ammessi: {', '.join(DB_TYPE)})")
     gen = {f"{GEN_DIR}/_base.ts": _base_file(), f"{GEN_DIR}/index.ts": _index_file(tables),
            f"{GEN_DIR}/_paging.ts": runtime_typescript.paging_file(), f"{GEN_DIR}/_uow.ts": runtime_typescript.uow_file(tables),
-           f"{GEN_DIR}/_tenant.ts": runtime_tenant.typescript_file(opts.get("tenant_id_type", "uuid"))}
+           f"{GEN_DIR}/_tenant.ts": runtime_tenant.typescript_file(opts.get("tenant_id_type", "uuid")),
+           f"{GEN_DIR}/_archive.ts": runtime_archive.typescript_file()}
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.ts"] = _table_file(t, tables, schema_rel[n], dialect)
     custom = {custom_file(L, n): custom_stub(t) for n, t in tables.items()}

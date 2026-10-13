@@ -377,7 +377,7 @@ def test_file(pkg: str, t: Table, cat: Catalog, tables: Dict[str, Table], defaul
     compare = [c.name for c in t.columns if c.type != "json" and not c.generated]
     for tc in cat.for_table(n):
         o += ["", "    @Test", f"    @DisplayName({_jstr(tc.id + ' · ' + ', '.join(tc.reqs) + ' · ' + METHODS[tc.method] + ': ' + tc.title)})",
-              f"    void {tc.slug}() {{", f"        // atteso: {tc.expected}"]
+              f"    void {tc.slug}(){' throws Exception' if tc.kind.startswith('archive_') else ''} {{", f"        // atteso: {tc.expected}"]
         k = tc.kind
         b = f"build{n}"
         if k == "create_valid":
@@ -564,11 +564,73 @@ def test_file(pkg: str, t: Table, cat: Catalog, tables: Dict[str, Table], defaul
             o += [f'        assertInvalid("cursor", () -> new {repo}(em).listPage(new Paging.PageRequest(null, "kybes-non-valido", null)));']
         elif k in ("query_match", "query_mcdc", "query_empty_in"):
             o += _query_case(t, tc, tables)
+        elif k.startswith("archive_"):
+            o += _archive_case(t, tc, cat)
         else:
             raise ValueError(k)
         o.append("    }")
+    if any(tc.kind.startswith("archive_") for tc in cat.for_table(n)):
+        o += ["", "    /** Scrive un oggetto per chiave in un archivio su cartella temporanea e ne restituisce la radice. */",
+              "    static java.nio.file.Path archiveWith(String path, String content) throws java.io.IOException {",
+              '        java.nio.file.Path root = java.nio.file.Files.createTempDirectory("kybes-archivio");',
+              "        java.nio.file.Path file = root.resolve(path);", "        java.nio.file.Files.createDirectories(file.getParent());",
+              "        java.nio.file.Files.writeString(file, content);", "        return root;", "    }"]
     o.append("}")
     return "\n".join(o) + "\n"
+
+
+def _java_expect(c, v, got: str) -> str:
+    if v is None:
+        return f"        assertNull({got});"
+    if c.type == "uuid":
+        return f"        assertEquals(UUID.fromString({_jstr(v)}), {got});"
+    if c.type == "int":
+        return f"        assertEquals(Integer.valueOf({v}), {got});"
+    if c.type == "bigint":
+        return f"        assertEquals(Long.valueOf({v}L), {got});"
+    if c.type == "decimal":
+        return f"        assertEquals(0, new BigDecimal({_jstr(v)}).compareTo({got}));"
+    if c.type == "bool":
+        return f"        assertEquals(Boolean.valueOf({str(v).lower()}), {got});"
+    if c.type == "date":
+        return f"        assertEquals(LocalDate.parse({_jstr(v)}), {got});"
+    if c.type == "datetime":
+        return f"        assertTrue(OffsetDateTime.parse({_jstr(v)}).isEqual({got}));"
+    if c.type == "json":
+        return (f"        assertEquals(new com.fasterxml.jackson.databind.ObjectMapper().readTree({_jstr(json.dumps(v))}), "
+                f"new com.fasterxml.jackson.databind.ObjectMapper().readTree({got}));")
+    return f"        assertEquals({_jstr(v)}, {got});"
+
+
+def _java_key(c, v) -> str:
+    return {"uuid": f"UUID.fromString({_jstr(v)})", "int": str(v), "bigint": f"{v}L"}.get(c.type, _jstr(v))
+
+
+def _archive_case(t: Table, tc: TestCase, cat: Catalog) -> List[str]:
+    import emit_archive
+    doc, path = emit_archive.archive_sample(t, cat.tenant_id_type)
+    repo, pk, n = repo_class(L, t.name), t.pk, t.name
+    key = _java_key(pk, doc[pk.name])
+    body = _jstr(json.dumps(doc, ensure_ascii=False))
+    if tc.kind == "archive_read":
+        o = [f"        Archive.bind(em, new Archive.FileReader(archiveWith({_jstr(path)}, {body})));",
+             f"        {n} got = new {repo}(em).getById({key}).orElseThrow();", "        assertFalse(em.contains(got));"]
+        o += [_java_expect(c, doc[c.name], f"got.{_get(c.name)}()") for c in t.columns]
+    elif tc.kind == "archive_read_miss":
+        o = [f"        {repo} repo = new {repo}(em);", '        Archive.bind(em, new Archive.FileReader(archiveWith("altro/x.json", "{}")));',
+             f"        assertTrue(repo.getById({key}).isEmpty());",
+             f"        Archive.bind(em, new Archive.FileReader(archiveWith({_jstr(path)}, {body})));", "        Archive.bind(em, null);",
+             f"        assertTrue(repo.getById({key}).isEmpty());"]
+    elif tc.kind == "archive_hot_first":
+        ten = "TENANT_A" if t.tenancy != "none" else "null"
+        o = [f"        {n} e = build{n}(em);",
+             f'        Archive.bind(em, new Archive.FileReader(archiveWith(Archive.path("{t.db_name}", {ten}, e.{_get(pk.name)}()), "{{non json")));',
+             f"        assertSame(e, new {repo}(em).getById(e.{_get(pk.name)}()).orElseThrow());"]
+    else:
+        o = [f"        Archive.bind(em, new Archive.FileReader(archiveWith({_jstr(path)}, {body})));", "        Tenancy.bind(em, TENANT_B);",
+             f"        assertTrue(new {repo}(em).getById({key}).isEmpty());", "        Tenancy.bind(em, TENANT_A);",
+             f"        assertTrue(new {repo}(em).getById({key}).isPresent());"]
+    return o
 
 
 # ------------------------------------------------------------------------------------------- moduli comuni
@@ -692,6 +754,43 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
                            "        assertEquals(1, original.getSuppressed().length);",
                            "        FakeTx ok = new FakeTx(true, null);", "        UnitOfWork.rollbackQuietly(ok, original);", "        assertTrue(ok.rolledBack);"],
     }
+    bodies.update({
+        "rt_archive_path": ['        assertEquals("ab-C_9", Archive.segment("ab-C_9"));',
+                            '        assertEquals("a%2Fb%20c%25%C3%A8%F0%9F%98%80", Archive.segment("a/b c%è\\uD83D\\uDE00"));',
+                            '        assertEquals("t/_keys/5.json", Archive.path("t", null, 5));',
+                            '        assertEquals("t/_keys/tenant=x%20y/00000000-0000-0000-0000-000000000001.json", Archive.path("t", "x y", new UUID(0, 1)));'],
+        "rt_archive_file": ['        java.nio.file.Path root = java.nio.file.Files.createTempDirectory("kybes-archivio");',
+                            '        java.nio.file.Files.createDirectories(root.resolve("t/_keys"));',
+                            '        java.nio.file.Files.writeString(root.resolve("t/_keys/a.json"), "{}");',
+                            "        Archive.FileReader reader = new Archive.FileReader(root);",
+                            '        assertEquals("{}", new String(reader.fetch("t/_keys/a.json"), java.nio.charset.StandardCharsets.UTF_8));',
+                            '        assertNull(reader.fetch("t/_keys/b.json"));',
+                            '        assertThrows(IllegalArgumentException.class, () -> reader.fetch("../fuori.json"));',
+                            '        assertThrows(IllegalArgumentException.class, () -> reader.fetch("."));',
+                            '        assertNull(Archive.of(em));', '        assertNull(Archive.read(em, "t", null, "a"));',
+                            "        Archive.bind(em, reader);", "        assertSame(reader, Archive.of(em));",
+                            '        assertTrue(Archive.read(em, "t", null, "a").isObject());', '        assertNull(Archive.read(em, "t", null, "b"));',
+                            '        Archive.bind(em, path -> { throw new java.io.IOException("rete"); });',
+                            '        assertThrows(java.io.UncheckedIOException.class, () -> Archive.read(em, "t", null, "a"));',
+                            "        Archive.bind(em, null);", "        assertNull(Archive.of(em));"],
+        "rt_archive_decode": ["        com.fasterxml.jackson.databind.ObjectMapper om = new com.fasterxml.jackson.databind.ObjectMapper();",
+                              '        com.fasterxml.jackson.databind.JsonNode doc = om.readTree("{\\"u\\": \\"00000000-0000-0000-0000-00000000000a\\", '
+                              '\\"s\\": \\"x\\", \\"i\\": 7, \\"l\\": \\"9007199254740993\\", \\"d\\": \\"12.30\\", \\"b\\": true, '
+                              '\\"g\\": \\"2020-01-31\\", \\"t\\": \\"2020-01-31T10:20:30.123000+00:00\\", \\"j\\": {\\"a\\": [1]}, \\"n\\": null}");',
+                              '        assertEquals(new UUID(0, 10), Archive.uuid(doc.get("u")));', '        assertEquals("x", Archive.text(doc.get("s")));',
+                              '        assertEquals(Integer.valueOf(7), Archive.integer(doc.get("i")));',
+                              '        assertEquals(Long.valueOf(9007199254740993L), Archive.bigint(doc.get("l")));',
+                              '        assertEquals(new BigDecimal("12.30"), Archive.decimal(doc.get("d")));',
+                              '        assertEquals(Boolean.TRUE, Archive.bool(doc.get("b")));',
+                              '        assertEquals(LocalDate.parse("2020-01-31"), Archive.date(doc.get("g")));',
+                              '        assertTrue(OffsetDateTime.parse("2020-01-31T10:20:30.123Z").isEqual(Archive.datetime(doc.get("t"))));',
+                              '        assertEquals("{\\"a\\":[1]}", Archive.json(doc.get("j")));',
+                              '        for (com.fasterxml.jackson.databind.JsonNode v : java.util.Arrays.asList(doc.get("n"), null)) {',
+                              "            assertNull(Archive.uuid(v));", "            assertNull(Archive.text(v));", "            assertNull(Archive.integer(v));",
+                              "            assertNull(Archive.bigint(v));", "            assertNull(Archive.decimal(v));", "            assertNull(Archive.bool(v));",
+                              "            assertNull(Archive.date(v));", "            assertNull(Archive.datetime(v));", "            assertNull(Archive.json(v));",
+                              "        }"],
+    })
     o = [header(L, "kit") + f"package {pkg}.generated;", ""] + _imports(pkg, tables, [
         "import java.sql.SQLException;", "import java.util.concurrent.atomic.AtomicInteger;"]) + [
         "", "/** Test di unità generati per i moduli comuni: paginazione (Paging), Unit of Work (UnitOfWork) e API del modello. */",
