@@ -246,7 +246,7 @@ public final class Paging {
                                            List<OrderItem> order, List<Object> after) {
         StringBuilder jpql = new StringBuilder("SELECT e FROM ").append(spec.entity()).append(" e");
         List<String> conds = new ArrayList<>();
-        if (where != null && !where.isBlank()) conds.add("(" + where + ")");
+        if (where != null) conds.add("(" + where + ")");
         Map<String, Object> all = new LinkedHashMap<>(params);
         if (after != null) {
             // (a, b, c) > (x, y, z) espanso colonna per colonna, rispettando la direzione di ognuna
@@ -280,7 +280,7 @@ public final class Paging {
         List<T> rows = query(em, cls, spec, where, params, order, after).setMaxResults(limit + 1).getResultList();
         boolean more = rows.size() > limit;
         List<T> items = more ? new ArrayList<>(rows.subList(0, limit)) : rows;
-        String next = more && !items.isEmpty() ? encodeCursor(order, items.get(items.size() - 1), value) : null;
+        String next = more ? encodeCursor(order, items.get(items.size() - 1), value) : null;
         return new Page<>(items, next, limit);
     }
 
@@ -366,7 +366,7 @@ public final class UnitOfWork {{
     }}
 
     public static boolean isRetryable(Throwable error) {{
-        for (Throwable e = error; e != null; e = e.getCause() == e ? null : e.getCause()) {{
+        for (Throwable e = error; e != null; e = e.getCause()) {{
             if (e instanceof SQLException sql && sql.getSQLState() != null && RETRYABLE_SQLSTATE.contains(sql.getSQLState())) {{
                 return true;
             }}
@@ -400,16 +400,21 @@ public final class UnitOfWork {{
                 tx.commit();
                 return result;
             }} catch (RuntimeException e) {{
-                try {{
-                    if (tx.isActive()) tx.rollback();
-                }} catch (RuntimeException rollbackError) {{
-                    e.addSuppressed(rollbackError);
-                }}
+                rollbackQuietly(tx, e);
                 if (attempt >= maxRetries || !isRetryable(e)) throw e;
                 sleep(backoffMs * (1L << attempt));
             }} finally {{
                 em.close();
             }}
+        }}
+    }}
+
+    /** Annulla la transazione se è ancora attiva; un errore del rollback non nasconde quello originale. */
+    static void rollbackQuietly(EntityTransaction tx, RuntimeException error) {{
+        try {{
+            if (tx.isActive()) tx.rollback();
+        }} catch (RuntimeException rollbackError) {{
+            error.addSuppressed(rollbackError);
         }}
     }}
 

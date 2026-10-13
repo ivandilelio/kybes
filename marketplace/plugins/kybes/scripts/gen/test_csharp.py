@@ -250,7 +250,7 @@ def _query_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
             "lte": f"Smaller({v})" if flipped else v,
             "gt": v if flipped else f"Smaller({v})",
             "lt": v if flipped else f"Greater({v})",
-            "in": f"new[] {{ Different({v}, {ln}) }}" if flipped else f"new[] {{ {v} }}",
+            "in": f"new[] {{ Different({v}, {ln}) }}" if flipped else f"new List<{ct}> {{ {v} }}",
             "prefix": '"zz"' if flipped else f"{v}.ToString()!.Substring(0, 1)",
         }[c.op]
         if i == empty:
@@ -334,6 +334,7 @@ def test_file(ns: str, t: Table, cat: Catalog, tables: Dict[str, Table], default
             o += [f"        var e = await {b}(db);", f"        var original = e.{pk};", "        db.ChangeTracker.Clear();",
                   f"        e.{pk} = {_missing_pk(t)};", f"        await Assert.ThrowsAsync<KeyNotFoundException>(() => new {repo}(db).UpdateAsync(e));",
                   "        using var check = KybesDb.NewContext();", f"        Assert.True(await new {repo}(check).ExistsAsync(original));",
+                  f"        await Assert.ThrowsAsync<ArgumentException>(() => new {repo}(db).UpdateAsync(new {n}()));",
                   f"        Assert.False(await new {repo}(check).ExistsAsync({_missing_pk(t)}));"]
         elif k == "delete":
             o += [f"        var e = await {b}(db);", f"        var repo = new {repo}(db);", f"        Assert.True(await repo.DeleteAsync(e.{pk}));",
@@ -415,6 +416,29 @@ def test_file(ns: str, t: Table, cat: Catalog, tables: Dict[str, Table], default
                 for cn, g in cols:
                     op = "== 0" if g == "on_create" else ">= 0"
                     o.append(f'        Assert.True(Cmp(again.{cn}, before.{cn}) {op}, "{cn}");')
+        elif k == "optional_null":
+            cn = tc.args["column"]
+            o += [f"        var e = await {b}(db, x => x.{cn} = null);", "        using var check = KybesDb.NewContext();",
+                  f"        Assert.Null((await new {repo}(check).GetByIdAsync(e.{pk}))!.{cn});"]
+        elif k == "rel_parent_object":
+            r = next(x for x in t.relations if x.name == tc.args["relation"])
+            tpk = tables[r.target].pk.name
+            o += [f"        var parent = await Build{r.target}(db);",
+                  "        db.ChangeTracker.Clear(); // oggetto non tracciato: il repository lo collega senza reinserirlo",
+                  f"        var child = await {b}(db, x => {{ x.{r.foreign_key} = default; x.{r.name} = parent; }});",
+                  "        using var check = KybesDb.NewContext();",
+                  f"        Assert.Equal(0, Cmp((await new {repo}(check).GetByIdAsync(child.{pk}))!.{r.foreign_key}, parent.{tpk}));",
+                  f"        Assert.Equal(1, await check.Set<{r.target}>().CountAsync(x => x.{tpk} == parent.{tpk}));"]
+        elif k == "page_default":
+            o += [f"        var e = await {b}(db);", f"        var repo = new {repo}(db);",
+                  f"        Assert.Equal({t.pagination.default_limit}, (await repo.ListPageAsync()).Limit);"]
+            for r in t.relations:
+                tt = tables[r.target]
+                if r.kind == "many_to_one":
+                    val = f"e.{r.foreign_key}" if t.col(r.foreign_key).required else f"(await Build{r.target}(db)).{tt.pk.name}"
+                    o.append(f"        Assert.Equal({t.pagination.default_limit}, (await repo.{method_name(L, 'list_by:' + r.foreign_key)}({val})).Limit);")
+                else:
+                    o.append(f"        Assert.Equal({tt.pagination.default_limit}, (await repo.{method_name(L, 'list_rel:' + r.name)}(e.{pk})).Limit);")
         elif k == "page_sort_each":
             o += [f"        for (var i = 0; i < 3; i++) await {b}(db);", f"        var repo = new {repo}(db);", "        var total = await repo.CountAsync();"]
             for x in tc.args["sorts"]:

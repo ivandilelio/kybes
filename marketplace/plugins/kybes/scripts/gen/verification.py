@@ -132,10 +132,16 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B") -> Catalog:
         for c in t.columns:
             if c.primary_key or c.generated:
                 continue
-            if c.required and c.default is None:
-                rid = _req(reqs, t, f"{c.name}-REQUIRED", f"{n}.{c.name} è obbligatorio.", f"{src}: columns.{c.name}.required", asil)
+            if c.required:
+                text = f"{n}.{c.name} è obbligatorio" + (f" (se assente vale {c.default!r}; un valore nullo esplicito è rifiutato)." if c.default is not None else ".")
+                rid = _req(reqs, t, f"{c.name}-REQUIRED", text, f"{src}: columns.{c.name}.required", asil)
                 add(TestCase(f"TC-{n}-{c.name}-NULL", n, [rid], "eq", "required_null",
                              f"inserimento con {c.name} assente (classe non valida)", f"errore di validazione su {c.name}: obbligatorio",
+                             {"column": c.name}))
+            else:
+                rid = _req(reqs, t, f"{c.name}-OPTIONAL", f"{n}.{c.name} è facoltativo.", f"{src}: columns.{c.name}.required", asil)
+                add(TestCase(f"TC-{n}-{c.name}-OPTIONAL", n, [rid], "eq", "optional_null",
+                             f"inserimento con {c.name} assente (classe valida)", f"inserimento riuscito, {c.name} resta vuoto",
                              {"column": c.name}))
             if c.type == "string":
                 rid = _req(reqs, t, f"{c.name}-MAXLEN", f"{n}.{c.name} accetta al massimo {c.length} caratteri.",
@@ -166,6 +172,9 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B") -> Catalog:
                              f"lettura del {r.target} collegato, poi da una chiave inesistente",
                              f"restituisce il {r.target} con chiave uguale a {r.foreign_key}; nessun record per la chiave inesistente",
                              {"relation": r.name}))
+                add(TestCase(f"TC-{n}-{r.name}-PARENT-OBJECT", n, [rid], "eq", "rel_parent_object",
+                             f"inserimento collegando il {r.target} come oggetto invece che con la chiave",
+                             f"{r.foreign_key} è impostata dal modello e resta coerente con l'oggetto collegato", {"relation": r.name}))
                 add(TestCase(f"TC-{n}-{r.foreign_key}-LISTBY", n, [rid], "req", "list_by",
                              f"pagina dei {n} con {r.foreign_key} dato", "contiene il record e solo record con quel valore",
                              {"relation": r.name}))
@@ -187,6 +196,8 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B") -> Catalog:
                          f"scorrimento completo con limite 1, ordinato per {s1} crescente e {s2} decrescente",
                          "ogni record una sola volta anche con pareggi su più colonne, ultimo cursore nullo",
                          {"sort": [s1, "-" + s2]}))
+        add(TestCase(f"TC-{n}-PAGE-DEFAULT", n, [r_page], "bv", "page_default", "elenchi paginati richiesti senza pagina",
+                     "si usa il limite predefinito della tabella elencata"))
         add(TestCase(f"TC-{n}-PAGE-LIMIT-LOW", n, [r_page], "bv", "page_limit", "limite 0 (sotto il minimo)",
                      "errore di validazione su limit", {"limit": 0}))
         add(TestCase(f"TC-{n}-PAGE-LIMIT-HIGH", n, [r_page], "bv", "page_limit", f"limite {t.pagination.max_limit + 1} (sopra il massimo)",

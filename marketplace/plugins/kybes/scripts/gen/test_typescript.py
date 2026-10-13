@@ -337,6 +337,27 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
                 for cn, g in cols:
                     op = "=== 0" if g == "on_create" else ">= 0"
                     o.append(f'    assert.ok(cmp(after?.{_a(cn)}, before?.{_a(cn)}, "datetime") {op}, "{cn}");')
+        elif k == "optional_null":
+            a = _a(tc.args["column"])
+            o += [f"    const e = await {b}(em, {{ {a}: null }});",
+                  f"    assert.equal((await new {repo}(em).getById(e.{pk}))?.{a} ?? null, null);"]
+        elif k == "rel_parent_object":
+            r = next(x for x in t.relations if x.name == tc.args["relation"])
+            fk, rn, tpk = _a(r.foreign_key), _a(r.name), _a(tables[r.target].pk.name)
+            o += [f"    const parent = await build{r.target}(em);", f"    const child = await {b}(em, {{ {fk}: undefined, {rn}: parent }});",
+                  f"    assert.equal(child.{fk}, parent.{tpk});",
+                  f"    assert.equal((await new {repo}(em).getById(child.{pk}))?.{fk}, parent.{tpk});"]
+        elif k == "page_default":
+            o += [f"    const e = await {b}(em);", f"    const repo = new {repo}(em);",
+                  f"    assert.equal((await repo.listPage()).limit, {t.pagination.default_limit});"]
+            for r in t.relations:
+                tt = tables[r.target]
+                if r.kind == "many_to_one":
+                    val = f"e.{_a(r.foreign_key)}" if t.col(r.foreign_key).required else f"(await build{r.target}(em)).{_a(tt.pk.name)}"
+                    o.append(f"    assert.equal((await repo.{method_name(L, 'list_by:' + r.foreign_key)}({val} as never)).limit, {t.pagination.default_limit});")
+                else:
+                    o.append(f"    assert.equal((await repo.{method_name(L, 'list_rel:' + r.name)}(e.{pk})).limit, {tt.pagination.default_limit});")
+            o.append("    void e;")
         elif k == "page_sort_each":
             sorts = ", ".join(f'["{_sort_json(x)}", "{_a(x.lstrip("-"))}", "{t.col(x.lstrip("-")).type}"]' for x in tc.args["sorts"])
             o += [f"    for (let i = 0; i < 3; i++) await {b}(em);", f"    const repo = new {repo}(em);", "    const total = await repo.count();",

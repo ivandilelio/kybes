@@ -1,1 +1,1 @@
-package jakarta.persistence; public interface EntityTransaction { void begin(); void commit(); void rollback(); boolean isActive(); }
+package jakarta.persistence; public interface EntityTransaction { void begin(); void commit(); void rollback(); boolean isActive(); default void setRollbackOnly() { } default boolean getRollbackOnly() { return false; } }

@@ -127,6 +127,8 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, dialect: st
         mm = m[c.name]
         if c.required and not (c.primary_key and c.auto) and not c.generated and c.default is None:
             w(f'  if (e.{mm} === undefined || e.{mm} === null) errors["{c.name}"] = "obbligatorio";')
+        elif c.required and not c.generated and c.default is not None:
+            w(f'  if (e.{mm} === null) errors["{c.name}"] = "obbligatorio"; // assente: vale il default')
         if c.type == "string":
             w(f'  if (typeof e.{mm} === "string" && e.{mm}.length > {c.length}) errors["{c.name}"] = "lunghezza massima {c.length}";')
     w(f'  if (Object.keys(errors).length > 0) throw new ModelValidationError("{t.name}", errors);')
@@ -172,6 +174,11 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, dialect: st
         elif k == "create":
             w(f"  async {name}(data: DeepPartial<{t.name}>): Promise<{t.name}> {{")
             w("    const entity = this.repo.create(data);")
+            for r in t.relations:
+                if r.kind == "many_to_one":
+                    rn, fk = member(L, r.name), m[r.foreign_key]
+                    tpk = member(L, tables[r.target].pk.name)
+                    w(f"    if (entity.{rn}) entity.{fk} = entity.{rn}.{tpk}; // collegato come oggetto: la chiave segue l'oggetto")
             w(f"    validate{t.name}(entity);")
             w("    return this.repo.save(entity);")
         elif k == "update":

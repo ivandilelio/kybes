@@ -325,7 +325,10 @@ def _query_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
         lines.append(f"        {jt} {pn} = {expr};")
     args = ", ".join(pn for _, pn, _ in params)
     meth = method_name(L, {"page": "query_page", "list": "query_list", "one": "query_one"}[q.returns] + ":" + q.name)
-    if q.returns == "page":
+    if q.returns == "page" and flip is None and empty is None:
+        # senza pagina: limite predefinito, sufficiente per i due record del caso
+        lines.append(f"        List<{t.name}> rows = new {repo}(em).{meth}({args}).items();")
+    elif q.returns == "page":
         lines.append(f"        List<{t.name}> rows = new {repo}(em).{meth}({args + ', ' if args else ''}Paging.PageRequest.of({t.pagination.max_limit})).items();")
     elif q.returns == "list":
         lines.append(f"        List<{t.name}> rows = new {repo}(em).{meth}({args});")
@@ -464,6 +467,31 @@ def test_file(pkg: str, t: Table, cat: Catalog, tables: Dict[str, Table], defaul
                 for cn, g in cols:
                     op = "== 0" if g == "on_create" else ">= 0"
                     o.append(f'        assertTrue(cmp(after.{_get(cn)}(), before{cols.index((cn, g))}) {op}, "{cn}");')
+        elif k == "optional_null":
+            cn = tc.args["column"]
+            o += [f"        {n} e = {b}(em, x -> x.{_set(cn)}(null));", "        em.flush();", "        em.clear();",
+                  f"        assertNull(new {repo}(em).getById(e.{pk}()).orElseThrow().{_get(cn)}());"]
+        elif k == "rel_parent_object":
+            r = next(x for x in t.relations if x.name == tc.args["relation"])
+            tpk = _get(tables[r.target].pk.name)
+            gfk, sfk, grel, srel = _get(r.foreign_key), _set(r.foreign_key), "get" + _cap(member(L, r.name)), "set" + _cap(member(L, r.name))
+            o += [f"        {r.target} parent = build{r.target}(em);",
+                  f"        {n} child = {b}(em, x -> {{ x.{sfk}(null); x.{srel}(parent); }});",
+                  f"        assertEquals(parent.{tpk}(), child.{gfk}());",
+                  "        // chiave e oggetto restano coerenti: la stessa chiave mantiene l'oggetto, una diversa lo scollega",
+                  f"        child.{sfk}(parent.{tpk}());", f"        assertSame(parent, child.{grel}());",
+                  f"        child.{sfk}(different(parent.{tpk}(), 0));", f"        assertNull(child.{grel}());",
+                  f"        child.{srel}(null);", f"        assertNull(child.{gfk}());", "        em.clear();"]
+        elif k == "page_default":
+            o += [f"        {n} e = {b}(em);", f"        {repo} repo = new {repo}(em);",
+                  f"        assertEquals({t.pagination.default_limit}, repo.listPage().limit());"]
+            for r in t.relations:
+                tt = tables[r.target]
+                if r.kind == "many_to_one":
+                    val = f"e.{_get(r.foreign_key)}()" if t.col(r.foreign_key).required else f"build{r.target}(em).{_get(tt.pk.name)}()"
+                    o.append(f"        assertEquals({t.pagination.default_limit}, repo.{method_name(L, 'list_by:' + r.foreign_key)}({val}).limit());")
+                else:
+                    o.append(f"        assertEquals({tt.pagination.default_limit}, repo.{method_name(L, 'list_rel:' + r.name)}(e.{pk}()).limit());")
         elif k == "page_sort_each":
             o += [f"        for (int i = 0; i < 3; i++) {b}(em);", f"        {repo} repo = new {repo}(em);", "        long total = repo.count();"]
             for x in tc.args["sorts"]:
@@ -515,7 +543,7 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
         "rt_sort_key": ['        assertEquals(List.of(new Paging.OrderItem("id", "id", Paging.SortType.UUID, true)), Paging.resolveOrder(SPEC, "-id"));',
                         '        assertEquals(SPEC.defaultOrder(), Paging.resolveOrder(SPEC, null));',
                         '        assertEquals(SPEC.defaultOrder(), Paging.resolveOrder(SPEC, " "));',
-                        '        assertEquals(2, Paging.resolveOrder(SPEC, "numero,,").size());'],
+                        '        assertEquals(2, Paging.resolveOrder(SPEC, ",numero").size());'],
         "rt_sort_plus": ['        List<Paging.OrderItem> order = Paging.resolveOrder(SPEC, "+numero");', "        assertFalse(order.get(0).desc());",
                          '        assertEquals("id", order.get(order.size() - 1).field());'],
         "rt_cursor_roundtrip": ["        Map<String, Object> row = new HashMap<>(ROW);",
@@ -529,13 +557,14 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
                                 '        assertEquals("\\b\\f/A", Paging.decodeCursor(SPEC, Paging.resolveOrder(SPEC, "numero"), spaced).get(0));',
                                 '        assertThrows(IllegalStateException.class, () -> Paging.encodeCursor(ALL, new HashMap<String, Object>(), Map::get));'],
         "rt_cursor_types": ["        List<Object> good = List.of(\"00000000-0000-0000-0000-00000000000a\", \"x\", 1L, \"1\", \"1\", \"2026-01-01\", \"2026-01-01T00:00:00Z\");",
-                            "        Object[][] bad = {{0, 1L}, {1, 7L}, {2, \"uno\"}, {2, 3000000000L}, {6, \"ieri\"}, {6, 3L}};",
+                            "        Object[][] bad = {{0, 1L}, {1, 7L}, {2, \"uno\"}, {2, 3000000000L}, {2, -3000000000L}, {6, \"ieri\"}, {6, 3L}};",
                             "        for (Object[] b : bad) {", "            List<Object> values = new ArrayList<>(good);",
                             "            values.set((Integer) b[0], b[1]);",
                             '            assertInvalid("cursor", () -> Paging.decodeCursor(SPEC, ALL, rawCursor(ALL, values)));', "        }",
-                            '        for (String json : List.of("non json", "{\\"s\\": \\"id\\", \\"v\\": [\\"aperta", "{\\"s\\": \\"id\\", \\"v\\": [x]}", "{\\"s\\": \\"id\\"}", "")) {',
+                            '        for (String json : List.of("non json", "{\\"s\\": \\"id\\", \\"v\\": [\\"aperta", "{\\"s\\": \\"id\\", \\"v\\": [x]}", "{\\"s\\": \\"id\\"}", "", "{", "{\\"s\\": \\"id\\", \\"v\\": [-", "{\\"s\\": \\"id\\", \\"v\\": [5")) {',
                             '            assertInvalid("cursor", () -> Paging.decodeCursor(SPEC, SPEC.defaultOrder(), raw(json)));', "        }",
-                            '        assertInvalid("cursor", () -> Paging.decodeCursor(SPEC, SPEC.defaultOrder(), "%%%"));'],
+                            '        assertInvalid("cursor", () -> Paging.decodeCursor(SPEC, SPEC.defaultOrder(), "%%%"));',
+                            '        assertInvalid("cursor", () -> Paging.decodeCursor(SPEC, SPEC.defaultOrder(), rawCursor(SPEC.defaultOrder(), List.of("a", "b"))));'],
         "rt_cursor_signature": ['        String cursor = rawCursor(Paging.resolveOrder(SPEC, "-numero"), List.of("x", "00000000-0000-0000-0000-00000000000a"));',
                                 '        assertInvalid("cursor", () -> Paging.decodeCursor(SPEC, Paging.resolveOrder(SPEC, "numero"), cursor));'],
         "rt_like": ['        assertEquals("a\\\\%\\\\_\\\\\\\\%", Paging.likePrefix("a%_\\\\"));'],
@@ -545,8 +574,13 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
                           "        assertTrue(empty.items().isEmpty());", "        assertNull(empty.nextCursor());",
                           f"        assertEquals({n}RepositoryBase.PAGING.defaultLimit(), empty.limit());",
                           f"        assertEquals(7, Paging.emptyPage({n}RepositoryBase.PAGING, Paging.PageRequest.of(7)).limit());",
+                          f"        assertEquals({n}RepositoryBase.PAGING.defaultLimit(), Paging.emptyPage({n}RepositoryBase.PAGING, Paging.PageRequest.first()).limit());",
+                          f'        assertTrue(Paging.runPage(em, {n}.class, {n}RepositoryBase.PAGING, null, Map.of(), new Paging.PageRequest(null, null, " "), '
+                          f'{n}RepositoryBase.PAGING.defaultOrder(), {n}::kybesValue).items().isEmpty());',
                           '        assertEquals("c", Paging.PageRequest.of(3).next("c").cursor());'],
         "rt_empty_page": [f"        Paging.Page<{n}> page = new {repo}(em).listPage(Paging.PageRequest.of(5));", "        assertTrue(page.items().isEmpty());",
+                          f"        assertTrue(Paging.runPage(em, {n}.class, {n}RepositoryBase.PAGING, null, Map.of(), null, null, {n}::kybesValue).items().isEmpty());",
+                          f"        assertTrue(new {repo}(em).listPage(new Paging.PageRequest(null, \"\", null)).items().isEmpty());",
                           "        assertFalse(page.hasMore());", f"        assertTrue(new {repo}(em).listPage().items().isEmpty());"],
         "rt_isolation": ["        assertEquals(UnitOfWork.Isolation.READ_COMMITTED, UnitOfWork.isolationFor(List.of()));",
                          '        assertEquals(UnitOfWork.Isolation.READ_COMMITTED, UnitOfWork.isolationFor(List.of("kybesSconosciuta")));',
@@ -554,7 +588,7 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
                          "        assertEquals(best, UnitOfWork.isolationFor(UnitOfWork.ISOLATION.keySet()));"],
         "rt_isolation_applied": ['        String sql = "SELECT current_setting(\'transaction_isolation\')";',
                                  "        for (UnitOfWork.Isolation level : UnitOfWork.Isolation.values()) {",
-                                 "            Object got = UnitOfWork.run(emf(), w -> w.createNativeQuery(sql).getSingleResult(), List.of(), level, 0, 0);",
+                                 "            Object got = UnitOfWork.run(emf(), w -> w.createNativeQuery(sql).getSingleResult(), null, level, 0, 0);",
                                  "            assertEquals(level.sql().toLowerCase(Locale.ROOT), got);", "        }"],
         "rt_commit": [f'        {first.pk and J_TYPE[first.pk.type]} id = UnitOfWork.run(emf(), w -> build{n}(w).{pk}(), List.of("{n}"));',
                       f"        assertTrue(new {repo}(em).exists(id));"],
@@ -568,11 +602,23 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
                      f"        assertEquals(1, new {repo}(em).count());"],
         "rt_retry_limit": ["        AtomicInteger calls = new AtomicInteger();", "        assertThrows(IllegalStateException.class, () -> UnitOfWork.run(emf(), w -> {",
                            "            calls.incrementAndGet();", '            throw new IllegalStateException(new SQLException("stallo", "40P01"));',
-                           "        }, List.of(), null, 2, 0));", "        assertEquals(3, calls.get());"],
+                           "        }, List.of(), null, 2, 0));", "        assertEquals(3, calls.get());",
+                           "        // attesa tra i tentativi interrotta: errore esplicito, il flag di interruzione resta impostato",
+                           "        Thread.currentThread().interrupt();",
+                           "        IllegalStateException stopped = assertThrows(IllegalStateException.class, () -> UnitOfWork.run(emf(), w -> {",
+                           '            throw new IllegalStateException(new SQLException("conflitto", "40001"));',
+                           "        }, List.of(), null, 1, 10));",
+                           "        assertTrue(Thread.interrupted());", '        assertEquals("transazione interrotta", stopped.getMessage());'],
         "rt_retry_other": ["        AtomicInteger calls = new AtomicInteger();", "        assertThrows(IllegalStateException.class, () -> UnitOfWork.run(emf(), w -> {",
                            "            calls.incrementAndGet();", '            throw new IllegalStateException(new SQLException("duplicato", "23505"));',
                            "        }, List.of()));", "        assertEquals(1, calls.get());",
-                           '        assertFalse(UnitOfWork.isRetryable(new IllegalStateException(new SQLException("senza codice"))));'],
+                           '        assertFalse(UnitOfWork.isRetryable(new IllegalStateException(new SQLException("senza codice"))));',
+                           "        // rollback: solo se la transazione è attiva; un suo errore resta allegato a quello originale",
+                           "        RuntimeException original = new IllegalStateException(\"originale\");",
+                           "        UnitOfWork.rollbackQuietly(new FakeTx(false, null), original);",
+                           "        UnitOfWork.rollbackQuietly(new FakeTx(true, new IllegalStateException(\"rollback fallito\")), original);",
+                           "        assertEquals(1, original.getSuppressed().length);",
+                           "        FakeTx ok = new FakeTx(true, null);", "        UnitOfWork.rollbackQuietly(ok, original);", "        assertTrue(ok.rolledBack);"],
     }
     o = [header(L, "kit") + f"package {pkg}.generated;", ""] + _imports(pkg, tables, [
         "import java.sql.SQLException;", "import java.util.concurrent.atomic.AtomicInteger;"]) + [
@@ -604,7 +650,16 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
         "        for (int i = 0; i < values.size(); i++) {",
         "            Object v = values.get(i);",
         "            sb.append(i > 0 ? \", \" : \"\").append(v instanceof String ? \"\\\"\" + v + \"\\\"\" : String.valueOf(v));", "        }",
-        "        return raw(sb.append(\"]}\").toString());", "    }"]
+        "        return raw(sb.append(\"]}\").toString());", "    }", "",
+        "    /** Transazione finta per i casi di errore del rollback. */",
+        "    static final class FakeTx implements jakarta.persistence.EntityTransaction {",
+        "        final boolean active;", "        final RuntimeException failure;", "        boolean rolledBack;", "",
+        "        FakeTx(boolean active, RuntimeException failure) {", "            this.active = active;", "            this.failure = failure;", "        }", "",
+        "        public void begin() { }", "        public void commit() { }", "",
+        "        public void rollback() {", "            if (failure != null) throw failure;", "            rolledBack = true;", "        }", "",
+        "        public void setRollbackOnly() { }", "        public boolean getRollbackOnly() { return false; }",
+        "        public void setTimeout(Integer timeout) { }", "        public Integer getTimeout() { return null; }",
+        "        public boolean isActive() { return active; }", "    }"]
     for tc in cat.for_table("_runtime"):
         o += ["", "    @Test", f"    @DisplayName({_jstr(tc.id + ' · ' + ', '.join(tc.reqs) + ' · ' + METHODS[tc.method] + ': ' + tc.title)})",
               f"    void {tc.slug}() throws Exception {{"] + bodies[tc.kind] + ["    }"]

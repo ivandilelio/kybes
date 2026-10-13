@@ -387,6 +387,26 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
                 o += [f"    {repo}(session).update(e.{pk}, {{'{_attr(upd)}': {_py_new(t, upd)}}})", "    session.flush()"]
                 for cn, g in cols:
                     o.append(f"    assert e.{_attr(cn)} {'==' if g == 'on_create' else '>='} before['{cn}']")
+        elif k == "optional_null":
+            a = _attr(tc.args["column"])
+            o += [f"    e = build_{snake(n)}(session, {a}=None)", "    session.expire_all()",
+                  f"    assert {repo}(session).get_by_id(e.{pk}).{a} is None"]
+        elif k == "rel_parent_object":
+            r = next(x for x in t.relations if x.name == tc.args["relation"])
+            fk, rn, tpk = _attr(r.foreign_key), _attr(r.name), _attr(tables[r.target].pk.name)
+            o += [f"    parent = build_{snake(r.target)}(session)", f"    child = build_{snake(n)}(session, {fk}=None, {rn}=parent)",
+                  f"    assert child.{fk} == parent.{tpk}", "    session.expire_all()",
+                  f"    assert {repo}(session).get_by_id(child.{pk}).{fk} == parent.{tpk}"]
+        elif k == "page_default":
+            o += [f"    e = build_{snake(n)}(session)", f"    repo = {repo}(session)",
+                  f"    assert repo.list_page().limit == {t.pagination.default_limit}"]
+            for r in t.relations:
+                tt = tables[r.target]
+                if r.kind == "many_to_one":
+                    val = f"e.{_attr(r.foreign_key)}" if t.col(r.foreign_key).required else f"build_{snake(r.target)}(session).{_attr(tt.pk.name)}"
+                    o.append(f"    assert repo.{method_name(L, 'list_by:' + r.foreign_key)}({val}).limit == {t.pagination.default_limit}")
+                else:
+                    o.append(f"    assert repo.{method_name(L, 'list_rel:' + r.name)}(e.{pk}).limit == {tt.pagination.default_limit}")
         elif k == "page_sort_each":
             sorts = [(("-" if x.startswith("-") else "") + member("typescript", x.lstrip("-")), _attr(x.lstrip("-"))) for x in tc.args["sorts"]]
             o += [f"    for _ in range(3):", f"        build_{snake(n)}(session)", f"    repo = {repo}(session)", "    total = repo.count()",

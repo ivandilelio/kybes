@@ -110,6 +110,10 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
         if c.required and not (c.primary_key and c.auto) and not c.generated and c.default is None:
             w(f"    if e.{mm} is None:")
             w(f'        errors["{c.name}"] = "obbligatorio"')
+        elif c.required and not c.generated and c.default is not None:
+            # assente: vale il default all'inserimento; None esplicito: rifiutato
+            w(f'    if "{mm}" in vars(e) and e.{mm} is None:')
+            w(f'        errors["{c.name}"] = "obbligatorio"')
         if c.type == "string":
             w(f"    if e.{mm} is not None and len(e.{mm}) > {c.length}:")
             w(f'        errors["{c.name}"] = "lunghezza massima {c.length}"')
@@ -156,6 +160,12 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
             w(f"        return self.session.scalar(select({t.name}.{pkm}).where({t.name}.{pkm} == id)) is not None\n")
         elif k == "create":
             w(f"    def {name}(self, entity: {t.name}) -> {t.name}:")
+            for r in t.relations:
+                if r.kind == "many_to_one":
+                    rn, fk = member(L, r.name), m[r.foreign_key]
+                    tpk = member(L, tables[r.target].pk.name)
+                    w(f"        if entity.{rn} is not None:  # collegato come oggetto: la chiave segue l'oggetto")
+                    w(f"            entity.{fk} = entity.{rn}.{tpk}")
             w(f"        validate_{snake(t.name)}(entity)")
             w("        self.session.add(entity)")
             w("        self.session.flush()")

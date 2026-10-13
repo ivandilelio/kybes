@@ -14,6 +14,7 @@ public final class Assertions {
     public static void assertFalse(boolean c) { }
     public static void assertFalse(boolean c, String m) { }
     public static void assertNull(Object o) { }
+    public static void assertSame(Object a, Object b) { }
     public static void assertNotNull(Object o) { }
     public static void assertNotNull(Object o, String m) { }
     public static <T> T assertInstanceOf(Class<T> c, Object o) { return null; }

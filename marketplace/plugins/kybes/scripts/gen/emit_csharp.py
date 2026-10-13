@@ -99,7 +99,7 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, ns: str, di
     w("    {")
     w("        var errors = new Dictionary<string, string>();")
     for c in t.columns:
-        if c.required and c.type in REF_TYPES and c.default is None:
+        if c.required and c.type in REF_TYPES and not c.generated:
             w(f'        if (e.{c.name} is null) errors["{c.name}"] = "obbligatorio";')
         if c.type == "string":
             w(f'        if (e.{c.name} is not null && e.{c.name}.Length > {c.length}) errors["{c.name}"] = "lunghezza massima {c.length}";')
