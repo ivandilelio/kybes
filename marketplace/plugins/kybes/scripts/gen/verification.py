@@ -245,7 +245,7 @@ def build_catalog(tables: Dict[str, Table], default_asil: str = "B", tenant_id_t
                                  "il record non è nel risultato: la condizione determina da sola l'esito",
                                  {"query": q.name, "flip": i}))
     top = max((table_asil(t, default_asil) for t in tables.values()), key=ASIL.index, default=default_asil)
-    _runtime(reqs, tests, top)
+    _runtime(reqs, tests, top, any(not t.mongo for t in tables.values()))
     if any(t.mongo for t in tables.values()):
         _mongo_runtime(reqs, tests, top)
     if any((t.archive or t.retention) and not t.mongo for t in tables.values()):
@@ -443,8 +443,16 @@ def _tenancy_cases(t: Table, tables: Dict[str, Table], reqs: List[Requirement], 
                          {"relation": r.name}))
 
 
-def _runtime(reqs: List[Requirement], tests: List[TestCase], asil: str) -> None:
-    """Requisiti dei moduli comuni (paginazione e Unit of Work), con l'ASIL più alto del progetto."""
+# casi dei moduli comuni SQL: con sole collection MongoDB quei moduli non vengono generati
+SQL_RUNTIME = {"rt_like", "rt_isolation", "rt_isolation_applied", "rt_commit", "rt_rollback",
+               "rt_retry", "rt_retry_limit", "rt_retry_other", "rt_tenant_uow", "rt_archive_path", "rt_archive_file", "rt_archive_decode"}
+
+
+def _runtime(reqs: List[Requirement], tests: List[TestCase], asil: str, sql: bool = True) -> None:
+    """Requisiti dei moduli comuni (paginazione e Unit of Work), con l'ASIL più alto del progetto.
+    Senza tabelle SQL restano paginazione (contratto e cursore), tenant e API: il resto è solo SQL."""
+    first = len(reqs)
+
     def req(key, text):
         rid = f"REQ-KYBES-{key}"
         reqs.append(Requirement(rid, RUNTIME, text, "modulo comune generato", asil))
@@ -494,7 +502,11 @@ def _runtime(reqs: List[Requirement], tests: List[TestCase], asil: str) -> None:
         ("TC-KYBES-RETRY-LIMIT", retry, "bv", "rt_retry_limit", "conflitti oltre il numero massimo di tentativi", "errore propagato dopo maxRetries + 1 tentativi"),
         ("TC-KYBES-RETRY-NONRETRYABLE", retry, "eg", "rt_retry_other", "errore non ritentabile", "un solo tentativo"),
     ]:
-        tests.append(TestCase(tid, RUNTIME, [r], m, kind, title, exp))
+        if sql or kind not in SQL_RUNTIME:
+            tests.append(TestCase(tid, RUNTIME, [r], m, kind, title, exp))
+    if not sql:  # requisiti senza casi: solo SQL
+        used = {r for tc in tests for r in tc.reqs}
+        reqs[first:] = [r for r in reqs[first:] if r.id in used]
 
 
 # ------------------------------------------------------------------ documenti di verifica

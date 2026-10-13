@@ -18,6 +18,7 @@ Regole operative:
    - query non dichiarabile (join, aggregazioni) → metodo custom nel file `model/<Tabella>` della tabella principale, con un nome che dica cosa fa, e indice dichiarato in `indexes`;
    - liste sempre paginate con `PageRequest`/`Page`; transazioni sempre con la Unit of Work generata, aperta nel service;
    - dati di una Organization: `tenancy: column` nello schema (o `schema`/`database` se richiesto); il tenant si lega alla sessione nel middleware dal token SSO e si passa alla Unit of Work; mai filtri per tenant scritti a mano, mai il tenant preso dal payload;
+   - collection MongoDB: `storage: mongo` nello schema, sessione `mongo_session`/`mongoSession`/`MongoSession`, transazione MongoDB per scritture su più documenti; mai il driver usato fuori dal model;
    - dati che invecchiano: `archive` (Parquet su S3/Blob, con `read_through` se servono letture per chiave) e/o `retention` nello schema; mai job di spostamento o cancellazione per età scritti a mano;
    - non scrivere mai nei file `generated/` (compreso `jobs/generated/`), in `schemas/generated/json/` o in `MODEL_INDEX.md`.
    Prima di scrivere un blocco di logica, cerca se esiste già: se sì, riusalo o estrailo invece di copiarlo.

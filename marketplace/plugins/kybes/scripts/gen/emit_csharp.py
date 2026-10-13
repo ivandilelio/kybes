@@ -8,6 +8,7 @@ import runtime_csharp
 import runtime_mongo
 import runtime_tenant
 from naming import GEN_DIR, custom_file, header, member, method_name, repo_class
+from sqlonly import has_sql
 from schema import Table, index_specs, methods_of, tenant_column
 
 L = "csharp"
@@ -402,10 +403,13 @@ def custom_stub(t: Table, ns: str) -> str:
 
 def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tuple[Dict[str, str], Dict[str, str]]:
     ns, dialect = opts["namespace"], opts.get("dialect", "postgres")
-    gen = {f"{GEN_DIR}/AppDbContext.cs": _context_file({n: t for n, t in tables.items() if not t.mongo}, ns), f"{GEN_DIR}/ModelValidationException.cs": _common_file(ns),
-           f"{GEN_DIR}/Paging.cs": runtime_csharp.paging_file(ns), f"{GEN_DIR}/UnitOfWork.cs": runtime_csharp.uow_file(ns, tables),
-           f"{GEN_DIR}/Tenancy.cs": runtime_tenant.csharp_file(ns, opts.get("tenant_id_type", "uuid")),
-           f"{GEN_DIR}/Archive.cs": runtime_archive.csharp_file(ns)}
+    sql = has_sql(tables)
+    gen = {f"{GEN_DIR}/ModelValidationException.cs": _common_file(ns), f"{GEN_DIR}/Paging.cs": runtime_csharp.paging_file(ns, sql),
+           f"{GEN_DIR}/Tenancy.cs": runtime_tenant.csharp_file(ns, opts.get("tenant_id_type", "uuid"), sql)}
+    if sql:  # con sole collection MongoDB: niente DbContext, Unit of Work SQL né archivio (che lavora sulle tabelle SQL)
+        gen[f"{GEN_DIR}/AppDbContext.cs"] = _context_file({n: t for n, t in tables.items() if not t.mongo}, ns)
+        gen[f"{GEN_DIR}/UnitOfWork.cs"] = runtime_csharp.uow_file(ns, tables)
+        gen[f"{GEN_DIR}/Archive.cs"] = runtime_archive.csharp_file(ns)
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.cs"] = (_mongo_table_file(t, tables, schema_rel[n], ns) if t.mongo
                                     else _table_file(t, tables, schema_rel[n], ns, dialect))

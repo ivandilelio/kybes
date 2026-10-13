@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Dict
 
 from naming import header
+from sqlonly import strip_sql
 from schema import Table
 
 PAGING = '''"""Paginazione a cursore (keyset), uguale per UI, API e DB-Model.
@@ -22,8 +23,10 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Generic, List, Optional, Sequence, Tuple, TypeVar
 
+# kybes:sql-begin
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
+# kybes:sql-end
 
 from ._base import ModelValidationError
 
@@ -64,9 +67,11 @@ class PagingSpec:
     max_limit: int = 100
 
 
+# kybes:sql-begin
 def like_prefix(value: str) -> str:
     """Valore per LIKE 'prefisso%' con i caratteri speciali protetti."""
     return value.replace("\\\\", "\\\\\\\\").replace("%", "\\\\%").replace("_", "\\\\_") + "%"
+# kybes:sql-end
 
 
 def _invalid(spec: PagingSpec, field_name: str, rule: str) -> ModelValidationError:
@@ -144,6 +149,7 @@ def decode_cursor(spec: PagingSpec, order: Sequence[OrderItem], cursor: str) -> 
         raise _invalid(spec, "cursor", "non valido") from None
 
 
+# kybes:sql-begin
 def order_rows(stmt: Any, spec: PagingSpec, order: Sequence[OrderItem]) -> Any:
     cols = [getattr(spec.entity, a) for a, _, _, _ in order]
     return stmt.order_by(*[c.desc() if d else c.asc() for c, (_, _, _, d) in zip(cols, order)])
@@ -158,6 +164,7 @@ def _after(spec: PagingSpec, order: Sequence[OrderItem], values: Sequence[Any]) 
         step = col < values[i] if desc else col > values[i]
         branches.append(and_(*prefix, step) if prefix else step)
     return or_(*branches)
+# kybes:sql-end
 
 
 def prepare_page(spec: PagingSpec, page: PageRequest, fixed_order: Optional[List[OrderItem]] = None) -> Tuple[List[OrderItem], int]:
@@ -171,6 +178,7 @@ def prepare_page(spec: PagingSpec, page: PageRequest, fixed_order: Optional[List
     return order, limit
 
 
+# kybes:sql-begin
 def run_page(session: Session, stmt: Any, spec: PagingSpec, page: PageRequest,
              fixed_order: Optional[List[OrderItem]] = None) -> Page[Any]:
     order, limit = prepare_page(spec, page, fixed_order)
@@ -180,11 +188,12 @@ def run_page(session: Session, stmt: Any, spec: PagingSpec, page: PageRequest,
     more = len(rows) > limit
     rows = rows[:limit]
     return Page(items=rows, next_cursor=encode_cursor(order, rows[-1]) if more and rows else None, limit=limit)
+# kybes:sql-end
 '''
 
 
-def paging_file() -> str:
-    return header("python", "kit") + "# ruff: noqa\n" + PAGING
+def paging_file(sql: bool = True) -> str:
+    return header("python", "kit") + "# ruff: noqa\n" + strip_sql(PAGING, sql).rstrip("\n") + "\n"
 
 
 def uow_file(tables: Dict[str, Table]) -> str:

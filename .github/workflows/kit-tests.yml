@@ -86,6 +86,8 @@ jobs:
           "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --no-plugin --model-langs java --ci none
           cp "$GITHUB_WORKSPACE"/tests/fixtures/mongo/*.yaml schemas/db/ && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
           python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" java-mongo --reports libs/db-models/java/target/surefire-reports -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=java
+          rm schemas/db/Reparti.yaml && rm -f libs/db-models/java/src/main/java/app/model/RepartiRepository.java && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
+          python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" java-mongo-only --reports libs/db-models/java/target/surefire-reports -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=java
       - name: Report dei test
         if: failure()
         uses: actions/upload-artifact@v4
@@ -151,6 +153,9 @@ jobs:
           cp "$GITHUB_WORKSPACE"/tests/fixtures/mongo/*.yaml schemas/db/ && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
           (cd libs/db-models/csharp/src && python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" csharp-mongo-build -- dotnet build -warnaserror)
           python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" csharp-mongo -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=csharp
+          rm schemas/db/Reparti.yaml libs/db-models/csharp/src/model/Reparti.cs && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
+          (cd libs/db-models/csharp/src && python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" csharp-mongo-only-build -- dotnet build -warnaserror)
+          python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" csharp-mongo-only -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=csharp
 
   generated-python-typescript:
     runs-on: ubuntu-latest
@@ -206,5 +211,7 @@ jobs:
           pip install -e "libs/db-models/python[test,postgres,mongo]"
           (cd libs/db-models/typescript && npm install --no-audit --no-fund)
           python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" py-ts-mongo -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py .
+          rm schemas/db/Reparti.yaml libs/db-models/python/src/model/Reparti.py libs/db-models/typescript/src/model/Reparti.ts libs/db-models/python/tests/custom/conftest.py && python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --quiet
+          python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" py-ts-mongo-only -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py .
       - name: DDL multi-tenant su PostgreSQL (row-level security, schema e database per tenant)
         run: python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" tenancy-sql -- python3 -B "$GITHUB_WORKSPACE/tests/sql/tenancy_check.py" "$RUNNER_TEMP/proj" "$RUNNER_TEMP/fix"

@@ -78,7 +78,7 @@ retention:
 | `tenancy` | no | `none`, `column`, `schema`, `database` | `model.tenancy.default` della configurazione (`none`) | disponibile |
 | `archive` | no | spostamento dei dati vecchi su S3 o Blob in Parquet | nessun archivio | disponibile |
 | `retention` | no | cancellazione definitiva dopo un TTL | nessuna | disponibile |
-| `storage` | no | `sql`, `mongo` | `sql` | fase 6 |
+| `storage` | no | `sql`, `mongo` | `sql` | disponibile |
 
 ## Colonne
 
@@ -219,13 +219,15 @@ Vincoli controllati dal generatore:
 
 Con un archivio, la conservazione cancella le partizioni dell'archivio finite prima di `delete_after` fa, con i loro oggetti per chiave: serve `year` in `partition_by`. Senza archivio cancella dalla tabella hot le righe con `column` più vecchia di `delete_after`; un figlio `restrict` trattiene il record, `cascade` e `set_null` seguono la regola della relazione.
 
-## Storage (fase 6)
+## Storage
 
-Con `storage: mongo` la tabella diventa una collection MongoDB. Nomi di file, classi e metodi restano identici a quelli SQL, quindi il codice che usa il repository non cambia.
+Con `storage: mongo` la tabella diventa una collection MongoDB. Nomi di file, classi e metodi restano identici a quelli SQL, quindi il codice che usa il repository non cambia. Dettagli in [MongoDB](mongodb.md).
 
-Ci sono però differenze esplicite. Non sono supportati:
-- `on_delete: cascade`;
-- le query `prefix` su colonne non indicizzate;
-- `tenancy: schema`.
+Il generatore rifiuta:
+- relazioni tra una collection e una tabella SQL;
+- `on_delete: cascade` verso una collection;
+- `tenancy: schema`;
+- `archive`, `retention.job` e `transactions`;
+- `retention` su una collection a cui altre tabelle si riferiscono.
 
-Le transazioni multi-documento richiedono un replica set.
+`retention` diventa un indice TTL. Le transazioni multi-documento richiedono un replica set.

@@ -7,6 +7,7 @@ from typing import Dict, List
 
 from emit_typescript import _ts_value
 from naming import header, member, method_name, repo_class
+from sqlonly import has_sql
 from schema import Table, snake
 from verification import METHODS, Catalog, TestCase, nulled_columns, over_values, put_over, ttl_column, table_asil
 
@@ -61,7 +62,7 @@ def _sample(t: Table, cn: str, tables: Dict[str, Table]) -> str:
         return f"(await build{rel.target}(em)).{_a(tables[rel.target].pk.name)}"
     if cn == ttl_column(t):
         return {"date": "new Date(Date.now() + nextN() * 86400000).toISOString().slice(0, 10)",
-                "datetime": "new Date(Date.now() + nextN() * 3600000)"}[c.type]
+                "datetime": "new Date((Math.floor(Date.now() / 3600000) + nextN()) * 3600000)"}[c.type]
     if c.type == "string":
         return f"textValue(nextN(), {c.length})"
     return {"uuid": "randomUUID()", "text": "`testo ${nextN()}`", "int": "nextN()", "bigint": "String(nextN())",
@@ -71,7 +72,7 @@ def _sample(t: Table, cn: str, tables: Dict[str, Table]) -> str:
 
 def builders_file(tables: Dict[str, Table]) -> str:
     o = [header(L, "kit") + HEAD_LINT + "// Costruttori di dati validi per i test generati: un record per chiamata, valori deterministici.",
-         'import { randomUUID } from "node:crypto";', 'import type { EntityManager } from "typeorm";']
+         'import { randomUUID } from "node:crypto";', *(['import type { EntityManager } from "typeorm";'] if has_sql(tables) else [])]
     if any(t.mongo for t in tables.values()):
         o.append('import type { MongoSession } from "../../src/model/generated";')
     for n in tables:
@@ -623,6 +624,7 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
     extra_names = [] if cat.tenant_id_type == "uuid" else [
         '    assert.equal(tenantKey("Tenant-A"), "tenant_a");', '    assert.throws(() => tenantKey("nome non valido"), TenantError);']
     n, repo = first.name, repo_class(L, first.name)
+    sql = has_sql(tables)
     spec = f"PAGING_{snake(n).upper()}"
     pkj = member(L, first.pk.name)
     mods = ", ".join(f"{x}: M_{x}" for x in tables)
@@ -723,21 +725,27 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
                               '    assert.equal((asDateTime("2020-01-31T10:20:30.123000+00:00") as Date).toISOString(), "2020-01-31T10:20:30.123Z");'],
     })
     o = [header(L, "kit") + HEAD_LINT + "// Test di unità generati per i moduli comuni: paginazione (_paging) e Unit of Work (_uow).",
-         'import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";', 'import { tmpdir } from "node:os";', 'import { join } from "node:path";',
-         'import { FileArchiveReader, archiveOf, archivePath, archiveSegment, asDateTime, bindArchive, readArchived } from "../../src/model/generated/_archive";',
+         *(['import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";', 'import { tmpdir } from "node:os";', 'import { join } from "node:path";',
+            'import { FileArchiveReader, archiveOf, archivePath, archiveSegment, asDateTime, bindArchive, readArchived } from "../../src/model/generated/_archive";']
+           if sql else []),
          'import { test } from "node:test";', 'import assert from "node:assert/strict";',
          f'import {{ ModelValidationError, {n}, {spec} }} from "../../src/model/generated";',
-         'import { decodeCursor, emptyPage, encodeCursor, likePrefix, resolveOrder, runPage } from "../../src/model/generated/_paging";',
+         'import { decodeCursor, emptyPage, encodeCursor, likePrefix, resolveOrder, runPage } from "../../src/model/generated/_paging";' if sql else
+         'import { decodeCursor, emptyPage, encodeCursor, preparePage, resolveOrder } from "../../src/model/generated/_paging";',
          'import type { OrderItem, PagingSpec } from "../../src/model/generated/_paging";',
-         'import type { DataSource, EntityManager } from "typeorm";',
+         *(['import type { DataSource, EntityManager } from "typeorm";'] if sql else []),
          'import * as API from "../../src/model/generated";',
          *[f'import * as M_{x} from "../../src/model/{x}";' for x in tables],
-         'import { ISOLATION, isolationFor, runInTransaction } from "../../src/model/generated/_uow";',
-         'import { TenantError, applyTenantSetting, bindTenant, coerceTenant, databaseUrlFor, schemaFor, searchPathFor, tenantKey, tenantOf } from "../../src/model/generated/_tenant";',
-         f'import {{ {repo} }} from "../../src/model/{n}";', 'import { withDb } from "./_db";', f'import {{ build{n}, TENANT_A, TENANT_B }} from "./kybes_builders";', "",
+         *(['import { ISOLATION, isolationFor, runInTransaction } from "../../src/model/generated/_uow";',
+            'import { TenantError, applyTenantSetting, bindTenant, coerceTenant, databaseUrlFor, schemaFor, searchPathFor, tenantKey, tenantOf } from "../../src/model/generated/_tenant";']
+           if sql else
+           ['import { TenantError, bindTenant, coerceTenant, databaseUrlFor, schemaFor, searchPathFor, tenantKey, tenantOf } from "../../src/model/generated/_tenant";']),
+         f'import {{ {repo} }} from "../../src/model/{n}";', *(['import { withDb } from "./_db";'] if sql else []),
+         f'import {{ build{n}, TENANT_A, TENANT_B }} from "./kybes_builders";', "",
          "const invalid = (field: string) => (e: unknown) => e instanceof ModelValidationError && field in e.fields;",
-         "// livelli dei test: SQLite non distingue i livelli, PostgreSQL li applica",
-         'const LEVELS_SQLITE = process.env.KYBES_TEST_DATABASE_URL ? {} : { levels: { read_committed: null, repeatable_read: null, serializable: null } };',
+         *(["// livelli dei test: SQLite non distingue i livelli, PostgreSQL li applica",
+            'const LEVELS_SQLITE = process.env.KYBES_TEST_DATABASE_URL ? {} : { levels: { read_committed: null, repeatable_read: null, serializable: null } };']
+           if sql else []),
          "const ALL: OrderItem[] = [",
          '  { prop: "id", json: "id", type: "uuid", desc: false }, { prop: "numero", json: "numero", type: "string", desc: false },',
          '  { prop: "quantita", json: "quantita", type: "int", desc: false }, { prop: "grande", json: "grande", type: "bigint", desc: false },',
@@ -748,8 +756,11 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
          "function rawCursor(order: OrderItem[], values: unknown[]): string {",
          '  const s = order.map((o) => (o.desc ? "-" : "") + o.json).join(",");',
          '  return Buffer.from(JSON.stringify({ s, v: values }), "utf8").toString("base64url");', "}",
-         f"void [{n}, TENANT_B];"]
+         f"void [{n}, TENANT_B, build{n}];"]
     mongo = any(x.mongo for x in tables.values())
+    if not sql:  # sole collection MongoDB: la stessa regola, verificata sulla preparazione della pagina
+        bodies["rt_fixed_sort"] = [f'    assert.throws(() => preparePage({spec}, {{ sort: "x" }}, {spec}.defaultOrder), invalid("sort"));',
+                                   f"    assert.deepEqual(emptyPage({spec}), {{ items: [], nextCursor: null, limit: {spec}.defaultLimit }});"]
     if mongo:
         bodies.update(_mongo_runtime_bodies(tables))
         o += ['import { withMongo } from "./_mongo_db";',
@@ -757,7 +768,7 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
               'import { fromBson, nextId, prefix, toBson } from "../../src/model/generated/_mongo";',
               'import type { ColumnType } from "../../src/model/generated/_mongo";']
     for tc in cat.for_table("_runtime"):
-        runner = "withMongo" if tc.kind.startswith("rt_mongo") else "withDb"
+        runner = "withMongo" if tc.kind.startswith("rt_mongo") or not sql else "withDb"
         o += ["", f"test({json.dumps(tc.id + ' · ' + ', '.join(tc.reqs) + ' · ' + METHODS[tc.method] + ': ' + tc.title)}, () =>",
               f"  {runner}(async (em, ds) => {{", "    void em; void ds;"] + bodies[tc.kind] + ["  }));"]
     return "\n".join(o) + "\n"
@@ -766,7 +777,9 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
 def emit(cat: Catalog, tables: Dict[str, Table], default_asil: str, dialect: str = "postgres") -> Dict[str, str]:
     _ID_TYPE[0] = cat.tenant_id_type
     first = next(iter(tables))
-    files = {"generated/_db.ts": db_file(dialect, first), "generated/kybes_builders.ts": builders_file(tables)}
+    files = {"generated/kybes_builders.ts": builders_file(tables)}
+    if has_sql(tables):
+        files["generated/_db.ts"] = db_file(dialect, first)
     if any(t.mongo for t in tables.values()):
         files["generated/_mongo_db.ts"] = mongo_db_file()
     for n, t in tables.items():

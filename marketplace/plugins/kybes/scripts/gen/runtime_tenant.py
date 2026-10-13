@@ -9,13 +9,14 @@ Regole comuni:
 from __future__ import annotations
 
 from naming import header
+from sqlonly import strip_sql
 
 NAME_RULE = "minuscole, cifre e _, al massimo 48 caratteri"
 
 
 # ------------------------------------------------------------------------------------------- Python
 
-def python_file(id_type: str) -> str:
+def python_file(id_type: str, sql: bool = True) -> str:
     if id_type == "uuid":
         coerce = (
             "    try:\n"
@@ -33,7 +34,7 @@ def python_file(id_type: str) -> str:
               '    if not _NAME.match(key):\n'
               '        raise TenantError("tenant non utilizzabile come nome di schema o database")\n'
               '    return key\n')
-    return header("python", "kit") + "# ruff: noqa\n" + '''"""Contesto del tenant (Organization) per le tabelle multi-tenant.
+    return header("python", "kit") + "# ruff: noqa\n" + strip_sql('''"""Contesto del tenant (Organization) per le tabelle multi-tenant.
 
 Il tenant si lega alla sessione una volta, con bind_tenant(session, tenant) o run_in_transaction(..., tenant=...):
 i repository delle tabelle con tenancy diversa da none lo leggono dalla sessione e rifiutano di lavorare senza.
@@ -47,8 +48,10 @@ import re
 import uuid
 from typing import Any
 
+# kybes:sql-begin
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+# kybes:sql-end
 
 KEY = "kybes_tenant"
 _NAME = re.compile(r"^[a-z0-9_]{1,48}$")
@@ -64,7 +67,7 @@ def coerce_tenant(tenant: Any) -> Any:
         raise TenantError("tenant mancante")
 ''' + coerce + '''
 
-def bind_tenant(session: Session, tenant: Any) -> None:
+def bind_tenant(session: Any, tenant: Any) -> None:
     """Lega il tenant alla sessione (None lo scollega)."""
     if tenant is None:
         session.info.pop(KEY, None)
@@ -72,7 +75,7 @@ def bind_tenant(session: Session, tenant: Any) -> None:
         session.info[KEY] = coerce_tenant(tenant)
 
 
-def tenant_of(session: Session) -> Any:
+def tenant_of(session: Any) -> Any:
     tenant = session.info.get(KEY)
     if tenant is None:
         raise TenantError("sessione senza tenant: chiama bind_tenant(session, tenant) o usa run_in_transaction(..., tenant=...)")
@@ -100,16 +103,18 @@ def database_url_for(template: str, tenant: Any) -> str:
     return template.replace("{tenant}", tenant_key(tenant))
 
 
+# kybes:sql-begin
 def apply_tenant_setting(session: Session) -> None:
     """PostgreSQL: app.tenant_id per la transazione corrente (usato dalle policy di row-level security)."""
     if session.get_bind().dialect.name == "postgresql":
         session.execute(text("select set_config('app.tenant_id', :tenant, true)"), {"tenant": str(tenant_of(session))})
-'''
+# kybes:sql-end
+''', sql)
 
 
 # ------------------------------------------------------------------------------------------- TypeScript
 
-def typescript_file(id_type: str) -> str:
+def typescript_file(id_type: str, sql: bool = True) -> str:
     key_ts = ('  return coerceTenant(tenant).replace(/-/g, "_"); // un UUID è sempre un nome valido\n' if id_type == "uuid" else
               '  const key = coerceTenant(tenant).toLowerCase().replace(/-/g, "_");\n'
               '  if (!/^[a-z0-9_]{1,48}$/.test(key)) throw new TenantError("tenant non utilizzabile come nome di schema o database");\n'
@@ -118,10 +123,12 @@ def typescript_file(id_type: str) -> str:
              'throw new TenantError("tenant non valido: atteso un UUID");\n  return value.toLowerCase();\n'
              if id_type == "uuid" else
              '  if (value.length === 0 || value.length > 64) throw new TenantError("tenant non valido: da 1 a 64 caratteri");\n  return value;\n')
-    return header("typescript", "kit") + "/* eslint-disable */\n" + '''// Contesto del tenant (Organization) per le tabelle multi-tenant.
+    return header("typescript", "kit") + "/* eslint-disable */\n" + strip_sql('''// Contesto del tenant (Organization) per le tabelle multi-tenant.
 // Il tenant si lega all'EntityManager una volta, con bindTenant(em, tenant) o runInTransaction(ds, work, { tenant }):
 // i repository delle tabelle con tenancy diversa da none lo leggono da lì e rifiutano di lavorare senza.
+// kybes:sql-begin
 import type { EntityManager } from "typeorm";
+// kybes:sql-end
 
 export class TenantError extends Error {
   constructor(message: string) {
@@ -171,18 +178,20 @@ export function databaseUrlFor(template: string, tenant: unknown): string {
   return template.split("{tenant}").join(tenantKey(tenant));
 }
 
+// kybes:sql-begin
 /** PostgreSQL: app.tenant_id per la transazione corrente (policy di row-level security). */
 export async function applyTenantSetting(em: EntityManager): Promise<void> {
   if (em.connection.options.type === "postgres") {
     await em.query("select set_config('app.tenant_id', $1, true)", [tenantOf(em)]);
   }
 }
-'''
+// kybes:sql-end
+''', sql)
 
 
 # ------------------------------------------------------------------------------------------- Java
 
-def java_file(pkg: str, id_type: str) -> str:
+def java_file(pkg: str, id_type: str, sql: bool = True) -> str:
     key_java = ("        return String.valueOf(coerce(tenant)).replace('-', '_'); // un UUID è sempre un nome valido\n" if id_type == "uuid" else
                 "        String key = String.valueOf(coerce(tenant)).toLowerCase(Locale.ROOT).replace('-', '_');\n"
                 '        if (!NAME.matcher(key).matches()) throw new TenantException("tenant non utilizzabile come nome di schema o database");\n'
@@ -195,10 +204,12 @@ def java_file(pkg: str, id_type: str) -> str:
         }''' if id_type == "uuid" else '''        String value = String.valueOf(tenant);
         if (value.isEmpty() || value.length() > 64) throw new TenantException("tenant non valido: da 1 a 64 caratteri");
         return value;''')
-    return header("java", "kit").rstrip("\n") + f'''
+    return header("java", "kit").rstrip("\n") + strip_sql(f'''
 package {pkg}.generated;
 
+// kybes:sql-begin
 import jakarta.persistence.EntityManager;
+// kybes:sql-end
 import java.util.Locale;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -223,6 +234,7 @@ public final class Tenancy {{
 {coerce}
     }}
 
+    // kybes:sql-begin
     /** Lega il tenant all'EntityManager (null lo scollega). */
     public static void bind(EntityManager em, Object tenant) {{
         // Hibernate ignora i valori null nelle proprietà: "" vale come tenant non legato
@@ -236,6 +248,7 @@ public final class Tenancy {{
         }}
         return ({jt}) tenant;
     }}
+    // kybes:sql-end
 
     /** Il tenant come parte di un nome di schema o di database ({NAME_RULE}). */
     public static String key(Object tenant) {{
@@ -256,10 +269,12 @@ public final class Tenancy {{
         return template.replace("{{tenant}}", key(tenant));
     }}
 
+    // kybes:sql-begin
     /** PostgreSQL: app.tenant_id per la transazione corrente (policy di row-level security). */
     public static void applySetting(EntityManager em) {{
         em.createNativeQuery("SELECT set_config('app.tenant_id', ?1, true)").setParameter(1, String.valueOf(of(em))).getSingleResult();
     }}
+    // kybes:sql-end
 
     /** Dati multi-tenant senza un tenant legato, o con un tenant diverso. */
     public static final class TenantException extends RuntimeException {{
@@ -270,12 +285,12 @@ public final class Tenancy {{
         }}
     }}
 }}
-'''
+''', sql)
 
 
 # ------------------------------------------------------------------------------------------- C#
 
-def csharp_file(ns: str, id_type: str) -> str:
+def csharp_file(ns: str, id_type: str, sql: bool = True) -> str:
     # con id uuid il nome è sempre valido: niente espressione regolare (non sarebbe mai usata)
     name_field = "" if id_type == "uuid" else '    private static readonly Regex Name = new("^[a-z0-9_]{1,48}$", RegexOptions.CultureInvariant);\n\n'
     key_cs = ("        return Coerce(tenant).ToString()!.Replace('-', '_'); // un UUID è sempre un nome valido\n" if id_type == "uuid" else
@@ -288,14 +303,16 @@ def csharp_file(ns: str, id_type: str) -> str:
         throw new TenantException("tenant non valido: atteso un UUID");''' if id_type == "uuid" else '''        var value = Convert.ToString(tenant, CultureInfo.InvariantCulture)!;
         if (value.Length == 0 || value.Length > 64) throw new TenantException("tenant non valido: da 1 a 64 caratteri");
         return value;''')
-    return header("csharp", "kit") + f'''// <auto-generated />
+    return header("csharp", "kit") + strip_sql(f'''// <auto-generated />
 #nullable enable
 using System;
 using System.Globalization;
 using System.Text.RegularExpressions;
+// kybes:sql-begin
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+// kybes:sql-end
 
 namespace {ns};
 
@@ -336,10 +353,13 @@ public static class Tenancy
         return template.Replace("{{tenant}}", Key(tenant), StringComparison.Ordinal);
     }}
 
+    // kybes:sql-begin
     /// <summary>PostgreSQL: app.tenant_id per la transazione corrente (policy di row-level security).</summary>
     public static Task ApplySettingAsync(AppDbContext db, CancellationToken ct = default) =>
         db.Database.ExecuteSqlRawAsync("SELECT set_config('app.tenant_id', {{0}}, true)", new object[] {{ db.RequireTenant().ToString()! }}, ct);
+    // kybes:sql-end
 }}
+// kybes:sql-begin
 
 public partial class AppDbContext
 {{
@@ -353,4 +373,5 @@ public partial class AppDbContext
     public {ct} RequireTenant() =>
         KybesTenant ?? throw new TenantException("contesto senza tenant: chiama db.BindTenant(tenant) o usa UnitOfWork.RunAsync(..., tenant: ...)");
 }}
-'''
+// kybes:sql-end
+''', sql)

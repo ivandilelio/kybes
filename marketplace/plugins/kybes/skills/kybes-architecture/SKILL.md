@@ -133,6 +133,15 @@ Inoltre `schemas/generated/json/<Tabella>.schema.json` (validazione di API Gatew
 - Il lettore dell'archivio si lega alla sessione come il tenant (`bind_archive`, `bindArchive`, `Archive.bind`, `db.BindArchive`). Il job gira con un ruolo dedicato: `BYPASSRLS`, oppure i tenant in `KYBES_TENANTS`.
 - Dettagli: docs/archivio.md del kit.
 
+## 4b-quater. MongoDB
+
+- Una tabella va su MongoDB solo con `storage: mongo` nello schema: kybes genera lo stesso repository (metodi, query, paginazione, tenant). Mai driver MongoDB usati fuori dal model.
+- Scegli `mongo` per documenti con struttura variabile (`json`) o carichi di scrittura che non hanno bisogno di join; resta su SQL per dati con molte relazioni, report o archivio Parquet.
+- Le relazioni valgono solo tra tabelle dello stesso storage; con `mongo` niente `cascade` né `tenancy: schema`. `retention` diventa un indice TTL.
+- Sessione: Python `mongo_session(client, db, t)`, TypeScript `mongoSession(client, db, t)`, Java `MongoSession.open(client, db, t)`, C# `MongoSession.Open(client, db, t)`. Scritture su più documenti in una transazione MongoDB (`run_in_mongo_transaction`, `runInMongoTransaction`, `MongoSession.transaction`, `MongoSession.TransactionAsync`), che richiede un replica set.
+- Gli indici si creano all'avvio o nel deploy con `ensure_mongo_indexes` / `ensureMongoIndexes` / `MongoIndexes.ensure` / `MongoIndexes.EnsureAsync`.
+- Dettagli: docs/mongodb.md del kit.
+
 ## 4c. Verifica di unità (ISO 26262-6)
 
 - Il generatore scrive i test di unità del modello in `libs/db-models/<lang>/tests/generated/` e le evidenze in `docs/generated/verification/` (requisiti `REQ-*`, specifiche dei casi `TC-*`, tracciabilità, soglie). Non si modificano: cambia lo schema.
@@ -221,6 +230,7 @@ seguita da: modifiche agli schemi `schemas/db/<Tabella>.yaml` (colonne, relazion
 - [ ] Ogni metodo custom ha un test in `tests/custom/` con id `TC-` e requisito `REQ-`; `verify.py` verde (test e soglie ASIL)
 - [ ] Ogni tabella nuova ha `tenancy`; il tenant è legato alla sessione dal middleware (mai dal payload), le transazioni lo passano alla Unit of Work
 - [ ] Età e TTL dei dati dichiarati con `archive`/`retention` nello schema, nessun job di pulizia scritto a mano
+- [ ] Collection MongoDB solo con `storage: mongo` nello schema; scritture su più documenti in una transazione MongoDB; indici creati all'avvio o nel deploy
 - [ ] Nessun accesso al DB fuori da DB-Models
 - [ ] Endpoint limitati al proprio bounded context
 - [ ] Validazione ai tre livelli

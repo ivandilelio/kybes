@@ -185,6 +185,8 @@ docker run -d --name kybes-pg -e POSTGRES_USER=kybes -e POSTGRES_PASSWORD=kybes 
 export KYBES_TEST_DATABASE_URL=postgresql://kybes:kybes@localhost:5432/kybes
 ```
 
+Le collection MongoDB (`storage: mongo`) si verificano su `KYBES_TEST_MONGO_URL`, un MongoDB con replica set. Ogni test usa un database nuovo. Senza la variabile, `verify.py` segnala che i test non sono stati eseguiti. Comandi e casi aggiuntivi in [MongoDB](mongodb.md#test).
+
 Quando una soglia non è raggiunta, `verify.py` indica il file, la soglia dell'ASIL e le righe non eseguite o con rami non percorsi: si aggiunge il test che le esercita.
 
 `verify.py` esce con 1 se un test fallisce o una soglia non è raggiunta. Un linguaggio senza strumenti installati viene segnalato e saltato. L'installer lo mette in `stop_gate.commands`, quindi Claude non chiude un lavoro con test rotti o copertura insufficiente. Lo aggiunge anche al workflow di CI, che conserva report e specifiche come artefatto `verification-evidence`.

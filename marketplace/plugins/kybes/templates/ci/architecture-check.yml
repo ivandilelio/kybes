@@ -43,12 +43,21 @@ jobs:
         if: hashFiles('libs/db-models/csharp/tests/*.csproj') != ''
         with:
           dotnet-version: "8.0.x"
+      - name: MongoDB con replica set per le collection (storage: mongo)
+        run: |
+          if grep -rqsE '^storage:[[:space:]]*mongo' schemas/db; then
+            docker run -d --name mongo -p 27017:27017 mongo:7 --replSet rs0 --bind_ip_all
+            for i in $(seq 1 30); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping: 1})' >/dev/null 2>&1 && break; sleep 1; done
+            docker exec mongo mongosh --quiet --eval 'rs.initiate({_id: "rs0", members: [{_id: 0, host: "localhost:27017"}]})'
+            for i in $(seq 1 30); do [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && break; sleep 1; done
+            echo "KYBES_TEST_MONGO_URL=mongodb://localhost:27017/?replicaSet=rs0" >> "$GITHUB_ENV"
+          fi
       - name: Dipendenze dei test del modello
         run: |
-          if [ -f libs/db-models/python/pyproject.toml ]; then pip install -e "libs/db-models/python[test,postgres]"; fi
+          if [ -f libs/db-models/python/pyproject.toml ]; then pip install -e "libs/db-models/python[test,postgres,mongo]"; fi
           if [ -f jobs/generated/_engine/pyproject.toml ]; then pip install -e "jobs/generated/_engine[test]"; fi
           if [ -f libs/db-models/typescript/package.json ]; then (cd libs/db-models/typescript && npm install --no-audit --no-fund); fi
-      - name: Test di unità del modello e copertura per ASIL (ISO 26262-6), su PostgreSQL
+      - name: Test di unità del modello e copertura per ASIL (ISO 26262-6), su PostgreSQL (e MongoDB per le collection)
         env:
           KYBES_TEST_DATABASE_URL: postgresql://kybes:kybes@localhost:5432/kybes
         run: python3 -B tools/kybes/plugins/kybes/scripts/verify.py .

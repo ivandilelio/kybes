@@ -21,7 +21,7 @@ Il piano DEVE seguire il "Formato obbligatorio del piano" della skill:
 - metodi generati che verranno riusati (nomi presi da `MODEL_INDEX.md`);
 - per ogni lista esposta alla UI: colonne ordinabili (`pagination.sortable`) e limite massimo;
 - per ogni operazione che scrive su più tabelle: Unit of Work, tabelle coinvolte e isolamento richiesto;
-- per ogni tabella nuova: `tenancy`; per i dati che invecchiano, `archive` (dopo quanto, su quale colonna, `read_through` sì o no) e `retention`, con la modalità del job (cron, keda, engine) e le query su Athena o Synapse che servono ai report;
+- per ogni tabella nuova: `tenancy` e `storage` (`sql`, o `mongo` per documenti senza join, nello stesso storage delle tabelle collegate); per i dati che invecchiano, `archive` (dopo quanto, su quale colonna, `read_through` sì o no) e `retention`, con la modalità del job (cron, keda, engine) e le query su Athena o Synapse che servono ai report;
 - logica che rischia di ripetersi in più punti e dove verrà estratta (model, `libs/utils` o service);
 - test da scrivere: per ogni metodo custom l'id `TC-<Tabella>-<CASO>`, il requisito `REQ-<Tabella>-<CHIAVE>` e il metodo di derivazione (ISO 26262-6); contract test DB-Models; test di errore che verificano l'assenza di dettagli interni; ASIL delle tabelle toccate;
 - impatti su IaC.

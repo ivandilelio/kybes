@@ -10,6 +10,7 @@ from typing import Dict, List
 
 from emit_java import J_TYPE, _java_value
 from naming import header, member, method_name, repo_class
+from sqlonly import has_sql
 from schema import Table
 from verification import METHODS, Catalog, TestCase, nulled_columns, over_values, put_over, ttl_column, table_asil
 
@@ -45,7 +46,7 @@ def _sample(t: Table, cn: str, tables: Dict[str, Table]) -> str:
     if rel:
         return f"build{rel.target}(em).{_get(tables[rel.target].pk.name)}()"
     if cn == ttl_column(t):
-        return {"date": "LocalDate.now(ZoneOffset.UTC).plusDays(nextN())", "datetime": "OffsetDateTime.now(ZoneOffset.UTC).plusHours(nextN())"}[c.type]
+        return {"date": "LocalDate.now(ZoneOffset.UTC).plusDays(nextN())", "datetime": "OffsetDateTime.now(ZoneOffset.UTC).truncatedTo(java.time.temporal.ChronoUnit.HOURS).plusHours(nextN())"}[c.type]
     if c.type == "string":
         return f"textValue(nextN(), {c.length})"
     return {"uuid": "UUID.randomUUID()", "text": '"testo " + nextN()', "int": "nextN()", "bigint": "(long) nextN()",
@@ -655,7 +656,32 @@ def _mongo_case(t: Table, tc: TestCase, tables: Dict[str, Table]) -> List[str]:
     raise ValueError(k)
 
 
-def mongo_file(pkg: str) -> str:
+ASSERTS = '''
+    /** L'operazione è rifiutata con un errore di validazione sul campo indicato. */
+    public static ModelValidationException assertInvalid(String field, Executable operation) {
+        ModelValidationException e = assertThrows(ModelValidationException.class, operation);
+        assertTrue(e.getFields().containsKey(field), () -> "errore atteso su " + field + ", trovati " + e.getFields().keySet());
+        assertFalse(e.getTable().isEmpty());
+        assertTrue(e.getMessage().contains(field));
+        return e;
+    }
+
+    public static void assertRule(String field, String rule, Executable operation) {
+        assertEquals(rule, assertInvalid(field, operation).getFields().get(field));
+    }
+'''
+
+
+def mongo_file(pkg: str, sql: bool = True) -> str:
+    """KybesMongo: con sole collection MongoDB ha anche le asserzioni che altrimenti stanno in KybesDb."""
+    if not sql:
+        return mongo_file(pkg).replace("import com.mongodb.client.MongoClient;",
+                                       "import static org.junit.jupiter.api.Assertions.assertEquals;\n"
+                                       "import static org.junit.jupiter.api.Assertions.assertFalse;\n"
+                                       "import static org.junit.jupiter.api.Assertions.assertThrows;\n"
+                                       "import static org.junit.jupiter.api.Assertions.assertTrue;\n\n"
+                                       "import com.mongodb.client.MongoClient;").replace(
+            "import java.util.UUID;", "import java.util.UUID;\nimport org.junit.jupiter.api.function.Executable;").rstrip()[:-1] + ASSERTS + "}\n"
     return header(L, "kit") + f'''package {pkg}.generated;
 
 import com.mongodb.client.MongoClient;
@@ -827,15 +853,16 @@ def _archive_case(t: Table, tc: TestCase, cat: Catalog) -> List[str]:
 
 def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
     first = next((x for x in tables.values() if not x.mongo), next(iter(tables.values())))
-    sql = {k: v for k, v in tables.items() if not v.mongo}
+    sql_tables = {k: v for k, v in tables.items() if not v.mongo}
+    sql = bool(sql_tables)
     bad = "non-un-uuid" if cat.tenant_id_type == "uuid" else "x" * 65
     extra_names = [] if cat.tenant_id_type == "uuid" else [
         '        assertEquals("tenant_a", Tenancy.key("Tenant-A"));',
         '        assertThrows(Tenancy.TenantException.class, () -> Tenancy.key("nome non valido"));']
     n, repo = first.name, repo_class(L, first.name)
     pk = _get(first.pk.name)
-    tbl_list = ", ".join(f"{x}.class" for x in sql)
-    repo_list = ", ".join(f"{repo_class(L, x)}.class" for x in sql)
+    tbl_list = ", ".join(f"{x}.class" for x in sql_tables)
+    repo_list = ", ".join(f"{repo_class(L, x)}.class" for x in (sql_tables or tables))
     bodies = {
         "rt_exports": [f"        for (Class<?> entity : List.<Class<?>>of({tbl_list})) {{",
                        '            assertNotNull(entity.getAnnotation(jakarta.persistence.Entity.class), entity.getSimpleName());',
@@ -1024,6 +1051,33 @@ def runtime_file(pkg: str, cat: Catalog, tables: Dict[str, Table]) -> str:
         "        public boolean isActive() { return active; }", "    }"]
     if any(x.mongo for x in tables.values()):
         bodies.update(_mongo_runtime_bodies(tables))
+    if not sql:  # sole collection MongoDB: le stesse regole sulla sessione MongoDB e sulla preparazione della pagina
+        P = f"{n}RepositoryBase.PAGING"
+        bodies.update({
+            "rt_exports": [f"        for (Class<?> repoClass : List.<Class<?>>of({repo_list})) {{",
+                           "            assertNotNull(repoClass.getConstructor(MongoSession.class).newInstance(em));", "        }"],
+            "rt_tenant_bind": ["        MongoSession fresh = new MongoSession(em.db(), null);",
+                               "        assertThrows(Tenancy.TenantException.class, fresh::requireTenant);",
+                               "        fresh.bindTenant(TENANT_A);", "        assertEquals(TENANT_A, fresh.requireTenant());",
+                               "        fresh.bindTenant(String.valueOf(TENANT_B));", "        assertEquals(TENANT_B, fresh.requireTenant());",
+                               "        fresh.bindTenant(null);", "        assertThrows(Tenancy.TenantException.class, fresh::requireTenant);",
+                               f"        assertThrows(Tenancy.TenantException.class, () -> fresh.bindTenant({_jstr(bad)}));",
+                               *(['        assertThrows(Tenancy.TenantException.class, () -> fresh.bindTenant(""));'] if cat.tenant_id_type == "string" else []),
+                               "        assertThrows(Tenancy.TenantException.class, () -> Tenancy.coerce(null));"],
+            "rt_fixed_sort": [f'        assertInvalid("sort", () -> Paging.prepare({P}, new Paging.PageRequest(null, null, "x"), {P}.defaultOrder()));',
+                              f'        assertEquals({P}.defaultOrder(), Paging.prepare({P}, new Paging.PageRequest(null, null, " "), {P}.defaultOrder()).order());',
+                              f"        Paging.Page<{n}> empty = Paging.emptyPage({P}, null);", "        assertTrue(empty.items().isEmpty());",
+                              "        assertNull(empty.nextCursor());", f"        assertEquals({P}.defaultLimit(), empty.limit());",
+                              f"        assertEquals(7, Paging.emptyPage({P}, Paging.PageRequest.of(7)).limit());",
+                              f"        assertEquals({P}.defaultLimit(), Paging.emptyPage({P}, Paging.PageRequest.first()).limit());",
+                              '        assertEquals("c", Paging.PageRequest.of(3).next("c").cursor());'],
+            "rt_empty_page": [f"        Paging.Page<{n}> page = new {repo}(em).listPage(Paging.PageRequest.of(5));", "        assertTrue(page.items().isEmpty());",
+                              f"        assertEquals({P}.defaultLimit(), Paging.prepare({P}, null, null).limit());",
+                              f"        assertTrue(new {repo}(em).listPage(new Paging.PageRequest(null, \"\", null)).items().isEmpty());",
+                              "        assertFalse(page.hasMore());", f"        assertTrue(new {repo}(em).listPage().items().isEmpty());"],
+        })
+        o = [x.replace("    private EntityManager em;", "    private MongoSession em;").replace("em = KybesDb.open();", "em = KybesMongo.open();")
+             .replace("KybesDb.close(em);", "KybesMongo.close(em);") for x in o]
     for tc in cat.for_table("_runtime"):
         body = bodies[tc.kind]
         if tc.kind.startswith("rt_mongo"):
@@ -1043,5 +1097,8 @@ def emit(cat: Catalog, tables: Dict[str, Table], default_asil: str, pkg: str = "
         files[f"generated/{n}Test.java"] = test_file(pkg, t, cat, tables, default_asil)
     files["generated/KybesRuntimeTest.java"] = runtime_file(pkg, cat, tables)
     if any(t.mongo for t in tables.values()):
-        files["generated/KybesMongo.java"] = mongo_file(pkg)
+        files["generated/KybesMongo.java"] = mongo_file(pkg, has_sql(tables))
+    if not has_sql(tables):  # sole collection MongoDB: niente database SQL nei test
+        files = {k: v.replace(f"import static {pkg}.generated.KybesDb.*;", f"import static {pkg}.generated.KybesMongo.*;")
+                 for k, v in files.items() if k != "generated/KybesDb.java"}
     return files

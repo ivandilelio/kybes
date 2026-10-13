@@ -121,7 +121,7 @@ The generator also creates the index `(ClienteId, Data)` that covers both `listB
 | **Multi-tenancy** | per table: tenant column (every method filtered, unique constraints per tenant, PostgreSQL row-level security), schema per tenant, or database per tenant; tenant bound to the ORM session; generated isolation tests | ✅ available |
 | **Hot/cold archive** | old rows move to Parquet on S3/Azure Blob, partitioned by tenant and date; every file is verified (rows, keys, SHA-256) before the rows leave the hot table, and an interrupted move is completed by the next run; `getById` can read through to the archive in all four languages; Athena tables and Synapse views generated | ✅ available |
 | **Retention (TTL)** | archive partitions or hot rows deleted after a declared age; jobs as Kubernetes CronJob, KEDA ScaledJob triggered by backlog, or 24/7 engine; one job engine with its own generated tests | ✅ available |
-| **MongoDB** | same repository interface over MongoDB in all four languages | 🗺️ planned |
+| **MongoDB** | `storage: mongo` per table: the same repository, queries, cursor pagination and tenancy over MongoDB in all four languages; referential integrity enforced by the repository; MongoDB transactions; the same index names plus partial unique and TTL indexes; generated tests run on a real replica set | ✅ available |
 
 ## Guardrails
 

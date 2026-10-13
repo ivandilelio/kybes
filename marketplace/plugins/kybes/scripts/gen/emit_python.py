@@ -8,6 +8,7 @@ import runtime_mongo
 import runtime_python
 import runtime_tenant
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
+from sqlonly import has_sql
 from schema import Table, index_specs, methods_of, snake, tenant_column
 
 L = "python"
@@ -361,14 +362,14 @@ def _py_cond(attr: str, op: str, val) -> str:
             "is_null": f"{attr}.is_(None)", "not_null": f"{attr}.is_not(None)"}[op]
 
 
-def _base_file() -> str:
+def _base_file(sql: bool = True) -> str:
     return (header(L, "kit") + "# ruff: noqa\n" +
             '"""Base dichiarativa comune ed errore di validazione dei modelli."""\n'
             "from __future__ import annotations\n\n"
-            "from typing import Dict\n\n"
-            "from sqlalchemy.orm import DeclarativeBase\n\n\n"
-            "class Base(DeclarativeBase):\n"
-            "    pass\n\n\n"
+            "from typing import Dict\n\n" +
+            ("from sqlalchemy.orm import DeclarativeBase\n\n\n"
+             "class Base(DeclarativeBase):\n"
+             "    pass\n\n\n" if sql else "\n") +
             "class ModelValidationError(ValueError):\n"
             '    """Dati non validi per la tabella: fields contiene campo -> regola violata (mai valori)."""\n\n'
             "    def __init__(self, table: str, fields: Dict[str, str]) -> None:\n"
@@ -378,17 +379,19 @@ def _base_file() -> str:
 
 
 def _init_file(tables: Dict[str, Table]) -> str:
+    sql = has_sql(tables)
     lines = [header(L, "kit") + "# ruff: noqa\n" + '"""Registra tutti i modelli generati (necessario per le relazioni)."""',
-             "from ._base import Base, ModelValidationError",
+             "from ._base import Base, ModelValidationError" if sql else "from ._base import ModelValidationError",
              "from ._paging import Page, PageRequest",
-             "from ._uow import isolation_for, run_in_transaction, transaction",
+             *(["from ._uow import isolation_for, run_in_transaction, transaction"] if sql else []),
              "from ._tenant import TenantError, bind_tenant, database_url_for, schema_for, search_path_for, tenant_of",
-             "from ._archive import ArchiveReader, FileArchiveReader, archive_of, archive_path, bind_archive"]
+             *(["from ._archive import ArchiveReader, FileArchiveReader, archive_of, archive_path, bind_archive"] if sql else [])]
     for n in tables:
         lines.append(f"from .{n} import {n}, {base_class(L, n)}, validate_{snake(n)}, PAGING_{snake(n).upper()}")
-    names = ["Base", "ModelValidationError", "Page", "PageRequest", "isolation_for", "run_in_transaction", "transaction",
-             "TenantError", "bind_tenant", "database_url_for", "schema_for", "search_path_for", "tenant_of",
-             "ArchiveReader", "FileArchiveReader", "archive_of", "archive_path", "bind_archive"] + \
+    names = (["Base"] if sql else []) + ["ModelValidationError", "Page", "PageRequest"] + \
+        (["isolation_for", "run_in_transaction", "transaction"] if sql else []) + \
+        ["TenantError", "bind_tenant", "database_url_for", "schema_for", "search_path_for", "tenant_of"] + \
+        (["ArchiveReader", "FileArchiveReader", "archive_of", "archive_path", "bind_archive"] if sql else []) + \
         [x for n in tables for x in (n, base_class(L, n), f"validate_{snake(n)}", f"PAGING_{snake(n).upper()}")]
     mongo = [n for n, t in tables.items() if t.mongo]
     if mongo:
@@ -417,10 +420,13 @@ def custom_stub(t: Table) -> str:
 
 def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Restituisce (file generati, file custom da creare se mancano) con percorsi relativi alla cartella model."""
-    gen = {f"{GEN_DIR}/_base.py": _base_file(), f"{GEN_DIR}/__init__.py": _init_file(tables),
-           f"{GEN_DIR}/_paging.py": runtime_python.paging_file(), f"{GEN_DIR}/_uow.py": runtime_python.uow_file(tables),
-           f"{GEN_DIR}/_tenant.py": runtime_tenant.python_file(opts.get("tenant_id_type", "uuid")),
-           f"{GEN_DIR}/_archive.py": runtime_archive.python_file()}
+    sql = has_sql(tables)
+    gen = {f"{GEN_DIR}/_base.py": _base_file(sql), f"{GEN_DIR}/__init__.py": _init_file(tables),
+           f"{GEN_DIR}/_paging.py": runtime_python.paging_file(sql),
+           f"{GEN_DIR}/_tenant.py": runtime_tenant.python_file(opts.get("tenant_id_type", "uuid"), sql)}
+    if sql:  # con sole collection MongoDB: niente Unit of Work SQL né archivio (che lavora sulle tabelle SQL)
+        gen[f"{GEN_DIR}/_uow.py"] = runtime_python.uow_file(tables)
+        gen[f"{GEN_DIR}/_archive.py"] = runtime_archive.python_file()
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.py"] = (_mongo_table_file if t.mongo else _table_file)(t, tables, schema_rel[n])
     if any(t.mongo for t in tables.values()):

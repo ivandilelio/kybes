@@ -47,7 +47,7 @@ Lo stato è questo:
 - **Test generati:** disponibili nei quattro linguaggi, con database e builder condivisi dai test custom: `kybes_fixtures.py`/`kybes_builders.py` (Python), `_db.ts`/`kybes_builders.ts` (TypeScript), `KybesDb`/`KybesBuilders` (Java e C#).
 - **Test dei metodi custom:** tuoi, in `tests/custom/`, obbligatori per ogni metodo custom (regola `custom_tests`). In Python il generatore crea una volta `tests/custom/conftest.py` con le stesse fixture.
 - **Unit of Work e paginazione:** disponibili, come file aggiuntivi nella stessa cartella `generated/` del linguaggio: `_paging` e `_uow` in Python e TypeScript, `Paging` e `UnitOfWork` in C# e Java.
-- **Accesso a MongoDB:** fase 6. Per le tabelle con `storage: mongo` i file sono negli stessi percorsi e con gli stessi nomi; cambia solo l'implementazione.
+- **Accesso a MongoDB:** per le tabelle con `storage: mongo` i file sono negli stessi percorsi e con gli stessi nomi; cambia solo l'implementazione. In più ci sono la sessione MongoDB (`_mongo.py`, `_mongo.ts`, `MongoSession.java`, `MongoSession.cs`) e, in Java e C#, `MongoIndexes`. Vedi [MongoDB](mongodb.md).
 
 ### Database, archivio e job
 

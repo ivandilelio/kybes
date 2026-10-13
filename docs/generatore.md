@@ -54,7 +54,8 @@ Tutti i metodi che restituiscono più righe sono paginati a cursore con lo stess
 
 Oltre ai file per tabella, in ogni linguaggio vengono generati:
 - il modulo di paginazione: `_paging.py`, `_paging.ts`, `Paging.cs`, `Paging.java`;
-- la Unit of Work: `_uow.py`, `_uow.ts`, `UnitOfWork.cs`, `UnitOfWork.java` ([transazioni](transazioni.md)).
+- la Unit of Work: `_uow.py`, `_uow.ts`, `UnitOfWork.cs`, `UnitOfWork.java` ([transazioni](transazioni.md));
+- con collection MongoDB, la sessione MongoDB (`_mongo.py`, `_mongo.ts`, `MongoSession.cs`, `MongoSession.java`) e, in C# e Java, `MongoIndexes` ([MongoDB](mongodb.md)). Con sole collection la Unit of Work SQL e l'archivio non vengono generati.
 
 ## ORM e comportamento per linguaggio
 

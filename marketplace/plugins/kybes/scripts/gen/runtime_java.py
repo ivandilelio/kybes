@@ -3,14 +3,17 @@ from __future__ import annotations
 
 from typing import Dict
 
+from sqlonly import strip_sql
 from naming import GEN_DIR, header
 from schema import Table
 
 
-def paging_file(pkg: str) -> str:
-    return header("java", "kit").rstrip("\n") + f"\npackage {pkg}.{GEN_DIR};\n" + r'''
+def paging_file(pkg: str, sql: bool = True) -> str:
+    return header("java", "kit").rstrip("\n") + f"\npackage {pkg}.{GEN_DIR};\n" + strip_sql(r'''
+// kybes:sql-begin
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.TypedQuery;
+// kybes:sql-end
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
@@ -57,9 +60,11 @@ public final class Paging {
                        List<OrderItem> defaultOrder, int defaultLimit, int maxLimit) {
     }
 
+    // kybes:sql-begin
     public static String likePrefix(String value) {
         return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%";
     }
+    // kybes:sql-end
 
     private static ModelValidationException invalid(Spec spec, String field, String rule) {
         return new ModelValidationException(spec.table(), Map.of(field, rule));
@@ -231,6 +236,7 @@ public final class Paging {
         };
     }
 
+    // kybes:sql-begin
     // ------------------------------------------------------------------ query
 
     private static String orderBy(List<OrderItem> order) {
@@ -278,6 +284,7 @@ public final class Paging {
         String next = more ? encodeCursor(order, items.get(items.size() - 1), value) : null;
         return new Page<>(items, next, limit);
     }
+    // kybes:sql-end
 
     /** Ordinamento, limite e valori del cursore validati di una richiesta di pagina (comune a SQL e MongoDB). */
     public record Prepared(List<OrderItem> order, int limit, List<Object> after) {
@@ -295,6 +302,7 @@ public final class Paging {
         return new Prepared(order, limit, after);
     }
 
+    // kybes:sql-begin
     public static <T> List<T> listRows(EntityManager em, Class<T> cls, Spec spec, String where, Map<String, Object> params,
                                        List<OrderItem> order) {
         return query(em, cls, spec, where, params, order, null).setMaxResults(spec.maxLimit()).getResultList();
@@ -304,13 +312,14 @@ public final class Paging {
                                            List<OrderItem> order) {
         return query(em, cls, spec, where, params, order, null).setMaxResults(1).getResultStream().findFirst();
     }
+    // kybes:sql-end
 
     public static <T> Page<T> emptyPage(Spec spec, PageRequest page) {
         int limit = page == null || page.limit() == null ? spec.defaultLimit() : page.limit();
         return new Page<>(List.of(), null, limit);
     }
 }
-'''
+''', sql)
 
 
 def uow_file(pkg: str, tables: Dict[str, Table], dialect: str) -> str:

@@ -1,7 +1,7 @@
 {
   "name": "kybes",
-  "version": "0.7.0",
-  "description": "Know Your Backend: predictable, duplication-free backends generated with Claude Code. Schema-driven data models in C#, Python, TypeScript and Java with queries, covering indexes, cursor pagination, transactions, multi-tenancy, ISO 26262-6 unit tests and a verified hot/cold Parquet archive with TTL jobs, plus guardrail hooks and agents.",
+  "version": "0.8.0",
+  "description": "Know Your Backend: predictable, duplication-free backends generated with Claude Code. Schema-driven data models in C#, Python, TypeScript and Java with queries, covering indexes, cursor pagination, transactions, multi-tenancy, MongoDB collections behind the same repositories, ISO 26262-6 unit tests and a verified hot/cold Parquet archive with TTL jobs, plus guardrail hooks and agents.",
   "author": {
     "name": "Ivan Di Lelio",
     "email": "ivan.dilelio@metainnovation.it",
@@ -18,6 +18,7 @@
     "sqlalchemy",
     "typeorm",
     "jpa",
+    "mongodb",
     "pagination",
     "guardrails",
     "hooks",

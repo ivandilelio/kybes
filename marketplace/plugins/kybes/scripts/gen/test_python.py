@@ -5,6 +5,7 @@ from typing import Dict, List
 
 from emit_python import PY_TYPE, _py_value
 from naming import header, member, method_name, repo_class
+from sqlonly import has_sql
 from schema import Table, snake
 from verification import METHODS, Catalog, TestCase, nulled_columns, over_values, put_over, ttl_column, table_asil
 
@@ -22,7 +23,7 @@ def _sample(t: Table, cn: str) -> str:
     if rel:
         return f"build_{snake(rel.target)}(session).{_attr(rel_target_pk(rel, t))}"
     if cn == ttl_column(t):
-        return {"date": "date.today() + timedelta(days=next_n())", "datetime": "datetime.now(timezone.utc) + timedelta(hours=next_n())"}[c.type]
+        return {"date": "date.today() + timedelta(days=next_n())", "datetime": "datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0) + timedelta(hours=next_n())"}[c.type]
     if c.type == "string":
         return f"text_value(next_n(), {c.length})"
     return {"uuid": "uuid.uuid4()", "text": "f'testo {next_n()}'",
@@ -39,10 +40,12 @@ def rel_target_pk(rel, t: Table) -> str:
 
 
 _MONGO = [False]
+_SQL = [True]
 
 
 def _fixture_names() -> str:
-    return "engine, isolation_levels, session, session_factory" + (", mongo_client, mongo_db, mongo_session, mongo_session_factory" if _MONGO[0] else "")
+    sql = "engine, isolation_levels, session, session_factory" if _SQL[0] else "session, session_factory"
+    return sql + (", mongo_client, mongo_db, mongo_session, mongo_session_factory" if _MONGO[0] else "")
 
 
 def conftest_file() -> str:
@@ -119,7 +122,35 @@ def mongo_session_factory(mongo_db):
 '''
 
 
+MONGO_ONLY = '''# ruff: noqa
+"""Fixture dei test generati e custom: un database MongoDB nuovo per ogni test (KYBES_TEST_MONGO_URL, replica set).
+
+Il progetto ha solo collection MongoDB: session e session_factory sono le sessioni MongoDB del modello.
+"""
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+'''
+
+
 def fixtures_file() -> str:
+    if not _SQL[0]:
+        return header(L, "kit") + MONGO_ONLY + MONGO_FIXTURES + '''
+
+@pytest.fixture
+def session(mongo_session):
+    """Sessione MongoDB legata al tenant di prova A."""
+    return mongo_session
+
+
+@pytest.fixture
+def session_factory(mongo_session_factory):
+    return mongo_session_factory
+'''
     return header(L, "kit") + '''# ruff: noqa
 """Fixture dei test generati e custom: database isolato per ogni test.
 
@@ -366,7 +397,8 @@ def test_file(t: Table, cat: Catalog, tables: Dict[str, Table], default_asil: st
          "", f"Specifica e tracciabilità: docs/generated/verification/{n}.md. I test dei metodi custom vanno in tests/custom/.", '"""',
          "import uuid", "from datetime import date, datetime, timedelta, timezone", "from decimal import Decimal", "",
          "import pytest", "from sqlalchemy.exc import IntegrityError", "",
-         "import json", "from model.generated import FileArchiveReader, ModelValidationError, PageRequest, TenantError, archive_path, bind_archive, bind_tenant"]
+         "import json", "from model.generated import FileArchiveReader, ModelValidationError, PageRequest, TenantError, archive_path, bind_archive, bind_tenant"
+         if has_sql(tables) else "from model.generated import ModelValidationError, PageRequest, TenantError, bind_tenant"]
     others = sorted({r.target for r in t.relations} | {n})
     for o_n in others:
         o.append(f"from model.{o_n} import {o_n}, {repo_class(L, o_n)}")
@@ -689,6 +721,7 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
     extra_names = [] if cat.tenant_id_type == "uuid" else [
         "    assert tenant_key('Tenant-A') == 'tenant_a'", "    with pytest.raises(TenantError):", "        tenant_key('nome non valido')"]
     n, repo = first.name, repo_class(L, first.name)
+    sql = has_sql(tables)
     spec = f"PAGING_{snake(n).upper()}"
     names = list(tables)
     bodies = {
@@ -806,17 +839,24 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
     }
     if any(x.mongo for x in tables.values()):
         bodies.update(_mongo_runtime_bodies(tables))
+    if not sql:  # sole collection MongoDB: la stessa regola, verificata sulla preparazione della pagina
+        bodies["rt_fixed_sort"] = ["    with pytest.raises(ModelValidationError) as err:",
+                                   f"        prepare_page({spec}, PageRequest(sort='x'), fixed_order=list({spec}.default_order))",
+                                   "    assert 'sort' in err.value.fields"]
     o = [header(L, "kit") + "# ruff: noqa", '"""Test di unità generati per i moduli comuni: paginazione (_paging) e Unit of Work (_uow)."""',
          "import base64", "import json", "import uuid", "from datetime import date, datetime, timezone", "from decimal import Decimal", "",
-         "import pytest", "from sqlalchemy import select", "",
-         "from model.generated import ModelValidationError, PageRequest",
+         "import pytest", *(["from sqlalchemy import select"] if sql else []), "",
+         "from model.generated import ModelValidationError, PageRequest"] + ([
          "from model.generated._paging import PagingSpec, decode_cursor, encode_cursor, like_prefix, resolve_order, run_page",
          "from model.generated._uow import ISOLATION, isolation_for, run_in_transaction, transaction",
          "from model.generated._archive import (FileArchiveReader, archive_of, archive_path, archive_segment, as_date, as_datetime,",
          "                                      as_decimal, as_int, as_uuid, bind_archive, read_archived)",
          "from model.generated._tenant import (KEY, TenantError, apply_tenant_setting, bind_tenant, coerce_tenant, database_url_for,",
          "                                     schema_for, search_path_for, tenant_key, tenant_of)",
-         "from sqlalchemy import text",
+         "from sqlalchemy import text"] if sql else [
+         "from model.generated._paging import PagingSpec, decode_cursor, encode_cursor, prepare_page, resolve_order",
+         "from model.generated._tenant import (TenantError, bind_tenant, coerce_tenant, database_url_for, schema_for, search_path_for,",
+         "                                     tenant_key, tenant_of)"]) + [
          f"from model.generated.{n} import {n}, {spec}", f"from model.{n} import {repo}", f"from kybes_builders import build_{snake(n)}, TENANT_A, TENANT_B", "",
          "ALL = [('numero', 'numero', 'string', False), ('quantita', 'quantita', 'int', False), ('grande', 'grande', 'bigint', False),",
          "       ('prezzo', 'prezzo', 'decimal', True), ('giorno', 'giorno', 'date', False), ('istante', 'istante', 'datetime', True),",
@@ -835,7 +875,8 @@ def runtime_file(cat: Catalog, tables: Dict[str, Table]) -> str:
         o += ["from model.generated._mongo import from_bson, next_id, prefix, to_bson",
               "from model.generated import ensure_mongo_indexes, run_in_mongo_transaction, mongo_session as open_mongo_session"]
     for tc in cat.for_table("_runtime"):
-        args = "mongo_session, mongo_client, mongo_db" if tc.kind.startswith("rt_mongo") else "session, session_factory, isolation_levels"
+        args = ("mongo_session, mongo_client, mongo_db" if tc.kind.startswith("rt_mongo") else
+                "session, session_factory, isolation_levels" if sql else "session, session_factory")
         o += ["", "", f"def test_{tc.slug}({args}):",
               f'    r"""{tc.id} · {", ".join(tc.reqs)} · {METHODS[tc.method]}: {tc.title}. Atteso: {tc.expected}."""']
         o += bodies[tc.kind]
@@ -849,6 +890,7 @@ def emit(cat: Catalog, tables: Dict[str, Table], default_asil: str) -> Dict[str,
     """File relativi alla cartella dei test del pacchetto Python (es. libs/db-models/python/tests)."""
     _ID_TYPE[0] = cat.tenant_id_type
     _MONGO[0] = any(t.mongo for t in tables.values())
+    _SQL[0] = has_sql(tables)
     files = {"generated/conftest.py": conftest_file(), "generated/kybes_fixtures.py": fixtures_file(),
              "generated/kybes_builders.py": builders_file(tables)}
     for n, t in tables.items():

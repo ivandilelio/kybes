@@ -9,7 +9,7 @@
     {
       "name": "kybes",
       "source": "./marketplace/plugins/kybes",
-      "description": "Generates and enforces a predictable backend structure: schema-driven data models in C#, Python, TypeScript and Java, cursor pagination, indexes, transactions, multi-tenancy, ISO 26262-6 unit tests, hot/cold archive and TTL jobs, and guardrail hooks."
+      "description": "Generates and enforces a predictable backend structure: schema-driven data models in C#, Python, TypeScript and Java, cursor pagination, indexes, transactions, multi-tenancy, MongoDB collections, ISO 26262-6 unit tests, hot/cold archive and TTL jobs, and guardrail hooks."
     }
   ]
 }

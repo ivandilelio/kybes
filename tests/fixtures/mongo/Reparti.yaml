@@ -1,7 +1,20 @@
 # Tabella SQL nello stesso progetto delle collection MongoDB: i due storage convivono (senza relazioni tra loro).
+# Ordinamenti su tutti i tipi e isolamento serializable: i moduli comuni SQL restano coperti anche accanto alle collection.
 table: Reparti
 description: Reparti dell'organizzazione (PostgreSQL)
 tenancy: column
 columns:
   - { name: Id, type: int, primary_key: true }
   - { name: Nome, type: string, length: 60, required: true, unique: true }
+  - { name: Sede, type: uuid, required: true }
+  - { name: Posti, type: int, required: true }
+  - { name: Dipendenti, type: bigint, required: true }
+  - { name: Budget, type: decimal, precision: 12, scale: 2, required: true }
+  - { name: ApertoIl, type: date, required: true }
+  - { name: RevisioneIl, type: datetime, required: true }
+  - { name: AggiornatoIl, type: datetime, generated: on_update }
+pagination:
+  default_order: [{ column: Budget, dir: desc }, ApertoIl]
+  sortable: [Nome, Sede, Posti, Dipendenti, Budget, ApertoIl, RevisioneIl]
+transactions:
+  isolation: serializable

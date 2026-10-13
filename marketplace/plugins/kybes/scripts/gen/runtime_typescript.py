@@ -4,13 +4,16 @@ from __future__ import annotations
 from typing import Dict
 
 from naming import header
+from sqlonly import strip_sql
 from schema import Table
 
 PAGING = r'''// Paginazione a cursore (keyset), uguale per UI, API e DB-Model.
 // La UI invia limit, cursor e sort (es. "-data,numero", nomi JSON); riceve items e nextCursor.
 // Il cursore è opaco: codifica i valori dell'ultima riga e l'ordinamento con cui è stato prodotto.
+// kybes:sql-begin
 import { Brackets } from "typeorm";
 import type { ObjectLiteral, SelectQueryBuilder, WhereExpressionBuilder } from "typeorm";
+// kybes:sql-end
 import { ModelValidationError } from "./_base";
 
 export type SortType = "uuid" | "string" | "int" | "bigint" | "decimal" | "date" | "datetime";
@@ -43,9 +46,11 @@ export interface PagingSpec {
   maxLimit: number;
 }
 
+// kybes:sql-begin
 export function likePrefix(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_") + "%";
 }
+// kybes:sql-end
 
 function invalid(spec: PagingSpec, field: string, rule: string): ModelValidationError {
   return new ModelValidationError(spec.table, { [field]: rule });
@@ -93,8 +98,8 @@ function decodeValue(value: unknown, type: SortType): unknown {
   return value;
 }
 
-export function encodeCursor(order: OrderItem[], row: ObjectLiteral): string {
-  const payload = { s: signature(order), v: order.map((o) => encodeValue(row[o.prop], o.type)) };
+export function encodeCursor(order: OrderItem[], row: object): string {
+  const payload = { s: signature(order), v: order.map((o) => encodeValue((row as Record<string, unknown>)[o.prop], o.type)) };
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
 
@@ -111,6 +116,7 @@ export function decodeCursor(spec: PagingSpec, order: OrderItem[], cursor: strin
   }
 }
 
+// kybes:sql-begin
 export function orderRows<T extends ObjectLiteral>(qb: SelectQueryBuilder<T>, alias: string, order: OrderItem[]): SelectQueryBuilder<T> {
   order.forEach((o, i) => {
     const expr = `${alias}.${o.prop}`;
@@ -139,6 +145,7 @@ function after(alias: string, order: OrderItem[], values: unknown[]): Brackets {
     });
   });
 }
+// kybes:sql-end
 
 /** Ordinamento e limite validati di una richiesta di pagina (comune a SQL e MongoDB). */
 export function preparePage(spec: PagingSpec, page: PageRequest, fixedOrder?: OrderItem[]): { order: OrderItem[]; limit: number } {
@@ -153,6 +160,7 @@ export function emptyPage<T>(spec: PagingSpec, page: PageRequest = {}): Page<T> 
   return { items: [], nextCursor: null, limit: page.limit ?? spec.defaultLimit };
 }
 
+// kybes:sql-begin
 export async function runPage<T extends ObjectLiteral>(
   qb: SelectQueryBuilder<T>,
   alias: string,
@@ -167,11 +175,12 @@ export async function runPage<T extends ObjectLiteral>(
   const items = rows.slice(0, limit);
   return { items, nextCursor: more && items.length > 0 ? encodeCursor(order, items[items.length - 1]) : null, limit };
 }
+// kybes:sql-end
 '''
 
 
-def paging_file() -> str:
-    return header("typescript", "kit") + "/* eslint-disable */\n" + PAGING
+def paging_file(sql: bool = True) -> str:
+    return header("typescript", "kit") + "/* eslint-disable */\n" + strip_sql(PAGING, sql)
 
 
 def uow_file(tables: Dict[str, Table]) -> str:

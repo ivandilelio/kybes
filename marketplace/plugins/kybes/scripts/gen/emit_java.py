@@ -8,6 +8,7 @@ import runtime_mongo
 import runtime_java
 import runtime_tenant
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
+from sqlonly import has_sql
 from schema import SORTABLE_TYPES, Table, index_specs, methods_of, snake, tenant_column
 
 L = "java"
@@ -468,11 +469,13 @@ def custom_stub(t: Table, pkg: str) -> str:
 
 def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tuple[Dict[str, str], Dict[str, str]]:
     pkg, dialect = opts["package"], opts.get("dialect", "postgres")
+    sql = has_sql(tables)
     gen = {f"{GEN_DIR}/ModelValidationException.java": _common_file(pkg),
-           f"{GEN_DIR}/Paging.java": runtime_java.paging_file(pkg),
-           f"{GEN_DIR}/UnitOfWork.java": runtime_java.uow_file(pkg, tables, dialect),
-           f"{GEN_DIR}/Tenancy.java": runtime_tenant.java_file(pkg, opts.get("tenant_id_type", "uuid")),
-           f"{GEN_DIR}/Archive.java": runtime_archive.java_file(pkg)}
+           f"{GEN_DIR}/Paging.java": runtime_java.paging_file(pkg, sql),
+           f"{GEN_DIR}/Tenancy.java": runtime_tenant.java_file(pkg, opts.get("tenant_id_type", "uuid"), sql)}
+    if sql:  # con sole collection MongoDB: niente Unit of Work SQL né archivio (che lavora sulle tabelle SQL)
+        gen[f"{GEN_DIR}/UnitOfWork.java"] = runtime_java.uow_file(pkg, tables, dialect)
+        gen[f"{GEN_DIR}/Archive.java"] = runtime_archive.java_file(pkg)
     for n, t in tables.items():
         if t.mongo:
             gen[f"{GEN_DIR}/{n}.java"] = _mongo_entity_file(t, tables, schema_rel[n], pkg)

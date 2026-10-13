@@ -11,7 +11,7 @@ Ogni fase viene verificata con la suite del kit (`tests/run.sh`) prima di essere
 | 3b | Test generati JUnit 5 (Java, Hibernate) e xUnit (C#, EF Core) dallo stesso catalogo, eseguiti su PostgreSQL; nuovi requisiti emersi dalla copertura reale (colonne facoltative, oggetto collegato, pagina predefinita, date generate, nullo esplicito su colonne con default) | completata |
 | 4 | Multi-tenant scelto per tabella: colonna tenant con filtro in ogni metodo e row-level security, schema per tenant, database per tenant; contesto del tenant nella sessione nei quattro linguaggi; test generati di isolamento | completata |
 | 5 | Archivio hot/cold: Parquet su S3/Blob partizionato per tenant e data con spostamento verificato e recupero, read-through per chiave nei quattro linguaggi, conservazione (TTL) dell'archivio o della tabella hot, motore dei job con CronJob, ScaledJob KEDA o Deployment 24/7, tabelle esterne Athena e viste Synapse, test generati del motore e dei job | completata |
-| 6 | MongoDB nei quattro linguaggi con la stessa interfaccia dei repository SQL | pianificata |
+| 6 | MongoDB nei quattro linguaggi con la stessa interfaccia dei repository SQL: `storage: mongo` per tabella, documenti con formato comune, stessi metodi, query, paginazione a cursore e tenant, integrità referenziale nel repository, transazioni MongoDB, stessi indici più indici parziali e TTL per la conservazione, test generati eseguiti su MongoDB con replica set | completata |
 
 ## Nota su ISO 26262
 

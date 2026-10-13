@@ -9,6 +9,7 @@ import runtime_mongo
 import runtime_tenant
 import runtime_typescript
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
+from sqlonly import has_sql
 from schema import Table, index_specs, methods_of, snake, tenant_column
 
 L = "typescript"
@@ -368,14 +369,15 @@ def _validation_paging_lines(t: Table, m: Dict[str, str]) -> List[str]:
 
 
 def _index_file(tables: Dict[str, Table]) -> str:
+    has = has_sql(tables)
     lines = [header(L, "kit") + "/* eslint-disable */\n// Elenco di tutte le entità generate: usalo nella configurazione del DataSource.",
              'export { ModelValidationError } from "./_base";',
              'export type { Page, PageRequest } from "./_paging";',
-             'export { runInTransaction, isolationFor } from "./_uow";',
+             *(['export { runInTransaction, isolationFor } from "./_uow";'] if has else []),
              'export { TenantError, bindTenant, databaseUrlFor, schemaFor, searchPathFor, tenantOf } from "./_tenant";',
-             'export { FileArchiveReader, archiveOf, archivePath, bindArchive } from "./_archive";',
-             'export type { ArchiveReader } from "./_archive";',
-             'export type { Isolation, TransactionOptions } from "./_uow";']
+             *(['export { FileArchiveReader, archiveOf, archivePath, bindArchive } from "./_archive";',
+                'export type { ArchiveReader } from "./_archive";',
+                'export type { Isolation, TransactionOptions } from "./_uow";'] if has else [])]
     sql = [n for n, t in tables.items() if not t.mongo]
     mongo = [n for n, t in tables.items() if t.mongo]
     for n in tables:
@@ -388,8 +390,9 @@ def _index_file(tables: Dict[str, Table]) -> str:
         lines.append('import type { Db } from "mongodb";')
         for n in mongo:
             lines.append(f'import {{ ensureIndexes{n} }} from "./{n}";')
-    lines.append("\n/** Entità TypeORM (tabelle SQL) per la configurazione del DataSource. */")
-    lines.append(f"export const ENTITIES = [{', '.join(sql)}];")
+    if has:
+        lines.append("\n/** Entità TypeORM (tabelle SQL) per la configurazione del DataSource. */")
+        lines.append(f"export const ENTITIES = [{', '.join(sql)}];")
     if mongo:
         lines += ["", "/** Crea gli indici di tutte le collection MongoDB del modello (idempotente). */",
                   "export async function ensureMongoIndexes(db: Db): Promise<void> {"] + [f"  await ensureIndexes{n}(db);" for n in mongo] + ["}"]
@@ -411,10 +414,13 @@ def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tu
     dialect = opts.get("dialect", "postgres")
     if dialect not in DB_TYPE:
         raise ValueError(f"dialect TypeScript non supportato: {dialect} (ammessi: {', '.join(DB_TYPE)})")
+    sql = has_sql(tables)
     gen = {f"{GEN_DIR}/_base.ts": _base_file(), f"{GEN_DIR}/index.ts": _index_file(tables),
-           f"{GEN_DIR}/_paging.ts": runtime_typescript.paging_file(), f"{GEN_DIR}/_uow.ts": runtime_typescript.uow_file(tables),
-           f"{GEN_DIR}/_tenant.ts": runtime_tenant.typescript_file(opts.get("tenant_id_type", "uuid")),
-           f"{GEN_DIR}/_archive.ts": runtime_archive.typescript_file()}
+           f"{GEN_DIR}/_paging.ts": runtime_typescript.paging_file(sql),
+           f"{GEN_DIR}/_tenant.ts": runtime_tenant.typescript_file(opts.get("tenant_id_type", "uuid"), sql)}
+    if sql:  # con sole collection MongoDB: niente Unit of Work SQL né archivio (che lavora sulle tabelle SQL)
+        gen[f"{GEN_DIR}/_uow.ts"] = runtime_typescript.uow_file(tables)
+        gen[f"{GEN_DIR}/_archive.ts"] = runtime_archive.typescript_file()
     for n, t in tables.items():
         gen[f"{GEN_DIR}/{n}.ts"] = _mongo_table_file(t, tables, schema_rel[n]) if t.mongo else _table_file(t, tables, schema_rel[n], dialect)
     if any(t.mongo for t in tables.values()):
