@@ -5,6 +5,7 @@
 #   ./install.sh [--target DIR] [--fn-lang LANG] [--ms-lang LANG] [--model-langs L1,L2,...]
 #                [--namespace App.Model] [--java-package app.model] [--asil QM|A|B|C|D]
 #                [--tenancy none|column|schema|database] [--tenant-id uuid|string] [--scaffold] [--examples]
+#                [--archive-s3 s3://bucket/prefisso] [--archive-blob https://<account>.blob.core.windows.net/<container>/prefisso]
 #                [--ci github|none] [--scope local|project|user] [--no-plugin] [--force] [--uninstall]
 #   LANG: python, typescript, csharp, java
 #
@@ -24,6 +25,8 @@ JAVA_PACKAGE="app.model"
 ASIL="B"
 TENANCY="none"
 TENANT_ID="uuid"
+ARCHIVE_S3="s3://kybes-archive/archive"
+ARCHIVE_BLOB="https://kybesarchive.blob.core.windows.net/archive"
 EXAMPLES=0
 SCAFFOLD=0
 CI="github"
@@ -53,6 +56,8 @@ while [ $# -gt 0 ]; do
     --asil)     ASIL="${2:?}"; shift 2 ;;
     --tenancy)  TENANCY="${2:?}"; shift 2 ;;
     --tenant-id) TENANT_ID="${2:?}"; shift 2 ;;
+    --archive-s3) ARCHIVE_S3="${2:?}"; shift 2 ;;
+    --archive-blob) ARCHIVE_BLOB="${2:?}"; shift 2 ;;
     --examples) EXAMPLES=1; shift ;;
     --scaffold) SCAFFOLD=1; shift ;;
     --ci)       CI="${2:?}"; shift 2 ;;
@@ -76,6 +81,8 @@ done
 case "$ASIL" in QM|A|B|C|D) ;; *) die "--asil: QM, A, B, C o D" ;; esac
 case "$TENANCY" in none|column|schema|database) ;; *) die "--tenancy: none, column, schema o database" ;; esac
 case "$TENANT_ID" in uuid|string) ;; *) die "--tenant-id: uuid o string" ;; esac
+case "$ARCHIVE_S3" in s3://?*) ;; *) die "--archive-s3: s3://bucket/prefisso" ;; esac
+case "$ARCHIVE_BLOB" in https://*.blob.core.windows.net/?*|az://?*) ;; *) die "--archive-blob: https://<account>.blob.core.windows.net/<container>/prefisso o az://<container>/prefisso" ;; esac
 echo "$NAMESPACE" | grep -Eq '^[A-Z][A-Za-z0-9]*(\.[A-Z][A-Za-z0-9]*)*$' || die "--namespace non valido: $NAMESPACE"
 echo "$JAVA_PACKAGE" | grep -Eq '^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$' || die "--java-package non valido: $JAVA_PACKAGE"
 case "$SCOPE" in project|local|user) ;; *) die "--scope deve essere project, local o user" ;; esac
@@ -134,9 +141,9 @@ ok "kit copiato in $KIT_REL (versionato con il repo, usato anche dalla CI)"
 mkdir -p "$TARGET/.claude/rules/kybes"
 CFG="$TARGET/.claude/kybes.config.json"
 if [ ! -f "$CFG" ] || [ "$FORCE" = 1 ]; then
-  python3 - "$CFG" "$FN_LANG" "$MS_LANG" "$KIT_REL" "$MODEL_LANGS" "$NAMESPACE" "$JAVA_PACKAGE" "$ASIL" "$TENANCY" "$TENANT_ID" <<'PY'
+  python3 - "$CFG" "$FN_LANG" "$MS_LANG" "$KIT_REL" "$MODEL_LANGS" "$NAMESPACE" "$JAVA_PACKAGE" "$ASIL" "$TENANCY" "$TENANT_ID" "$ARCHIVE_S3" "$ARCHIVE_BLOB" <<'PY'
 import json, sys
-cfg_path, fn_lang, ms_lang, kit, model_langs, namespace, java_pkg, asil, tenancy, tenant_id = sys.argv[1:11]
+cfg_path, fn_lang, ms_lang, kit, model_langs, namespace, java_pkg, asil, tenancy, tenant_id, archive_s3, archive_blob = sys.argv[1:13]
 langs = [l for l in model_langs.split(",") if l]
 used = set(langs) | {fn_lang, ms_lang}
 lint = {}
@@ -188,6 +195,9 @@ cfg = {
         "json_schema_dir": "schemas/generated/json",
         "index_file": "MODEL_INDEX.md",
         "tenancy": {"default": tenancy, "id_type": tenant_id},
+        "jobs_dir": "jobs/generated",
+        "archive": {"s3": archive_s3, "blob": archive_blob, "image": "kybes-jobs:latest", "namespace": "default",
+                    "service_account": "kybes-jobs", "db_secret": "kybes-jobs-db"},
         "targets": targets,
     },
     "verification": {
@@ -212,6 +222,7 @@ cfg = {
         "rules": "valori ammessi: block, warn, off",
         "extra_forbidden_modules": "moduli DB aggiuntivi da vietare fuori da DB-Models; prefisso js: per i pacchetti npm",
         "stop_gate.commands": "verify.py esegue i test del modello e controlla la copertura per ASIL; aggiungi gli altri test del progetto",
+        "model.archive": "location dell'archivio per target s3 e blob ({tenant} ammesso nel prefisso) e risorse Kubernetes dei job (docs/archivio.md)",
         "model.tenancy": "default: isolamento delle tabelle senza la chiave tenancy (none, column, schema, database); id_type: uuid o string",
         "verification": "asil di default delle tabelle (ogni schema può alzarlo con verification.asil); soglie di copertura in percentuale",
         "paths": "si aggiungono ai default: ignore e protected restano attivi",

@@ -13,11 +13,12 @@ kybes needs a small amount of project configuration before its hooks and generat
    - C# namespace and/or Java package, if those languages are selected;
    - default multi-tenant mode of the tables (`--tenancy none|column|schema|database`, default `none`) and the tenant id type (`--tenant-id uuid|string`, default `uuid`);
    - default ASIL of the tables (`QM`, `A`, `B`, `C`, `D`; default `B`): it sets the coverage thresholds of the generated ISO 26262-6 unit tests;
+   - where the archive lives, if the project will archive old data: `--archive-s3 s3://bucket/prefix` and/or `--archive-blob https://<account>.blob.core.windows.net/<container>/prefix` (defaults are placeholders, changeable later in `model.archive`);
    - whether to create the standard folder scaffold (`--scaffold`) and the example schemas (`--examples`).
 3. Run the installer from the project root:
 
    ```bash
-   bash "<plugin root>/install.sh" --target . --model-langs <langs> [--namespace X] [--java-package y] [--asil B] [--tenancy column] [--scaffold] [--examples]
+   bash "<plugin root>/install.sh" --target . --model-langs <langs> [--namespace X] [--java-package y] [--asil B] [--tenancy column] [--archive-s3 s3://bucket/prefix] [--scaffold] [--examples]
    ```
 
    The installer is idempotent: it never overwrites the user's config, rules or files (only with `--force`), and it refreshes the `kybes` block in `CLAUDE.md`.

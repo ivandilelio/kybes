@@ -58,11 +58,14 @@ Lo stato è questo:
 | `db/generated/tenancy/_rls.sql`, `<T>.sql` | generato | row-level security delle tabelle `column` | disponibile |
 | `db/generated/tenancy/_schema_per_tenant.sql` | generato | funzione che crea lo schema di un tenant con le tabelle `schema` | disponibile |
 | `db/generated/tenancy/_database_per_tenant.sql` | generato | DDL da eseguire in ogni database di tenant (tabelle `database`) | disponibile |
-| `db/generated/athena/<T>.sql` | generato | tabella esterna Athena sui file Parquet dell'archivio | fase 5 |
+| `db/generated/athena/<T>.sql` | generato | tabella esterna Athena sui file Parquet dell'archivio (target `s3`) | disponibile |
+| `db/generated/synapse/<T>.sql` | generato | vista Synapse serverless sui file Parquet dell'archivio (target `blob`) | disponibile |
 | `db/migrations/` | tuo | migrazioni applicate dalla pipeline | riservato |
 | `jobs/<nome>/` | tuo | job applicativi | disponibile |
-| `jobs/generated/_engine/` | generato | motore comune dei job del kit (archiviazione, TTL) | fase 5 |
-| `jobs/generated/<t>-archive/` | generato | configurazione e manifest Kubernetes (CronJob, ScaledJob KEDA o Deployment) | fase 5 |
+| `jobs/generated/_engine/` | generato | motore comune dei job del kit (archiviazione, TTL): codice, test, `pyproject.toml`, `Dockerfile` | disponibile |
+| `jobs/generated/_engine/tests/test_<t>_job.py` | generato | test del job di una tabella sulla sua configurazione | disponibile |
+| `jobs/generated/<t>-archive/` | generato | `config.json` e `kubernetes.yaml` (CronJob, ScaledJob KEDA o Deployment); `<t>` con i trattini, es. `righe-ordine-archive` | disponibile |
+| `jobs/generated/<t>-retention/` | generato | come sopra, per le tabelle con sola conservazione | disponibile |
 
 ### Servizi, frontend, infrastruttura
 
@@ -81,10 +84,11 @@ Lo stato è questo:
 |---|---|---|---|
 | `docs/generated/verification/requirements.md` | generato | requisiti di ogni tabella e dei moduli comuni, con ASIL | disponibile |
 | `docs/generated/verification/<T>.md` | generato | specifica dei test di unità della tabella (metodo di derivazione, atteso) | disponibile |
-| `docs/generated/verification/kybes-runtime.md` | generato | specifica dei test di paginazione, Unit of Work e API | disponibile |
+| `docs/generated/verification/kybes-runtime.md` | generato | specifica dei test di paginazione, Unit of Work, archivio e API | disponibile |
+| `docs/generated/verification/kybes-jobs.md` | generato | specifica dei test del motore dei job (se una tabella ha archivio o conservazione) | disponibile |
 | `docs/generated/verification/traceability.md` | generato | matrice requisito → test → file | disponibile |
 | `docs/generated/verification/coverage.md` | generato | soglie di copertura per ASIL e limiti noti | disponibile |
-| `coverage/<lingua>.cobertura.xml` | prodotto da `verify.py` | copertura strutturale misurata (non versionato) | disponibile |
+| `coverage/<lingua>.cobertura.xml`, `coverage/jobs.cobertura.xml` | prodotto da `verify.py` | copertura strutturale misurata (non versionato) | disponibile |
 
 ## Come si ritrova una cosa
 
@@ -96,4 +100,6 @@ Lo stato è questo:
 | perché un indice esiste | `db/generated/indexes.md` |
 | quali test coprono un requisito | `docs/generated/verification/traceability.md` |
 | dove scrivere il test di un metodo custom | `libs/db-models/<lingua>/tests/custom/` ([verifica](verifica.md)) |
-| quando i dati vecchi lasciano la tabella | sezione `archive` di `schemas/db/<T>.yaml` (fase 5) |
+| quando i dati vecchi lasciano la tabella | sezione `archive` di `schemas/db/<T>.yaml` ([archivio](archivio.md)) |
+| dove gira il job di una tabella | `jobs/generated/<t>-archive/kubernetes.yaml` |
+| come interrogare i dati archiviati | `db/generated/athena/<T>.sql` o `db/generated/synapse/<T>.sql` |

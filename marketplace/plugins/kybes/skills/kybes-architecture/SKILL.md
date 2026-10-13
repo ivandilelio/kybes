@@ -123,6 +123,16 @@ Inoltre `schemas/generated/json/<Tabella>.schema.json` (validazione di API Gatew
 - `db/generated/tenancy/_rls.sql` (row-level security) va applicato in produzione: il ruolo dell'applicazione non ha `BYPASSRLS`.
 - Dettagli: docs/multi-tenant.md del kit.
 
+## 4b-ter. Archivio e conservazione
+
+- I dati vecchi non si spostano né si cancellano con job scritti a mano: si dichiarano `archive` e `retention` nello schema della tabella. Il generatore produce configurazione e manifest del job (`jobs/generated/<t>-archive/`), il motore comune (`jobs/generated/_engine/`), il DDL Athena o Synapse e i test.
+- `archive` quando il dato serve ancora (audit, consultazione): Parquet su S3 o Blob, partizionato per tenant e data. `retention` da sola quando il dato non ha valore dopo il TTL. Entrambe per una conservazione con scadenza (es. 10 anni).
+- `job.mode`: `cron` di default; `keda` per tabelle con molto flusso (il job parte quando ci sono righe da elaborare; solo `tenancy` `none` o `column`); `engine` solo se serve un passaggio continuo.
+- `read_through: true` solo se API o UI devono aprire per chiave un record archiviato. Elenchi, ricerche e report sui dati archiviati si fanno con Athena o Synapse, non dal model.
+- Un record con figli nella tabella hot non viene archiviato: per testata e righe, dai alle righe la stessa colonna di data e lo stesso `after`.
+- Il lettore dell'archivio si lega alla sessione come il tenant (`bind_archive`, `bindArchive`, `Archive.bind`, `db.BindArchive`). Il job gira con un ruolo dedicato: `BYPASSRLS`, oppure i tenant in `KYBES_TENANTS`.
+- Dettagli: docs/archivio.md del kit.
+
 ## 4c. Verifica di unità (ISO 26262-6)
 
 - Il generatore scrive i test di unità del modello in `libs/db-models/<lang>/tests/generated/` e le evidenze in `docs/generated/verification/` (requisiti `REQ-*`, specifiche dei casi `TC-*`, tracciabilità, soglie). Non si modificano: cambia lo schema.
@@ -210,6 +220,7 @@ seguita da: modifiche agli schemi `schemas/db/<Tabella>.yaml` (colonne, relazion
 - [ ] Metodi custom solo in `model/<Tabella>`, nessun duplicato di metodi generati, nessun blocco di codice duplicato
 - [ ] Ogni metodo custom ha un test in `tests/custom/` con id `TC-` e requisito `REQ-`; `verify.py` verde (test e soglie ASIL)
 - [ ] Ogni tabella nuova ha `tenancy`; il tenant è legato alla sessione dal middleware (mai dal payload), le transazioni lo passano alla Unit of Work
+- [ ] Età e TTL dei dati dichiarati con `archive`/`retention` nello schema, nessun job di pulizia scritto a mano
 - [ ] Nessun accesso al DB fuori da DB-Models
 - [ ] Endpoint limitati al proprio bounded context
 - [ ] Validazione ai tre livelli

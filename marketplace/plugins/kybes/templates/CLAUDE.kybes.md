@@ -8,6 +8,7 @@ Questo progetto segue l'architettura della skill `kybes-architecture`. In sintes
 - Modello dati: `schemas/db/<Tabella>.yaml` è la sorgente di verità. Il generatore produce entità, CRUD e relazioni in `model/generated/` (mai a mano). I metodi custom di una tabella stanno solo in `model/<Tabella>` (Java: `model/<Tabella>Repository.java`).
 - **Prima di cercare nel codice leggi `MODEL_INDEX.md`**: dice in che file sta ogni metodo di ogni tabella.
 - Multi-tenant: ogni tabella dichiara `tenancy` (`none` condivisa, `column` per Organization, `schema`/`database` per separazione fisica). Il tenant si lega alla sessione nel middleware dal token SSO e si passa alla Unit of Work; mai dal payload, mai filtri scritti a mano.
+- Dati che invecchiano: `archive` (Parquet su S3/Blob) e `retention` (TTL) nello schema; job, manifest Kubernetes e DDL Athena/Synapse li genera kybes in `jobs/generated/` e `db/generated/`. Mai job di pulizia scritti a mano.
 - Test: quelli del modello sono generati in `tests/generated/` (ISO 26262-6, evidenze in `docs/generated/verification/`). Ogni metodo custom ha un test in `tests/custom/` con id `TC-<Tabella>-<CASO>` e requisito `REQ-<Tabella>-<CHIAVE>`; `verify.py` controlla test e copertura per ASIL.
 - Niente codice duplicato: si estrae nel model (dati), in `libs/utils` (trasformazioni) o nel service (regole).
 - `libs/utils` solo funzioni pure riusate in almeno due punti.

@@ -49,16 +49,16 @@ verification:
   asil: B
 
 archive:
-  after: 365d
-  on: Data
+  after: 5y
+  column: Data
   target: s3
   format: parquet
   partition_by: [year, month]
   read_through: true
-  job: { mode: cron, schedule: "0 2 * * *" }
+  job: { mode: cron, schedule: "17 3 * * *" }
 
 retention:
-  delete_after: 3650d
+  delete_after: 10y
 ```
 
 ## Chiavi di primo livello
@@ -76,8 +76,8 @@ retention:
 | `transactions` | no | livello di isolamento delle scritture | `read_committed` | disponibile |
 | `verification` | no | livello ASIL della tabella: decide soglie di copertura e casi MC/DC dei test generati | `asil` della configurazione (B) | disponibile |
 | `tenancy` | no | `none`, `column`, `schema`, `database` | `model.tenancy.default` della configurazione (`none`) | disponibile |
-| `archive` | no | spostamento dei dati vecchi su cold storage | nessun archivio | fase 5 |
-| `retention` | no | cancellazione definitiva dopo un TTL | nessuna | fase 5 |
+| `archive` | no | spostamento dei dati vecchi su S3 o Blob in Parquet | nessun archivio | disponibile |
+| `retention` | no | cancellazione definitiva dopo un TTL | nessuna | disponibile |
 | `storage` | no | `sql`, `mongo` | `sql` | fase 6 |
 
 ## Colonne
@@ -168,33 +168,56 @@ Le transazioni si aprono nel service con la Unit of Work generata, mai dentro i 
 | `schema` | la tabella vive in uno schema PostgreSQL per Organization | funzione `kybes_create_tenant_schema` in `db/generated/tenancy/_schema_per_tenant.sql` |
 | `database` | un database per Organization | DDL del database del tenant in `db/generated/tenancy/_database_per_tenant.sql` |
 
-In tutti i casi il repository lavora solo con un tenant legato alla sessione e non legge né modifica dati di un'altra Organization. Le relazioni ammesse tra tabelle con modalità diverse, il contesto del tenant nei quattro linguaggi e i test generati sono in [multi-tenant](multi-tenant.md). Nella fase 5 anche l'archivio sarà separato per tenant.
+In tutti i casi il repository lavora solo con un tenant legato alla sessione e non legge né modifica dati di un'altra Organization. Le relazioni ammesse tra tabelle con modalità diverse, il contesto del tenant nei quattro linguaggi e i test generati sono in [multi-tenant](multi-tenant.md). Anche l'archivio è separato per tenant (sotto).
 
-## Archivio (fase 5)
+## Archivio
 
-| Chiave | Valori | Note |
-|---|---|---|
-| `after` | durata (`90d`, `12m`, `5y`) | età oltre la quale un record lascia la tabella hot |
-| `on` | colonna `date` o `datetime` | colonna su cui si misura l'età |
-| `target` | `s3`, `blob` | Amazon S3 o Azure Blob Storage |
-| `format` | `parquet` | |
-| `partition_by` | `year`, `month`, `day`, `tenant` | partizioni del percorso; `tenant` è implicita quando `tenancy` non è `none` |
-| `read_through` | `true`/`false` | i metodi di lettura per chiave cercano anche nell'archivio se il record non è più nella tabella hot |
-| `job.mode` | `cron`, `keda`, `engine` | CronJob Kubernetes, ScaledJob KEDA o Deployment sempre attivo |
-| `job.schedule` | espressione cron | per `cron` |
+| Chiave | Obbligatoria | Valori | Default |
+|---|---|---|---|
+| `after` | sì | durata: `90d`, `12m`, `5y` | — |
+| `column` | sì | colonna `date` o `datetime`, `required` o `generated: on_create` | — |
+| `target` | no | `s3`, `blob` | `s3` |
+| `format` | no | `parquet` | `parquet` |
+| `partition_by` | no | `year`, `month`, `day`, `tenant` (le date sono gerarchiche) | `[year, month]`; `tenant` in testa, implicita quando `tenancy` non è `none` |
+| `read_through` | no | `true`/`false` | `false` |
+| `job` | no | come e quando gira il job (sotto) | `mode: cron`, ogni notte |
+
+I record con `column` più vecchia di `after` passano dalla tabella hot all'archivio. Un record con figli nella tabella hot (una relazione `many_to_one` di un'altra tabella che punta a lui) resta finché ha figli: archivia prima i figli, con la loro colonna di data.
+
+Con `read_through: true` la lettura per chiave (`getById` e corrispondenti) cerca nell'archivio un record che non è più nella tabella hot. Gli altri metodi leggono solo la tabella hot.
 
 Lo spostamento è sicuro in ogni passo:
-1. scrive il file Parquet;
-2. lo verifica (righe e checksum);
-3. cancella dalla tabella hot nella stessa finestra di transazione.
+1. scrive i file Parquet in un'area di staging e li rilegge (righe, chiavi, SHA-256);
+2. cancella le righe dalla tabella hot e registra il passaggio in `kybes_archive_runs`, nella stessa transazione;
+3. dopo il commit sposta i file nella posizione definitiva.
 
-Se un passo fallisce, il record resta nella tabella hot.
+Se un passo fallisce prima del commit, le righe restano nella tabella hot e lo staging viene scartato; se il processo si interrompe dopo, il job successivo completa lo spostamento. I dettagli sono in [archivio](archivio.md).
 
-## Conservazione (fase 5)
+Vincoli controllati dal generatore:
+- una colonna della tabella non può chiamarsi come una partizione (`tenant`, `year`, `month`, `day`): rinominala con `db_name`;
+- una tabella condivisa (`tenancy: none`) non può avere archivio o conservazione se tabelle per schema o per database di tenant si riferiscono a lei;
+- `job.mode: keda` vale solo per `tenancy` `none` e `column` (il trigger conta le righe in un solo database).
 
-| Chiave | Valori | Note |
-|---|---|---|
-| `delete_after` | durata | cancellazione definitiva dall'archivio dopo il TTL, eseguita dallo stesso job |
+## Job
+
+| Chiave | Valori | Default | Note |
+|---|---|---|---|
+| `mode` | `cron`, `keda`, `engine` | `cron` | CronJob Kubernetes, ScaledJob KEDA attivato dalle righe da elaborare, Deployment sempre attivo |
+| `schedule` | espressione cron di 5 campi | `17 3 * * *` | `cron`: quando gira; `keda`: passaggio giornaliero di sicurezza |
+| `interval` | secondi, da 30 a 86400 | 300 | `keda`: polling del trigger; `engine`: pausa tra due passaggi |
+| `batch_size` | righe per transazione, da 1 a 10000 | 1000 | |
+
+`job` sta in `archive`, oppure in `retention` per una tabella senza archivio.
+
+## Conservazione
+
+| Chiave | Obbligatoria | Valori | Note |
+|---|---|---|---|
+| `delete_after` | sì | durata | con archivio: deve superare `archive.after` |
+| `column` | senza archivio | colonna `date` o `datetime` | con archivio l'età è quella di `archive.column` |
+| `job` | no | come sopra | solo senza archivio |
+
+Con un archivio, la conservazione cancella le partizioni dell'archivio finite prima di `delete_after` fa, con i loro oggetti per chiave: serve `year` in `partition_by`. Senza archivio cancella dalla tabella hot le righe con `column` più vecchia di `delete_after`; un figlio `restrict` trattiene il record, `cascade` e `set_null` seguono la regola della relazione.
 
 ## Storage (fase 6)
 

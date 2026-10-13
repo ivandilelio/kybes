@@ -11,7 +11,8 @@
 | `marketplace/plugins/kybes/agents/` | agenti architect, implementer, reviewer |
 | `marketplace/plugins/kybes/hooks/hooks.json` | registrazione degli hook |
 | `marketplace/plugins/kybes/scripts/` | hook, regole (`rules.py`, `model_guard.py`), `arch_check.py`, `verify.py` (test e soglie di copertura nei progetti) |
-| `marketplace/plugins/kybes/scripts/gen/` | generatore: `schema.py` (lettura e validazione), `naming.py` (nomi per linguaggio), `emit_<linguaggio>.py`, `verification.py` (requisiti e casi di test), `test_<linguaggio>.py` (test generati nei quattro linguaggi), `gen.py` (orchestrazione) |
+| `marketplace/plugins/kybes/scripts/gen/` | generatore: `schema.py` (lettura e validazione), `naming.py` (nomi per linguaggio), `emit_<linguaggio>.py`, `verification.py` (requisiti e casi di test), `test_<linguaggio>.py` (test generati nei quattro linguaggi), `runtime_*.py` (moduli comuni generati), `emit_archive.py` (job, manifest, DDL Athena e Synapse, test dei job), `gen.py` (orchestrazione) |
+| `marketplace/plugins/kybes/scripts/gen/engine/` | motore dei job (`kybes_jobs/`) e i suoi test (`tests/`): file Python veri, copiati nei progetti in `jobs/generated/_engine/` con l'intestazione dei file generati. I casi `TC-KYBES-JOB-*` del catalogo si leggono dai docstring di `tests/test_engine.py` |
 | `marketplace/plugins/kybes/install.sh`, `templates/` | installer e file copiati nei progetti: stanno dentro il plugin perché Claude Code, installando dal marketplace, copia solo la cartella del plugin |
 | `tests/` | suite di test del kit; `tests/fixtures/tenancy/` sono schemi di prova con tabelle `schema` e `database` |
 | `docs/` | questa documentazione |
@@ -20,7 +21,7 @@
 
 ```bash
 tests/run.sh             # tutto quello che la macchina può eseguire
-tests/run.sh python      # un gruppo: python, typescript, java, csharp, sql, hooks
+tests/run.sh python      # un gruppo: python, jobs, typescript, java, csharp, sql, hooks
 ```
 
 La suite installa il kit in due progetti temporanei, con i quattro linguaggi e gli schemi di esempio, e poi verifica:
@@ -29,6 +30,7 @@ La suite installa il kit in due progetti temporanei, con i quattro linguaggi e g
 |---|---|---|
 | sempre | generatore idempotente, `arch_check` pulito | python3 |
 | `python` | CRUD, relazioni, gerarchie, cascade, vincoli univoci, validazione; paginazione a cursore (pareggi, ordinamenti, cursori manomessi), ogni operatore delle query, Unit of Work con commit, rollback e retry, su SQLite | SQLAlchemy 2 |
+| `jobs` | test del motore nel kit e nei progetti (copertura entro le soglie), tabelle per schema e per database; `tests/python/test_archive.py`: validazione di `archive`/`retention`, formato degli oggetti per chiave uguale tra generatore e motore, job reale da riga di comando con read-through dal modello Python, layout Hive letto da DuckDB, S3 con moto, Azure Blob con Azurite (`KYBES_TEST_AZURITE`), manifest Kubernetes | pyarrow, SQLAlchemy, pytest; facoltativi duckdb, moto, azure-storage-blob, PyYAML |
 | `typescript` | gli stessi casi su sql.js; compilazione `strict` con `noUnusedLocals` anche per il dialetto postgres | Node 20+ e npm |
 | `java` | compilazione con `-Xlint:all -Werror` contro stub fedeli di JPA e Hibernate (`tests/java/stubs`); esecuzione della logica di paginazione e Unit of Work con un `EntityManager` finto che registra JPQL e parametri | JDK 17+ |
 | `csharp` | sintassi del codice generato e dei test generati con il parser tree-sitter | `pip install tree-sitter tree-sitter-c-sharp` |
@@ -41,10 +43,10 @@ Java e C# richiedono librerie che la suite locale non scarica: in locale si comp
 
 | Job | Esegue |
 |---|---|
-| `tests` | `tests/run.sh` |
+| `tests` | `tests/run.sh`, con Azurite avviato per i test dell'archivio su Blob |
 | `generated-java` | test JUnit generati con Hibernate 6 e JaCoCo, tramite `verify.py`, sugli schemi di esempio e su `tests/fixtures/tenancy` (id del tenant `string`) |
 | `generated-csharp` | `dotnet build -warnaserror` del modello, test xUnit generati con EF Core 8 e coverlet, tramite `verify.py`, sugli schemi di esempio e su `tests/fixtures/tenancy` |
-| `generated-python-typescript` | test generati Python e TypeScript sul dialetto `postgres`; `tests/sql/tenancy_check.py`: row-level security, schema e database per tenant su PostgreSQL reale |
+| `generated-python-typescript` | test generati Python e TypeScript sul dialetto `postgres` e test del motore dei job su PostgreSQL; `tests/sql/tenancy_check.py`: row-level security, schema e database per tenant e job di conservazione con la RLS su PostgreSQL reale |
 
 In CI i comandi passano da `tests/ci/annotate.py`: se falliscono, l'output finisce nelle annotazioni del job, leggibili anche via API (`gh api repos/<owner>/<repo>/check-runs/<id>/annotations`).
 

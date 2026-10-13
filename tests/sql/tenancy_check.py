@@ -6,7 +6,9 @@
 Usa KYBES_TEST_DATABASE_URL (utente con diritti di creare database e ruoli) e psycopg 3.
 1. row-level security: con un ruolo senza BYPASSRLS ogni tenant vede e scrive solo le proprie righe;
 2. schema per tenant: kybes_create_tenant_schema crea schema e tabelle, con le chiavi verso le tabelle condivise;
-3. database per tenant: il DDL crea le tabelle in un database nuovo.
+3. database per tenant: il DDL crea le tabelle in un database nuovo;
+4. job di conservazione con la row-level security: senza BYPASSRLS il job si ferma, con KYBES_TENANTS lavora solo
+   sul tenant indicato, con un ruolo che vede tutte le righe elabora ogni tenant.
 """
 import os
 import sys
@@ -94,7 +96,38 @@ def database_per_tenant(proj: Path) -> None:
     with psycopg.connect(url, autocommit=True) as c:
         c.execute((proj / "db/generated/tenancy/_database_per_tenant.sql").read_text())
         rows = [r[0] for r in c.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY 1")]
-        check(rows == ["registri", "voci"], f"database per tenant: tabelle create ({rows})")
+        check(rows == ["kybes_archive_runs", "registri", "voci"], f"database per tenant: tabelle create, con il registro dei passaggi d'archivio ({rows})")
+
+
+def jobs_with_rls(proj: Path) -> None:
+    """Il job di conservazione di Eventi (tenancy column) sul database con la RLS creato da rls()."""
+    sys.path.insert(0, str(proj / "jobs/generated/_engine"))
+    import sqlalchemy as sa
+    from kybes_jobs import Job, JobError, load_config
+    from kybes_jobs.engine import database_url
+    base = URL.rsplit("/", 1)[0] + "/kybes_rls"
+    ADMIN.execute("DO $$ BEGIN CREATE ROLE kybes_job LOGIN PASSWORD 'kybes' NOBYPASSRLS; EXCEPTION WHEN duplicate_object THEN NULL; END $$")
+    a, b = str(uuid.uuid4()), str(uuid.uuid4())
+    with psycopg.connect(base, autocommit=True) as c:
+        c.execute("GRANT ALL ON ALL TABLES IN SCHEMA public TO kybes_job")
+        for tenant, n in ((a, 1), (b, 2)):
+            c.execute("INSERT INTO eventi (id, tenant_id, tipo, avvenuto_il) VALUES (%s, %s, 'vecchio', now() - interval '2 years')", (n, tenant))
+    job_url = "postgresql://kybes_job:kybes@" + base.split("@", 1)[1]
+    cfg = load_config(str(proj / "jobs/generated/eventi-retention/config.json"))
+    quiet = {"log": lambda e: None}
+    limited = sa.create_engine(database_url(job_url))
+    try:
+        Job(cfg, limited, **quiet).run()
+        check(False, "job con RLS: un ruolo senza BYPASSRLS è fermato")
+    except JobError as exc:
+        check("BYPASSRLS" in str(exc), "job con RLS: un ruolo senza BYPASSRLS è fermato")
+    check(Job(cfg, limited, tenants=[a], **quiet).run().deleted_rows == 1, "job con RLS: con KYBES_TENANTS cancella le righe scadute del tenant")
+    with psycopg.connect(base) as c:
+        left = [str(r[0]) for r in c.execute("SELECT tenant_id FROM eventi")]
+    check(left == [b], f"job con RLS: le righe dell'altro tenant restano ({left})")
+    check(Job(cfg, sa.create_engine(database_url(base)), **quiet).run().deleted_rows == 1,
+          "job con un ruolo che vede tutti i tenant: tenant trovati da soli")
+    limited.dispose()
 
 
 if __name__ == "__main__":
@@ -102,4 +135,5 @@ if __name__ == "__main__":
     rls(column_proj)
     schema_per_tenant(physical_proj)
     database_per_tenant(physical_proj)
+    jobs_with_rls(column_proj)
     print("TENANCY SQL OK")

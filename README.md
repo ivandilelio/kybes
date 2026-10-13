@@ -33,13 +33,14 @@ Asking an AI to "follow our architecture" works only some of the time. Instructi
 
 ```mermaid
 flowchart LR
-    S["schemas/db/Clienti.yaml<br/>columns · relations · queries<br/>pagination · transactions"] --> G{{"kybes generator<br/>deterministic"}}
+    S["schemas/db/Clienti.yaml<br/>columns · relations · queries<br/>pagination · transactions<br/>tenancy · archive"] --> G{{"kybes generator<br/>deterministic"}}
     G --> CS["C# · EF Core 8<br/>model/Clienti.cs"]
     G --> PY["Python · SQLAlchemy 2<br/>model/Clienti.py"]
     G --> TS["TypeScript · TypeORM<br/>model/Clienti.ts"]
     G --> JV["Java · JPA / Hibernate 6<br/>model/ClientiRepository.java"]
     G --> JS["JSON Schema<br/>API Gateway validation"]
     G --> DDL["PostgreSQL DDL<br/>+ index analysis"]
+    G --> JOB["archive & TTL jobs<br/>Parquet · K8s · Athena"]
     G --> IDX["MODEL_INDEX.md<br/>where everything is"]
 ```
 
@@ -118,7 +119,8 @@ The generator also creates the index `(ClienteId, Data)` that covers both `listB
 | **Guardrail hooks** | data access outside the model, generated files, folder layout, method collisions, secrets, duplicates | ✅ available |
 | **Unit tests to ISO 26262-6** | requirement IDs and test cases derived from each schema (requirements analysis, equivalence classes, boundary values, error guessing, MC/DC for ASIL C/D); runnable pytest and node:test suites; traceability matrix; coverage gate per table ASIL; mandatory traced tests for custom methods | ✅ available |
 | **Multi-tenancy** | per table: tenant column (every method filtered, unique constraints per tenant, PostgreSQL row-level security), schema per tenant, or database per tenant; tenant bound to the ORM session; generated isolation tests | ✅ available |
-| **Hot/cold archive** | Parquet on S3/Azure Blob partitioned by tenant and date, queryable from Athena; TTL jobs as CronJob, Job+KEDA or 24/7 engine | 🗺️ planned |
+| **Hot/cold archive** | old rows move to Parquet on S3/Azure Blob, partitioned by tenant and date; every file is verified (rows, keys, SHA-256) before the rows leave the hot table, and an interrupted move is completed by the next run; `getById` can read through to the archive in all four languages; Athena tables and Synapse views generated | ✅ available |
+| **Retention (TTL)** | archive partitions or hot rows deleted after a declared age; jobs as Kubernetes CronJob, KEDA ScaledJob triggered by backlog, or 24/7 engine; one job engine with its own generated tests | ✅ available |
 | **MongoDB** | same repository interface over MongoDB in all four languages | 🗺️ planned |
 
 ## Guardrails
@@ -152,6 +154,9 @@ your-project/
 │   └── custom/                          ← yours: tests of your custom methods
 ├── docs/generated/verification/         ← requirements, test specs, traceability, coverage policy
 ├── db/generated/ddl/postgres/_all.sql   ← DDL, indexes.md
+├── db/generated/{athena,synapse}/       ← queries over the Parquet archive
+├── jobs/generated/<table>-archive/      ← job config + Kubernetes manifest (CronJob, KEDA, Deployment)
+├── jobs/generated/_engine/              ← archive & TTL job engine with its tests and Dockerfile
 ├── services/<context>/{functions,ms}/   ← Lambda / Kubernetes handlers
 ├── jobs/  libs/utils/  libs/errors/  frontend/  infra/
 ├── MODEL_INDEX.md                       ← tables → files → methods
@@ -189,6 +194,7 @@ The installer is idempotent. Teammates run `tools/kybes/setup.sh` once after clo
 | Python | Python 3.9+, SQLAlchemy 2 |
 | TypeScript | TypeORM, `reflect-metadata`, `experimentalDecorators` and `emitDecoratorMetadata` |
 | Java | Jakarta Persistence 3.1, Hibernate 6.2+, Jackson for `json` columns |
+| archive jobs | Python 3.10+, SQLAlchemy 2, pyarrow, psycopg 3; boto3 or azure-storage-blob (all in the generated `pyproject.toml` and `Dockerfile`) |
 | hooks and generator | `python3` (standard library only) |
 
 ## How kybes itself is verified
@@ -202,7 +208,8 @@ The installer is idempotent. Teammates run `tools/kybes/setup.sh` once after clo
 | Generated tests | the ISO 26262-6 suites generated into the sample project run green in all four languages (Python and TypeScript also on PostgreSQL), within the ASIL coverage thresholds; mutants (dropped query condition, off-by-one length or page limit, flipped keyset comparator, retry off-by-one) are killed |
 | Java | `javac -Xlint:all -Werror` against faithful JPA/Hibernate stubs locally; in CI the generated JUnit 5 suite runs on Hibernate 6 and PostgreSQL 16, with JaCoCo coverage within the ASIL thresholds |
 | C# | tree-sitter syntax check locally; in CI the model builds with `-warnaserror` and the generated xUnit suite runs on EF Core 8 and PostgreSQL 16, with coverlet coverage within the ASIL thresholds |
-| SQL | generated DDL parsed by the PostgreSQL parser (`pglast`) |
+| SQL | generated DDL parsed by the PostgreSQL parser (`pglast`); in CI row-level security, schema and database per tenant run on PostgreSQL 16 |
+| Archive jobs | the engine's own suite at 100% branch coverage on SQLite and PostgreSQL; a real job run through the CLI (move, child kept, retention, read-through from the Python model); Parquet layout read by DuckDB; S3 via moto and Azure Blob via Azurite; Kubernetes manifests parsed; the RLS check against a role without `BYPASSRLS` |
 | Cross-language | a cursor produced by TypeScript, Python or Java is accepted by the others |
 | Hooks | every rule with its expected outcome (deny/allow), auto-regeneration, duplicate detection, stop gate |
 
@@ -219,6 +226,7 @@ The detailed documentation is in Italian, in [`docs/`](docs/README.md):
 - [transactions](docs/transazioni.md)
 - [guardrails](docs/controlli.md)
 - [multi-tenancy](docs/multi-tenant.md)
+- [archive & retention](docs/archivio.md)
 - [unit verification (ISO 26262-6)](docs/verifica.md)
 - [configuration](docs/configurazione.md)
 - [roadmap](docs/roadmap.md)

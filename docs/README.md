@@ -12,6 +12,7 @@
 | [Controlli](controlli.md) | sviluppatori, revisori | regole, momenti in cui scattano, livelli |
 | [Configurazione](configurazione.md) | chi installa | `kybes.config.json` e opzioni dell'installer |
 | [Multi-tenant](multi-tenant.md) | sviluppatori, architetti | isolamento per tabella (column, schema, database), contesto del tenant, row-level security, test di isolamento |
+| [Archivio e conservazione](archivio.md) | sviluppatori, architetti, operations | spostamento sicuro su S3/Blob in Parquet, read-through, TTL, job Kubernetes, Athena e Synapse |
 | [Verifica di unità](verifica.md) | sviluppatori, qualità | test generati ISO 26262-6, metodi custom, soglie per ASIL, `verify.py` |
 | [Roadmap](roadmap.md) | tutti | fasi completate e pianificate, nota su ISO 26262 |
 | [Sviluppo del kit](sviluppo.md) | chi mantiene kybes | struttura del repository, test, come estenderlo |

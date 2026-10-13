@@ -92,3 +92,7 @@ Ogni tabella multi-tenant ha il requisito `REQ-<Tabella>-TENANT` e questi casi:
 I moduli comuni hanno `REQ-KYBES-TENANT` (legare e scollegare il tenant, nomi di schema e database, Unit of Work con tenant). I test generati legano il tenant di prova `TENANT_A` alla sessione; i test custom lo ricevono allo stesso modo.
 
 La CI del kit verifica su PostgreSQL reale anche il DDL: con la row-level security un ruolo senza `BYPASSRLS` vede e scrive solo le righe del proprio tenant; la funzione crea gli schemi di due tenant separati; il DDL crea le tabelle in un database di tenant.
+
+## Archivio
+
+Con `archive` l'archivio è separato per tenant: partizione `tenant=<id>` nei percorsi dei Parquet e degli oggetti per chiave, partizione `injected` in Athena (ogni query indica il tenant), lettura per chiave limitata al tenant della sessione. Il job elabora un tenant alla volta: per le tabelle `column` con un ruolo `BYPASSRLS` o con i tenant in `KYBES_TENANTS`, per `schema` e `database` come descritto in [archivio](archivio.md#multi-tenant).

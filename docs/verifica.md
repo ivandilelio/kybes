@@ -10,15 +10,17 @@ Dallo schema `schemas/db/<T>.yaml` il generatore ricava requisiti e casi di test
 |---|---|---|
 | requisiti di ogni tabella e dei moduli comuni | `docs/generated/verification/requirements.md` | generato |
 | specifica dei test di una tabella | `docs/generated/verification/<T>.md` | generato |
-| specifica dei test dei moduli comuni (paginazione, Unit of Work, API) | `docs/generated/verification/kybes-runtime.md` | generato |
+| specifica dei test dei moduli comuni (paginazione, Unit of Work, archivio, API) | `docs/generated/verification/kybes-runtime.md` | generato |
+| specifica dei test del motore dei job (archivio e conservazione) | `docs/generated/verification/kybes-jobs.md` | generato |
 | matrice requisito → test → file | `docs/generated/verification/traceability.md` | generato |
 | soglie di copertura per ASIL e limiti noti | `docs/generated/verification/coverage.md` | generato |
 | test Python (pytest) | `libs/db-models/python/tests/generated/` | generato |
 | test TypeScript (node:test) | `libs/db-models/typescript/tests/generated/` | generato |
 | test Java (JUnit 5, Hibernate) | `libs/db-models/java/src/test/java/<package>/generated/` | generato |
 | test C# (xUnit, EF Core) | `libs/db-models/csharp/tests/generated/` | generato |
+| test del motore dei job e dei job di ogni tabella (pytest) | `jobs/generated/_engine/tests/` | generato |
 | test dei metodi custom | `libs/db-models/<lingua>/tests/custom/` (Java: `src/test/java/<package>/custom/`) | tuo |
-| report di copertura | `coverage/<lingua>.cobertura.xml`, `coverage/java.jacoco.xml` | prodotto da `verify.py` |
+| report di copertura | `coverage/<lingua>.cobertura.xml`, `coverage/java.jacoco.xml`, `coverage/jobs.cobertura.xml` | prodotto da `verify.py` |
 
 I quattro linguaggi rendono lo stesso catalogo: stessi identificativi, stessi casi, adattati all'API del linguaggio. Per esempio, l'aggiornamento di un record inesistente in Python e TypeScript non restituisce nulla, in Java e C# solleva un errore «record inesistente»; la specifica di ogni caso lo dice.
 
@@ -50,6 +52,10 @@ Ogni test di query costruisce anche un record fuori dalla classe (le condizioni 
 
 Le tabelle con `tenancy` diversa da `none` hanno il requisito `REQ-<Tabella>-TENANT` e i casi di isolamento (tenant obbligatorio, isolamento tra tenant, assegnazione del tenant, univocità per tenant, padre di un altro tenant): l'elenco è in [multi-tenant](multi-tenant.md). La sessione dei test generati è legata al tenant di prova `TENANT_A`, definito nei builder.
 
+## Archivio e conservazione
+
+Le tabelle con `archive` o `retention` hanno i requisiti `REQ-<Tabella>-ARCHIVE`, `REQ-<Tabella>-RETENTION` e, con `read_through`, `REQ-<Tabella>-ARCHIVE-READ`. I casi di lettura dall'archivio (`TC-<Tabella>-ARCHIVE-READ`, `-READ-MISS`, `-HOT-FIRST`, `-READ-TENANT`) stanno nei test del modello dei quattro linguaggi; quelli del job (`TC-<Tabella>-JOB-*`) e del motore (`TC-KYBES-JOB-*`, requisiti `REQ-KYBES-JOB-*`) in `jobs/generated/_engine/tests/`. L'elenco è in [archivio](archivio.md#test-generati).
+
 ## Soglie di copertura
 
 | ASIL | Statement | Branch | MC/DC |
@@ -60,7 +66,7 @@ Le tabelle con `tenancy` diversa da `none` hanno il requisito `REQ-<Tabella>-TEN
 | C | 100% | 95% | casi generati |
 | D | 100% | 100% | casi generati |
 
-Le soglie sono una politica del progetto ispirata a ISO 26262-6, tabella 9, e si cambiano in `verification.thresholds`. L'ASIL di un file del modello è quello della sua tabella. I moduli comuni (`_paging`, `_uow`, `_base`, l'indice) prendono l'ASIL più alto del progetto.
+Le soglie sono una politica del progetto ispirata a ISO 26262-6, tabella 9, e si cambiano in `verification.thresholds`. L'ASIL di un file del modello è quello della sua tabella. I moduli comuni (`_paging`, `_uow`, `_tenant`, `_archive`, `_base`, l'indice) e il motore dei job prendono l'ASIL più alto del progetto.
 
 Gli strumenti di copertura diffusi (coverage.py, c8, coverlet, JaCoCo) non misurano la MC/DC. Per ASIL C e D la MC/DC è ottenuta dal disegno dei test: per ogni condizione c'è un caso che la rende determinante. `coverage.md` lo dichiara, perché l'auditor lo deve sapere.
 
@@ -158,6 +164,7 @@ Il requisito di un metodo custom si scrive nel commento del metodo con lo stesso
 ```bash
 python3 -B tools/kybes/plugins/kybes/scripts/verify.py .                    # tutti i linguaggi
 python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=python      # uno solo
+python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=jobs        # solo il motore dei job
 python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --gate-only        # solo soglie, su report esistenti
 ```
 
@@ -167,6 +174,7 @@ python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --gate-only        # so
 | TypeScript | `tsc`, poi `c8` con `node --test`, un file alla volta | `npm install` in `libs/db-models/typescript` (tsconfig con `sourceMap: true`) |
 | Java | `mvn test` con JaCoCo | Maven, `libs/db-models/java/pom.xml`, PostgreSQL |
 | C# | `dotnet test` con coverlet | .NET 8 SDK, `libs/db-models/csharp/tests/*.csproj`, PostgreSQL |
+| motore dei job | `pytest` con `pytest-cov` in `jobs/generated/_engine` | `pip install -e "jobs/generated/_engine[test]"` (SQLite, oppure PostgreSQL con `KYBES_TEST_DATABASE_URL`) |
 
 L'installer con `--scaffold` crea i file dei pacchetti (`pyproject.toml`, `package.json` e `tsconfig.json`, `pom.xml`, i due `.csproj`) per i linguaggi del modello.
 
