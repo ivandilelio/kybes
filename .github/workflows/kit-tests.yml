@@ -59,7 +59,7 @@ jobs:
           "$GITHUB_WORKSPACE/install.sh" --target . --scaffold --examples --no-plugin --model-langs java --ci none
       - name: Test JUnit generati e copertura (JaCoCo) entro le soglie ASIL
         working-directory: ${{ runner.temp }}/proj
-        run: python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=java
+        run: python3 -B "$GITHUB_WORKSPACE/tests/ci/annotate.py" java --reports libs/db-models/java/target/surefire-reports -- python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --lang=java
       - name: Report dei test
         if: failure()
         uses: actions/upload-artifact@v4
