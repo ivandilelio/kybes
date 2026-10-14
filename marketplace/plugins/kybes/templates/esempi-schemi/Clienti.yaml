@@ -42,3 +42,4 @@ queries:
 pagination:
   default_order: [RagioneSociale]
   sortable: [RagioneSociale]
+api: true

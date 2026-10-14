@@ -33,3 +33,4 @@ queries:
     where:
       - { column: Codice, op: in, param: Codici }
     returns: list
+api: true

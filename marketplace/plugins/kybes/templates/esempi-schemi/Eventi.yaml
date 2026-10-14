@@ -28,3 +28,4 @@ retention:
   job:
     mode: keda                  # ScaledJob KEDA: parte quando ci sono righe scadute
     interval: 600
+api: true

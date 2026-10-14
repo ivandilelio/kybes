@@ -25,3 +25,4 @@ relations:
     kind: one_to_many
     target: Prodotti
     foreign_key: CategoriaId
+api: true

@@ -34,3 +34,4 @@ indexes:
     unique: true
 transactions:
   isolation: serializable
+api: true

@@ -1,0 +1,60 @@
+openapi: 3.0.3
+info:
+  title: Gestionale API
+  version: 0.1.0
+  description: Sorgente di verità per API Gateway, middleware di validazione e DB-Models.
+servers:
+  - url: https://api.example.com/v1
+components:
+  securitySchemes:
+    sso:
+      type: openIdConnect
+      openIdConnectUrl: https://login.microsoftonline.com/TENANT_ID/v2.0/.well-known/openid-configuration
+  schemas:
+    Conferma:
+      type: object
+      required: [nota]
+      additionalProperties: false
+      properties:
+        nota: { type: string, minLength: 1, maxLength: 200 }
+        urgente: { type: boolean }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, correlationId]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            correlationId: { type: string }
+            fields:
+              type: object
+              additionalProperties: { type: string }
+security:
+  - sso: []
+paths:
+  /ordini/{id}/conferma:
+    post:
+      operationId: confermaOrdine
+      summary: conferma un ordine aperto
+      x-kybes-context: vendite
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: notifica, in: query, required: true, schema: { type: boolean } }
+        - { name: canali, in: query, schema: { type: array, items: { type: string, enum: [email, sms] } } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Conferma' }
+      responses:
+        '200': { description: ok }
+  /report/vendite:
+    get:
+      operationId: reportVendite
+      parameters:
+        - { name: anno, in: query, required: true, schema: { type: integer, minimum: 2000, maximum: 2100 } }
+      responses:
+        '200': { description: ok }

@@ -82,3 +82,6 @@ retention:
   delete_after: 10y             # poi spariscono anche dall'archivio
 verification:
   asil: C
+api:
+  scopes: { read: ordini.read, write: [ordini.write] }
+  context: vendite

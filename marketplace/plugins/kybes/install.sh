@@ -295,6 +295,11 @@ if [ "$EXAMPLES" = 1 ]; then
     [ -f "$dest" ] && [ "$FORCE" = 0 ] || cp "$f" "$dest"
   done
   ok "schemi di esempio in schemas/db (Clienti, Ordini, RigheOrdine, Prodotti, Categorie)"
+  # contratto di esempio con due endpoint custom, solo se schemas/openapi.yaml è ancora quello dello scaffold
+  if [ ! -f "$TARGET/schemas/openapi.yaml" ] || [ "$FORCE" = 1 ] || cmp -s "$TARGET/schemas/openapi.yaml" "$KIT_DIR/templates/scaffold/schemas/openapi.yaml"; then
+    cp "$KIT_DIR/templates/esempi-schemi/api/openapi.yaml" "$TARGET/schemas/openapi.yaml"
+    ok "contratto di esempio in schemas/openapi.yaml (endpoint custom confermaOrdine e reportVendite)"
+  fi
 fi
 if ls "$TARGET"/schemas/db/*.yaml >/dev/null 2>&1; then
   if python3 -B "$TARGET/$KIT_REL/plugins/$PLUGIN/scripts/gen/gen.py" "$TARGET" --quiet; then
