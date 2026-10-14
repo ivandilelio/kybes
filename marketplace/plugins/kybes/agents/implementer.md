@@ -20,10 +20,11 @@ Regole operative:
    - dati di una Organization: `tenancy: column` nello schema (o `schema`/`database` se richiesto); il tenant si lega alla sessione nel middleware dal token SSO e si passa alla Unit of Work; mai filtri per tenant scritti a mano, mai il tenant preso dal payload;
    - collection MongoDB: `storage: mongo` nello schema, sessione `mongo_session`/`mongoSession`/`MongoSession`, transazione MongoDB per scritture su più documenti; mai il driver usato fuori dal model;
    - dati che invecchiano: `archive` (Parquet su S3/Blob, con `read_through` se servono letture per chiave) e/o `retention` nello schema; mai job di spostamento o cancellazione per età scritti a mano;
-   - non scrivere mai nei file `generated/` (compreso `jobs/generated/`), in `schemas/generated/json/` o in `MODEL_INDEX.md`.
+   - endpoint REST: CRUD, query e relazioni di una tabella con il blocco `api` dello schema; ogni altro endpoint in `schemas/openapi.yaml` con un `operationId`, e la sua logica nel service che implementa `Operations` (`IOperations` in C#); il servizio costruisce l'Api con il proprio contesto e uno degli adattatori generati (Lambda, server, framework); mai router, validatori o controller scritti a mano;
+   - non scrivere mai nei file `generated/` (compresi `jobs/generated/` e `api/generated/`), in `schemas/generated/` o in `MODEL_INDEX.md`.
    Prima di scrivere un blocco di logica, cerca se esiste già: se sì, riusalo o estrailo invece di copiarlo.
 4. Errori solo tramite il modulo in `libs/errors`; mai restituire messaggi di eccezione, stack trace o dettagli interni al client.
-5. Ogni handler usa il middleware di validazione comune.
+5. Ogni handler passa dall'Api generata (validazione, identità, errori): niente endpoint fuori dal contratto.
 6. Scrivi i test insieme al codice. Per ogni metodo custom del model, un test in `libs/db-models/<lang>/tests/custom/` con l'id `TC-<Tabella>-<CASO>` e il requisito `REQ-<Tabella>-<CHIAVE>` (nel commento del metodo e nel test), derivato con i metodi di ISO 26262-6: caso nominale, un record dentro e uno fuori da ogni filtro, valori limite, errori attesi. Usa le fixture e i builder dei test generati (vedi sez. 4c della skill). I file in `tests/generated/` non si toccano.
 7. Prima di chiudere esegui `python3 -B tools/kybes/plugins/kybes/scripts/verify.py . --quiet`: se una soglia di copertura non è raggiunta, aggiungi il test che manca.
 

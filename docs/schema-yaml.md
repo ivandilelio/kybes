@@ -79,6 +79,7 @@ retention:
 | `archive` | no | spostamento dei dati vecchi su S3 o Blob in Parquet | nessun archivio | disponibile |
 | `retention` | no | cancellazione definitiva dopo un TTL | nessuna | disponibile |
 | `storage` | no | `sql`, `mongo` | `sql` | disponibile |
+| `api` | no | `true` o mappa: espone la tabella come API REST | non esposta | disponibile |
 
 ## Colonne
 
@@ -231,3 +232,29 @@ Il generatore rifiuta:
 - `retention` su una collection a cui altre tabelle si riferiscono.
 
 `retention` diventa un indice TTL. Le transazioni multi-documento richiedono un replica set.
+
+## API
+
+`api` espone la tabella come API REST: CRUD, query dichiarate e relazioni, con validazione, routing, controller e test generati. `api: true` usa i valori predefiniti.
+
+```yaml
+api:
+  path: ordini                         # predefinito: nome della tabella in kebab-case
+  operations: [list, get, create, update, delete]
+  queries: [DelClienteDal]             # predefinito: tutte
+  relations: [Righe]                   # predefinito: tutte
+  scopes: { read: ordini.read, write: [ordini.write] }
+  context: vendite                     # predefinito: primo segmento di path
+```
+
+| Chiave | Valori | Default |
+|---|---|---|
+| `path` | segmenti in minuscolo separati da `/`, senza `/` iniziale | kebab-case di `table` |
+| `operations` | sottoinsieme di `list`, `get`, `create`, `update`, `delete` | tutte |
+| `queries` | nomi di query dichiarate | tutte |
+| `relations` | nomi di relazioni | tutte |
+| `scopes.read`, `scopes.write` | uno scope o una lista (servono tutti) | nessuno |
+| `context` | nome in minuscolo: raggruppa le operazioni per servizio | primo segmento di `path` |
+
+Endpoint, formato JSON, endpoint custom e runtime sono descritti in [API REST](api.md).
+

@@ -11,6 +11,8 @@ Dallo schema `schemas/db/<T>.yaml` il generatore ricava requisiti e casi di test
 | requisiti di ogni tabella e dei moduli comuni | `docs/generated/verification/requirements.md` | generato |
 | specifica dei test di una tabella | `docs/generated/verification/<T>.md` | generato |
 | specifica dei test dei moduli comuni (paginazione, Unit of Work, archivio, API) | `docs/generated/verification/kybes-runtime.md` | generato |
+| specifica dei test dei moduli comuni delle API (validazione, routing, errori, identità, adattatori) | `docs/generated/verification/kybes-api-runtime.md` | generato |
+| specifica dei test degli endpoint custom del contratto | `docs/generated/verification/kybes-api-custom.md` | generato |
 | specifica dei test del motore dei job (archivio e conservazione) | `docs/generated/verification/kybes-jobs.md` | generato |
 | matrice requisito → test → file | `docs/generated/verification/traceability.md` | generato |
 | soglie di copertura per ASIL e limiti noti | `docs/generated/verification/coverage.md` | generato |
@@ -55,6 +57,10 @@ Le tabelle con `tenancy` diversa da `none` hanno il requisito `REQ-<Tabella>-TEN
 ## Archivio e conservazione
 
 Le tabelle con `archive` o `retention` hanno i requisiti `REQ-<Tabella>-ARCHIVE`, `REQ-<Tabella>-RETENTION` e, con `read_through`, `REQ-<Tabella>-ARCHIVE-READ`. I casi di lettura dall'archivio (`TC-<Tabella>-ARCHIVE-READ`, `-READ-MISS`, `-HOT-FIRST`, `-READ-TENANT`) stanno nei test del modello dei quattro linguaggi; quelli del job (`TC-<Tabella>-JOB-*`) e del motore (`TC-KYBES-JOB-*`, requisiti `REQ-KYBES-JOB-*`) in `jobs/generated/_engine/tests/`. L'elenco è in [archivio](archivio.md#test-generati).
+
+## API REST
+
+Le tabelle con il blocco `api` hanno i requisiti delle loro operazioni (`REQ-<Tabella>-API-READ`, `-API-WRITE`, `-API-ACCESS`, uno per query e relazione esposta) e i casi di scope `api`: richieste valide e non valide per ogni operazione, chiave non valida o inesistente, campi obbligatori, in più o di tipo errato, duplicati, identità, scope e tenant. Gli endpoint custom di `schemas/openapi.yaml` hanno un caso con input costruito dallo schema e uno con parametro obbligatorio mancante; il nucleo comune (validatore, routing, corpo, errori, identità, accesso ai dati, adattatori) ha i requisiti `REQ-KYBES-API-*`. Le soglie si applicano anche al codice in `api/generated`: i controller con l'ASIL della tabella, il nucleo con il più alto del progetto. L'elenco completo è in [API REST](api.md#test-generati-iso-26262-6).
 
 ## Soglie di copertura
 

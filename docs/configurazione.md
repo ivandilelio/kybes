@@ -33,6 +33,13 @@ La configurazione di un progetto sta in `.claude/kybes.config.json`. L'installer
       { "lang": "java", "dir": "libs/db-models/java/src/main/java/app/model", "package": "app.model", "dialect": "postgres" }
     ]
   },
+  "api": {
+    "contract": "schemas/openapi.yaml",
+    "generated_contract": "schemas/generated/openapi.yaml",
+    "claims": { "subject": "sub", "tenant": "tid", "scopes": ["scp", "roles"] },
+    "headers": { "subject": "x-kybes-subject", "tenant": "x-kybes-tenant", "scopes": "x-kybes-scopes" },
+    "base_path": ""
+  },
   "verification": {
     "asil": "B",
     "generate_tests": true,
@@ -55,6 +62,8 @@ La configurazione di un progetto sta in `.claude/kybes.config.json`. L'installer
 | `model.tenancy` | `default`: modalità multi-tenant delle tabelle senza la chiave `tenancy` (`none`, `column`, `schema`, `database`); `id_type`: `uuid` o `string` (vedi [multi-tenant](multi-tenant.md)) |
 | `model.jobs_dir`, `model.archive` | cartella dei job generati; location dell'archivio per `target: s3` e `target: blob` (`{tenant}` ammesso nel prefisso) e risorse Kubernetes dei job (vedi [archivio](archivio.md#configurazione)) |
 | `model.targets` | una voce per linguaggio del modello: `lang`, `dir`, e per C# `namespace`, per Java `package`; `dialect` vale `postgres` o `sqlite` |
+| `api` | contratto degli endpoint custom e contratto generato; nomi dei claim del gateway (soggetto, tenant, scope) e degli header di identità per i servizi su Kubernetes; prefisso comune dei percorsi. Tutte le chiavi sono facoltative (vedi [API REST](api.md)) |
+| `model.targets[].api_dir` | facoltativo: cartella del codice API del linguaggio; predefinita accanto al model (`.../model` → `.../api`) |
 | `verification` | ASIL predefinito delle tabelle, generazione dei test, cartella delle evidenze, report di copertura da controllare, soglie per ASIL (dettagli in [verifica](verifica.md)) |
 | `duplicates` | soglia di righe per il controllo duplicati, inclusione dei test, glob da escludere |
 | `extra_forbidden_modules` | moduli di database aggiuntivi da vietare fuori dal model; prefisso `js:` per i pacchetti npm |

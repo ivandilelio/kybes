@@ -48,7 +48,7 @@ if python3 -B "$P/tools/kybes/plugins/kybes/scripts/arch_check.py" "$P" --strict
 if python3 -B "$MG/tools/kybes/plugins/kybes/scripts/gen/gen.py" "$MG" --check >/dev/null && python3 -B "$MG/tools/kybes/plugins/kybes/scripts/arch_check.py" "$MG" --strict >/dev/null; then
   pass "collection MongoDB: generatore idempotente e arch_check pulito"; else fail "mongo gen --check / arch_check"; fi
 # il lettore YAML di riserva (senza PyYAML) deve dare lo stesso risultato di PyYAML sugli schemi di esempio
-if python3 -B - "$KIT/marketplace/plugins/kybes/scripts/gen" "$KIT/marketplace/plugins/kybes/templates/esempi-schemi" <<'PY'
+if python3 -B - "$KIT/marketplace/plugins/kybes/scripts/gen" "$KIT/marketplace/plugins/kybes/templates" "$KIT/tests/fixtures" <<'PY'
 import datetime, glob, sys
 sys.path.insert(0, sys.argv[1])
 import miniyaml
@@ -60,14 +60,14 @@ def norm(v):
     if isinstance(v, dict): return {k: norm(x) for k, x in v.items()}
     if isinstance(v, list): return [norm(x) for x in v]
     return v.isoformat() if isinstance(v, datetime.date) else v
-for f in sorted(glob.glob(sys.argv[2] + "/*.yaml")):
+for f in sorted(p for d in sys.argv[2:] for p in glob.glob(d + "/**/*.yaml", recursive=True)):
     text = open(f, encoding="utf-8").read()
     mine = miniyaml.loads(text)
     assert mine, f
     if yaml is not None:
         assert norm(yaml.safe_load(text)) == mine, f
 PY
-then pass "lettore YAML senza PyYAML equivalente a PyYAML sugli schemi di esempio"; else fail "miniyaml"; fi
+then pass "lettore YAML senza PyYAML equivalente a PyYAML (schemi di esempio, contratti OpenAPI, fixture)"; else fail "miniyaml"; fi
 # contratto OpenAPI generato (CRUD dai blocchi api + endpoint custom): valido per OpenAPI 3.0
 if python3 -c "import openapi_spec_validator" 2>/dev/null; then
   if python3 -B - "$P/schemas/generated/openapi.yaml" "$MG/schemas/generated/openapi.yaml" <<'PY'

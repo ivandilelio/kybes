@@ -121,6 +121,7 @@ The generator also creates the index `(ClienteId, Data)` that covers both `listB
 | **Multi-tenancy** | per table: tenant column (every method filtered, unique constraints per tenant, PostgreSQL row-level security), schema per tenant, or database per tenant; tenant bound to the ORM session; generated isolation tests | ✅ available |
 | **Hot/cold archive** | old rows move to Parquet on S3/Azure Blob, partitioned by tenant and date; every file is verified (rows, keys, SHA-256) before the rows leave the hot table, and an interrupted move is completed by the next run; `getById` can read through to the archive in all four languages; Athena tables and Synapse views generated | ✅ available |
 | **Retention (TTL)** | archive partitions or hot rows deleted after a declared age; jobs as Kubernetes CronJob, KEDA ScaledJob triggered by backlog, or 24/7 engine; one job engine with its own generated tests | ✅ available |
+| **REST APIs** | an `api:` block in the schema exposes CRUD, declared queries and relations; custom endpoints are written in `schemas/openapi.yaml` and implemented as one method per `operationId`; the merged OpenAPI 3.0.3 contract is generated; input validation, routing, error mapping and identity (claims already verified by API Gateway) are identical in all four languages; adapters for AWS Lambda, a framework-free HTTP server and FastAPI, Fastify, Spring Boot or ASP.NET Core; generated ISO 26262-6 tests for every operation and for the shared core | ✅ available |
 | **MongoDB** | `storage: mongo` per table: the same repository, queries, cursor pagination and tenancy over MongoDB in all four languages; referential integrity enforced by the repository; MongoDB transactions; the same index names plus partial unique and TTL indexes; generated tests run on a real replica set | ✅ available |
 
 ## Guardrails
@@ -128,7 +129,7 @@ The generator also creates the index `(ClienteId, Data)` that covers both `listB
 | When | Check | Default |
 |---|---|---|
 | before every write | ORM or DB driver imported outside the model (all 4 languages) | block |
-| before every write | edits to generated files, JSON Schemas, DDL, generated jobs, `MODEL_INDEX.md` | block |
+| before every write | edits to generated files, JSON Schemas, DDL, generated jobs, generated API code and contract, `MODEL_INDEX.md` | block |
 | before every write | a file in `model/` that doesn't map to a table, or a sub-folder | block |
 | before every write | a custom method named like a generated one | block |
 | before every write | secrets in clear text (AWS keys, private keys, tokens, passwords) | block |
@@ -145,10 +146,12 @@ Every rule can be set to `block`, `warn` or `off` in `.claude/kybes.config.json`
 your-project/
 ├── schemas/
 │   ├── db/<Table>.yaml                  ← yours: the single source of truth
-│   └── generated/json/<Table>.schema.json
+│   ├── openapi.yaml                     ← yours: custom endpoints (one operationId each)
+│   └── generated/                       ← JSON Schemas, merged openapi.yaml
 ├── libs/db-models/<language>/…/model/
 │   ├── <Table>.{cs,py,ts} | <Table>Repository.java   ← yours: custom methods only
 │   └── generated/                       ← generator only
+├── libs/db-models/<language>/…/api/generated/   ← REST API: controllers, router, validation, adapters
 ├── libs/db-models/<language>/tests/
 │   ├── generated/                       ← ISO 26262-6 unit tests, generator only
 │   └── custom/                          ← yours: tests of your custom methods
@@ -195,6 +198,7 @@ The installer is idempotent. Teammates run `tools/kybes/setup.sh` once after clo
 | TypeScript | TypeORM, `reflect-metadata`, `experimentalDecorators` and `emitDecoratorMetadata` |
 | Java | Jakarta Persistence 3.1, Hibernate 6.2+, Jackson for `json` columns |
 | archive jobs | Python 3.10+, SQLAlchemy 2, pyarrow, psycopg 3; boto3 or azure-storage-blob (all in the generated `pyproject.toml` and `Dockerfile`) |
+| REST API adapters (optional) | FastAPI (Python), Fastify 5 (TypeScript), Spring Web MVC 6 (Java), `Microsoft.AspNetCore.App` (C#); the core and the Lambda adapters need no package |
 | hooks and generator | `python3` (standard library only) |
 
 ## How kybes itself is verified
@@ -211,6 +215,7 @@ The installer is idempotent. Teammates run `tools/kybes/setup.sh` once after clo
 | SQL | generated DDL parsed by the PostgreSQL parser (`pglast`); in CI row-level security, schema and database per tenant run on PostgreSQL 16 |
 | Archive jobs | the engine's own suite at 100% branch coverage on SQLite and PostgreSQL; a real job run through the CLI (move, child kept, retention, read-through from the Python model); Parquet layout read by DuckDB; S3 via moto and Azure Blob via Azurite; Kubernetes manifests parsed; the RLS check against a role without `BYPASSRLS` |
 | Cross-language | a cursor produced by TypeScript, Python or Java is accepted by the others |
+| REST APIs | the generated contract validated with `openapi-spec-validator`; the generated API tests (every operation, custom endpoints, shared core, Lambda/HTTP/framework adapters) run green in all four languages on PostgreSQL and on a MongoDB replica set within the ASIL coverage thresholds; the Java core runs locally without JUnit |
 | Hooks | every rule with its expected outcome (deny/allow), auto-regeneration, duplicate detection, stop gate |
 
 
@@ -227,6 +232,8 @@ The detailed documentation is in Italian, in [`docs/`](docs/README.md):
 - [guardrails](docs/controlli.md)
 - [multi-tenancy](docs/multi-tenant.md)
 - [archive & retention](docs/archivio.md)
+- [REST APIs](docs/api.md)
+- [MongoDB](docs/mongodb.md)
 - [unit verification (ISO 26262-6)](docs/verifica.md)
 - [configuration](docs/configurazione.md)
 - [roadmap](docs/roadmap.md)

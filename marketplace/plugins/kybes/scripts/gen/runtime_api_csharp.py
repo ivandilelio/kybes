@@ -912,7 +912,7 @@ public sealed class ApiData
         }
         finally
         {
-            await db.DisposeAsync();
+            db.Dispose(); // sincrono: niente await nel finally (rami di rilancio generati dal compilatore)
         }
     }
 
@@ -925,7 +925,7 @@ public sealed class ApiData
         }
         finally
         {
-            await db.DisposeAsync();
+            db.Dispose(); // sincrono: niente await nel finally (rami di rilancio generati dal compilatore)
         }
     }
     // kybes:sql-end

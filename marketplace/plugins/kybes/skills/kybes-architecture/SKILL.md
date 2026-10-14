@@ -142,6 +142,16 @@ Inoltre `schemas/generated/json/<Tabella>.schema.json` (validazione di API Gatew
 - Gli indici si creano all'avvio o nel deploy con `ensure_mongo_indexes` / `ensureMongoIndexes` / `MongoIndexes.ensure` / `MongoIndexes.EnsureAsync`.
 - Dettagli: docs/mongodb.md del kit.
 
+## 4b-quinquies. API REST
+
+- Gli endpoint non si scrivono a mano: CRUD, query dichiarate e relazioni di una tabella si espongono con il blocco `api` dello schema (`path`, `operations`, `queries`, `relations`, `scopes`, `context`); gli altri endpoint si dichiarano in `schemas/openapi.yaml` con un `operationId` ciascuno.
+- kybes genera in `api/generated` (accanto al model) contratto, validazione dell'input, routing, middleware, controller e test, e il contratto completo `schemas/generated/openapi.yaml` da pubblicare sul gateway. Mai a mano: gli hook lo rifiutano.
+- La logica di un endpoint custom sta nel service che implementa `Operations` (`IOperations` in C#): un metodo per `operationId`, input già validato nel `Call`, errori applicativi con `ApiError(kind, code, fields)`.
+- Ogni function o microservizio costruisce l'Api con il **proprio contesto** (`build_api(data, custom, ["vendite"])`, `buildApi`, `KybesApi.build`, `KybesApi.Build`): niente servizi che espongono tutti i contesti.
+- Runtime: Lambda (`lambda_handler`, `lambdaHandler`, `LambdaAdapter`), server senza framework (ASGI, `node:http`, server del JDK, ASP.NET Core) o framework (FastAPI, Fastify, Spring Boot, ASP.NET Core), scelto con l'albero della sez. 2.
+- Identità solo dai claim già verificati dal gateway (authorizer Lambda o header `x-kybes-*` impostati dal gateway); il servizio non verifica token e non è raggiungibile se non dal gateway. Il tenant viene dall'identità, mai dal payload.
+- Dettagli: docs/api.md del kit.
+
 ## 4c. Verifica di unità (ISO 26262-6)
 
 - Il generatore scrive i test di unità del modello in `libs/db-models/<lang>/tests/generated/` e le evidenze in `docs/generated/verification/` (requisiti `REQ-*`, specifiche dei casi `TC-*`, tracciabilità, soglie). Non si modificano: cambia lo schema.
@@ -162,8 +172,8 @@ Inoltre `schemas/generated/json/<Tabella>.schema.json` (validazione di API Gatew
 
 ## 6. Validazione degli input (tre livelli)
 
-1. **API Gateway**: validazione strutturale contro lo schema OpenAPI.
-2. **Middleware** comune in ogni function e microservizio: validazione semantica e autorizzazione (ruolo, tenant, ownership).
+1. **API Gateway**: validazione strutturale contro `schemas/generated/openapi.yaml`.
+2. **Middleware** generato in ogni function e microservizio (`api/generated`): validazione dell'input con lo stesso contratto, identità e scope; autorizzazione applicativa (ownership) nel service.
 3. **Model**: validazione dello schema prima della persistenza.
 
 Gli schemi vengono tutti da `schemas/`.
@@ -210,7 +220,9 @@ Modulo errori condiviso (`libs/errors`) che garantisce:
 /services/<contesto>/ms
 /jobs/<nome>
 /frontend
-/schemas/openapi.yaml       contratto delle API
+/schemas/openapi.yaml       endpoint custom delle API (operationId), sicurezza
+/schemas/generated/openapi.yaml  contratto completo generato
+/libs/db-models/<lang>/.../api/generated  API REST generate (controller, router, validazione, adattatori)
 ```
 
 ## Formato obbligatorio del piano
@@ -220,7 +232,7 @@ Ogni piano deve contenere una tabella per endpoint/Job:
 | Endpoint o Job | Bounded context | Runtime (Lambda/K8s/Job) | Motivo (regola sez. 2) | Tabelle via DB-Models | Idempotenza |
 |---|---|---|---|---|---|
 
-seguita da: modifiche agli schemi `schemas/db/<Tabella>.yaml` (colonne, relazioni, indici, `tenancy` di ogni tabella nuova), metodi custom da aggiungere con il file di destinazione (`model/<Tabella>`), metodi generati che verranno riusati, test da scrivere (per ogni metodo custom: id `TC-<Tabella>-<CASO>`, requisito `REQ-<Tabella>-<CHIAVE>`, metodo di derivazione), ASIL delle tabelle toccate, impatti su IaC.
+seguita da: modifiche agli schemi `schemas/db/<Tabella>.yaml` (colonne, relazioni, indici, `tenancy` di ogni tabella nuova, blocco `api` con operazioni, scope e contesto), endpoint custom da aggiungere a `schemas/openapi.yaml` (`operationId`, parametri, corpo, scope, `x-kybes-context`), metodi custom da aggiungere con il file di destinazione (`model/<Tabella>`), metodi generati che verranno riusati, test da scrivere (per ogni metodo custom: id `TC-<Tabella>-<CASO>`, requisito `REQ-<Tabella>-<CHIAVE>`, metodo di derivazione), ASIL delle tabelle toccate, impatti su IaC.
 
 ## Checklist prima di consegnare
 
@@ -231,6 +243,7 @@ seguita da: modifiche agli schemi `schemas/db/<Tabella>.yaml` (colonne, relazion
 - [ ] Ogni tabella nuova ha `tenancy`; il tenant è legato alla sessione dal middleware (mai dal payload), le transazioni lo passano alla Unit of Work
 - [ ] Età e TTL dei dati dichiarati con `archive`/`retention` nello schema, nessun job di pulizia scritto a mano
 - [ ] Collection MongoDB solo con `storage: mongo` nello schema; scritture su più documenti in una transazione MongoDB; indici creati all'avvio o nel deploy
+- [ ] Endpoint CRUD dal blocco `api` dello schema, endpoint custom in `schemas/openapi.yaml` implementati in `Operations`; nessun router, validatore o controller scritto a mano
 - [ ] Nessun accesso al DB fuori da DB-Models
 - [ ] Endpoint limitati al proprio bounded context
 - [ ] Validazione ai tre livelli

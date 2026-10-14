@@ -30,7 +30,8 @@ Nella mappa `<T>` è il nome di una tabella in PascalCase (es. `Clienti`), `<t>`
 | `schemas/db/<T>.yaml` | tuo | **sorgente di verità** della tabella ([specifica](schema-yaml.md)) | disponibile |
 | `schemas/generated/json/<T>.schema.json` | generato | JSON Schema per API Gateway e middleware di validazione | disponibile |
 | `schemas/generated/json/_page.schema.json` | generato | contratto della pagina (cursore, limite, ordinamento) | disponibile |
-| `schemas/openapi.yaml` | tuo | contratto delle API | disponibile |
+| `schemas/openapi.yaml` | tuo | endpoint custom delle API (un `operationId` per endpoint), sicurezza, schemi condivisi ([API REST](api.md)) | disponibile |
+| `schemas/generated/openapi.yaml` | generato | contratto completo: endpoint dai blocchi `api` degli schemi più quelli custom, da pubblicare sul gateway | disponibile |
 | `MODEL_INDEX.md` | generato | indice di tabelle, file, metodi generati e custom, query e indici | disponibile |
 
 ### Librerie DB-Models, una per linguaggio
@@ -48,6 +49,19 @@ Lo stato è questo:
 - **Test dei metodi custom:** tuoi, in `tests/custom/`, obbligatori per ogni metodo custom (regola `custom_tests`). In Python il generatore crea una volta `tests/custom/conftest.py` con le stesse fixture.
 - **Unit of Work e paginazione:** disponibili, come file aggiuntivi nella stessa cartella `generated/` del linguaggio: `_paging` e `_uow` in Python e TypeScript, `Paging` e `UnitOfWork` in C# e Java.
 - **Accesso a MongoDB:** per le tabelle con `storage: mongo` i file sono negli stessi percorsi e con gli stessi nomi; cambia solo l'implementazione. In più ci sono la sessione MongoDB (`_mongo.py`, `_mongo.ts`, `MongoSession.java`, `MongoSession.cs`) e, in Java e C#, `MongoIndexes`. Vedi [MongoDB](mongodb.md).
+
+### API REST
+
+Il codice API sta accanto al modello, nella cartella `api` della stessa libreria, ed è tutto generato: la logica degli endpoint custom va nel service che implementa `Operations` ([API REST](api.md)).
+
+| Linguaggio | Codice generato | Test generati |
+|---|---|---|
+| C# | `libs/db-models/csharp/src/api/generated/`: `<T>Api.cs`, `KybesApi.cs`, `IOperations.cs`, nucleo e adattatori | `libs/db-models/csharp/tests/generated/<T>ApiTests.cs`, `KybesApiRuntimeTests.cs`, `KybesApiCustomTests.cs` |
+| Python | `libs/db-models/python/src/api/generated/`: `<T>.py`, `__init__.py` (`build_api`), `custom.py`, nucleo e adattatori | `libs/db-models/python/tests/generated/test_api_<t>.py`, `test_api_runtime.py`, `test_api_custom.py` |
+| TypeScript | `libs/db-models/typescript/src/api/generated/`: `<T>.ts`, `index.ts` (`buildApi`), `custom.ts`, nucleo e adattatori | `libs/db-models/typescript/tests/generated/<T>.api.test.ts`, `kybes_api_runtime.test.ts`, `kybes_api_custom.test.ts` |
+| Java | `libs/db-models/java/src/main/java/<api>/generated/`: `<T>Api.java`, `KybesApi.java`, `Operations.java`, nucleo e adattatori | `libs/db-models/java/src/test/java/<pkg>/generated/<T>ApiTest.java`, `KybesApiRuntimeTest.java`, `KybesApiCustomTest.java` |
+
+`<api>` è il pacchetto del modello con `api` al posto di `model` (`app.model` → `app.api`); in C# il namespace segue la stessa regola (`App.Model` → `App.Api`).
 
 ### Database, archivio e job
 
@@ -103,3 +117,5 @@ Lo stato è questo:
 | quando i dati vecchi lasciano la tabella | sezione `archive` di `schemas/db/<T>.yaml` ([archivio](archivio.md)) |
 | dove gira il job di una tabella | `jobs/generated/<t>-archive/kubernetes.yaml` |
 | come interrogare i dati archiviati | `db/generated/athena/<T>.sql` o `db/generated/synapse/<T>.sql` |
+| quali endpoint espone il servizio | `schemas/generated/openapi.yaml` |
+| dove scrivere la logica di un endpoint custom | il service che implementa `Operations` (`IOperations` in C#) |
