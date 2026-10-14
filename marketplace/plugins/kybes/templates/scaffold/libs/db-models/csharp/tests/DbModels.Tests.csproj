@@ -19,4 +19,8 @@
   <ItemGroup>
     <ProjectReference Include="../src/DbModels.csproj" />
   </ItemGroup>
+  <!-- API REST: AspNetAdapter (ASP.NET Core minimal API), framework condiviso dell'SDK, nessun pacchetto NuGet -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
 </Project>

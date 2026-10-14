@@ -621,6 +621,9 @@ def _custom_body(ops: List[Operation], tables: Dict[str, Table]) -> str:
               '        assertEquals(404, empty.handle(req("GET", "/qualsiasi")).status());',
               f"        assertEquals({len(ops)}, KybesApi.build(new ApiData()).routes().size());",
               '        assertEquals("/x", KybesApi.build(new ApiData(), null, "/x").basePath());']
+    ctx = json.dumps(ops[0].context)
+    o += [f"        Api one = KybesApi.build(new ApiData(){', new KybesApiSupport.Recorder()' if custom else ''}, List.of({ctx}));",
+          f"        assertTrue(!one.routes().isEmpty() && one.routes().stream().allMatch(r -> r.spec().context().equals({ctx})));"]
     o += ["        Call call = new Call(\"op\", Map.of(), Map.of(), null, ME, \"cid\", \"t1\");",
           '        assertEquals(List.of("op", "cid", "t1", ME), List.of(call.operation(), call.correlationId(), call.tenant(), call.identity()));']
     if has_sql(tables):

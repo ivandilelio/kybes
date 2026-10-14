@@ -11,4 +11,8 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.11" />
     <PackageReference Include="MongoDB.Driver" Version="3.0.0" />
   </ItemGroup>
+  <!-- API REST: AspNetAdapter (ASP.NET Core minimal API), framework condiviso dell'SDK, nessun pacchetto NuGet -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
 </Project>

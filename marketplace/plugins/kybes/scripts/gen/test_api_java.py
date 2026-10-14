@@ -162,7 +162,9 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
             return [f"        {n} e = build{n}(em);", f"        Object value = {_json_new(c)};",
                     f'        Result r = call("PATCH", {B} + "/" + {ktext}, Map.of({p}, value), q(), ME);',
                     "        assertEquals(200, r.status(), r.text());", f"        assertEquals(value, r.map().get({p}));",
-                    f"        assertEquals({key}, r.map().get({pkp}));"]
+                    f"        assertEquals({key}, r.map().get({pkp}));",
+                    f'        r = call("PATCH", {B} + "/" + {ktext}, Map.of(), q(), ME);', "        assertEquals(200, r.status(), r.text());",
+                    f"        assertEquals(value, r.map().get({p}), \"un corpo vuoto non cambia i campi\");"]
         return [f"        {n} e = build{n}(em);", f'        Result r = call("PATCH", {B} + "/" + {ktext}, Map.of(), q(), ME);',
                 "        assertEquals(200, r.status(), r.text());", f"        assertEquals({key}, r.map().get({pkp}));"]
     if k == "api_update_missing":
