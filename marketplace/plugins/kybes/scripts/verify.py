@@ -218,7 +218,11 @@ def run_python(proj: Path, tg: dict, report: Path, quiet: bool, out: Outcome) ->
         out.notes.append("python: pytest e pytest-cov non installati (pip install pytest pytest-cov): test non eseguiti")
         return
     model_rel = Path(tg["dir"]).relative_to(Path(td).parent).as_posix()
-    rc = _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"--cov={model_rel}", "--cov-branch",
+    covs = [f"--cov={model_rel}"]
+    ad = G.api_dir(tg)
+    if (proj / ad / G.GEN_DIR).is_dir():  # API REST generate accanto al model
+        covs.append(f"--cov={Path(ad).relative_to(Path(td).parent).as_posix()}")
+    rc = _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *covs, "--cov-branch",
                f"--cov-report=xml:{report}", Path(td).name], pkg, quiet)
     if rc != 0:
         out.failures.append(f"python: test falliti in {td} (pytest esce con {rc})")
@@ -377,7 +381,8 @@ def main(argv: List[str]) -> int:
             if report.exists():
                 ran.append((lang, tg["dir"].rstrip("/") + "/", report))
     jt = jobs_target(proj, mc, tables)
-    targets = mc["targets"] + ([jt] if jt else [])
+    api_targets = [{"lang": tg["lang"], "dir": G.api_dir(tg)} for tg in mc["targets"] if (proj / G.api_dir(tg) / G.GEN_DIR).is_dir()]
+    targets = mc["targets"] + api_targets + ([jt] if jt else [])
     if jt and not gate_only and (not only or "jobs" in only):
         cov_dir.mkdir(exist_ok=True)
         report = cov_dir / "jobs.cobertura.xml"

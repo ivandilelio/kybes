@@ -21,6 +21,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
+import api_plan  # noqa: E402
+import emit_api_python  # noqa: E402
+import test_api_python  # noqa: E402
 import emit_archive  # noqa: E402
 import emit_csharp  # noqa: E402
 import emit_db  # noqa: E402
@@ -60,6 +63,46 @@ DEFAULT_VERIFICATION = {
     "thresholds": {"QM": {}, "A": {"statement": 90}, "B": {"statement": 95, "branch": 90},
                    "C": {"statement": 100, "branch": 95}, "D": {"statement": 100, "branch": 100}},
 }
+
+DEFAULT_API = {
+    "contract": "schemas/openapi.yaml",
+    "generated_contract": "schemas/generated/openapi.yaml",
+    # claim già verificati dal gateway (Lambda: requestContext.authorizer; Kubernetes: header impostati dal gateway)
+    "claims": {"subject": "sub", "tenant": "tid", "scopes": ["scp", "roles"]},
+    "headers": {"subject": "x-kybes-subject", "tenant": "x-kybes-tenant", "scopes": "x-kybes-scopes"},
+    "base_path": "",
+}
+API_EMITTERS = {"python": emit_api_python}
+API_TEST_EMITTERS = {"python": test_api_python}
+
+
+def api_config(cfg: dict) -> dict:
+    out = dict(DEFAULT_API)
+    out.update(cfg.get("api") or {})
+    out["claims"] = {**DEFAULT_API["claims"], **((cfg.get("api") or {}).get("claims") or {})}
+    out["headers"] = {**DEFAULT_API["headers"], **((cfg.get("api") or {}).get("headers") or {})}
+    return out
+
+
+def api_dir(tg: dict) -> str:
+    """Cartella del codice API generato, accanto al model: src/model -> src/api, .../app/model -> .../app/api."""
+    if tg.get("api_dir"):
+        return tg["api_dir"].rstrip("/")
+    d = tg["dir"].rstrip("/")
+    head, _, last = d.rpartition("/")
+    return f"{head}/api" if last == "model" else f"{d}_api"
+
+
+def load_contract(proj: Path, ac: dict) -> Optional[dict]:
+    p = proj / ac["contract"]
+    if not p.exists():
+        return None
+    from miniyaml import load_file
+    data = load_file(str(p))
+    if not isinstance(data, dict):
+        raise api_plan.ContractError([f"{ac['contract']}: deve contenere un documento OpenAPI"])
+    return data
+
 
 TEST_EMITTERS = {"python": test_python, "typescript": test_typescript, "java": test_java, "csharp": test_csharp}
 TEST_FILE = {"python": lambda n: f"test_{snake_name(n)}.py", "typescript": lambda n: f"{n}.test.ts", "java": lambda n: f"{n}Test.java",
@@ -308,12 +351,24 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
             desired[f"{d}/{rel}"] = text
         for rel, text in custom.items():
             customs_to_create[f"{d}/{rel}"] = text
+    ac = api_config(cfg)
+    ops, full = [], None
+    if not index_only:
+        try:
+            doc = load_contract(proj, ac)
+            if any(t.api for t in tables.values()) or (doc or {}).get("paths"):
+                ops, full = api_plan.build(tables, doc)
+        except api_plan.ContractError as exc:
+            res.problems += [f"contratto API: {e}" for e in exc.errors]
+        except Exception as exc:  # YAML non valido
+            res.problems.append(f"contratto API: {ac['contract']} non leggibile: {exc}")
     vc = verification_config(cfg)
     if not index_only and tables:
         cycles = verification.builder_cycles(tables)
         if cycles:
             res.problems.append("cicli di chiavi esterne obbligatorie, impossibili da popolare nei test: " + "; ".join(cycles))
         cat = verification.build_catalog(tables, vc["asil"], {"id_type": "uuid", **(mc.get("tenancy") or {})}["id_type"])
+        verification.add_api_cases(cat, tables, ops, vc["asil"])
         test_files: Dict[str, Dict[str, str]] = {}
         if vc.get("generate_tests", True):
             for tg in mc["targets"]:
@@ -335,6 +390,12 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
                 for rel, make in getattr(em, "CUSTOM_ONCE", {}).items():
                     customs_to_create[f"{td}/{rel}"] = make()
                 test_files[tg["lang"]] = {n: f"{td}/{GEN_DIR}/{TEST_FILE[tg['lang']](n)}" for n in tables}
+                aem = API_TEST_EMITTERS.get(tg["lang"])
+                if aem and ops:
+                    files = aem.emit(cat, tables, ops, vc["asil"], gen_options(tg))
+                    for rel, text in files.items():
+                        desired[f"{td}/{rel}"] = text
+                    test_files[f"{tg['lang']}-api"] = {k: f"{td}/{v}" for k, v in aem.index(tables, ops).items()}
         id_type = {"id_type": "uuid", **(mc.get("tenancy") or {})}["id_type"]
         life = emit_archive.lifecycle_tables(tables)
         managed_dirs.append(proj / mc["jobs_dir"])
@@ -349,6 +410,20 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
         for rel, text in verification.verification_docs(cat, tables, test_files, vc["asil"], vc["thresholds"]).items():
             desired[f"{vc['docs_dir']}/{rel}"] = text
     if not index_only:
+        gc = ac["generated_contract"]
+        managed_dirs.append((proj / gc).parent)
+        if full is not None:
+            desired[gc] = (f"# {MARKER}. NON MODIFICARE: unione di {ac['contract']} e dei blocchi api degli schemi.\n"
+                           + api_plan.dump_yaml(full) + "\n")
+        for tg in mc["targets"]:
+            em = API_EMITTERS.get(tg["lang"])
+            if not em:
+                continue
+            ad = api_dir(tg)
+            managed_dirs.append(proj / ad / GEN_DIR)
+            if ops:
+                for rel, text in em.emit(tables, ops, ac, gen_options(tg)).items():
+                    desired[f"{ad}/{rel}"] = text
         for n, t in tables.items():
             desired[f"{mc['json_schema_dir']}/{n}.schema.json"] = json_schema(t)
         if tables:

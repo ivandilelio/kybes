@@ -14,3 +14,4 @@ relations:
 pagination:
   default_order: [{ column: ScrittaIl, dir: desc }]
   sortable: [ScrittaIl]
+api: true

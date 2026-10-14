@@ -519,6 +519,7 @@ def verification_docs(cat: Catalog, tables: Dict[str, Table], test_files: Dict[s
     docs: Dict[str, str] = {}
     langs = list(test_files)
     title = {"python": "Python", "typescript": "TypeScript", "csharp": "C#", "java": "Java", "jobs": "Job (pytest)"}
+    title.update({f"{k}-api": f"{v} (API)" for k, v in list(title.items()) if k != "jobs"})
 
     o = [head + "# Requisiti di unità", "",
          "Requisiti derivati dagli schemi in `schemas/db`. L'ID è stabile: dipende dai nomi, non dall'ordine.", "",
@@ -527,9 +528,20 @@ def verification_docs(cat: Catalog, tables: Dict[str, Table], test_files: Dict[s
         o.append(f"| `{r.id}` | {r.asil} | {r.text} | `{r.source}` |")
     docs["requirements.md"] = "\n".join(o) + "\n"
 
-    for n, t in list(tables.items()) + [(RUNTIME, None), (JOBS, None)]:
+    for n, t in list(tables.items()) + [(RUNTIME, None), (JOBS, None), (API, None), (API_RT, None)]:
         tcs = cat.for_table(n, "all")
         if not tcs:
+            continue
+        if n in (API, API_RT):
+            name = "Endpoint custom del contratto (schemas/openapi.yaml)" if n == API else "Moduli comuni delle API (validatore, router, identità, adattatori)"
+            o = [head + f"# Specifica dei test di unità: {name}", "", f"{len(tcs)} casi di test", "",
+                 "| Caso | Requisiti | Metodo di derivazione | Descrizione | Esito atteso |", "|---|---|---|---|---|"]
+            for tc in tcs:
+                o.append(f"| `{tc.id}` | {', '.join(f'`{r}`' for r in tc.reqs)} | {METHODS[tc.method]} | {tc.title} | {tc.expected} |")
+            files = [f"- {title[lg]}: `{test_files[lg][n]}`" for lg in langs if n in test_files[lg]]
+            if files:
+                o += ["", "File di test generati:", ""] + files
+            docs["kybes-api-custom.md" if n == API else "kybes-api-runtime.md"] = "\n".join(o) + "\n"
             continue
         if n == JOBS:
             o = [head + "# Specifica dei test di unità: motore dei job (archiviazione e conservazione)", "",
@@ -570,7 +582,8 @@ def verification_docs(cat: Catalog, tables: Dict[str, Table], test_files: Dict[s
     for r in cat.requirements:
         tcs = by_req.get(r.id, [])
         scopes = {tc.scope for tc in tcs}
-        files = [f"`{test_files[lg][r.table]}`" if r.table in test_files[lg] and ("jobs" if lg == "jobs" else "model") in scopes else "—"
+        files = [f"`{test_files[lg][r.table]}`" if r.table in test_files[lg]
+                 and ("jobs" if lg == "jobs" else "api" if lg.endswith("-api") else "model") in scopes else "—"
                  for lg in langs]
         o.append(f"| `{r.id}` | {r.asil} | {', '.join(f'`{tc.id}`' for tc in tcs) or '**nessuno**'} | " + " | ".join(files) + " |")
     uncovered = [r.id for r in cat.requirements if r.id not in by_req]
@@ -593,3 +606,181 @@ def verification_docs(cat: Catalog, tables: Dict[str, Table], test_files: Dict[s
           "ISO 26262-8."]
     docs["coverage.md"] = "\n".join(o) + "\n"
     return docs
+
+
+# ------------------------------------------------------------------ API REST (scope "api")
+
+API_RUNTIME = [
+    ("VALIDATE", "rt_api_validate", "eq", "ogni parola chiave del validatore con un valore valido e uno non valido",
+     "nessun errore per i valori validi; la regola attesa, sul campo giusto, per ognuno di quelli non validi"),
+    ("COERCE", "rt_api_coerce", "bv", "parametri di path e query nei tipi integer, number, boolean, string e array",
+     "valori convertiti; testo non convertibile o ripetuto per un parametro singolo rifiutato"),
+    ("ROUTE", "rt_api_route", "eq", "percorsi fissi e con parametri, percorso sconosciuto, metodo non ammesso, prefisso base",
+     "il segmento fisso vince sul parametro; 404 ROUTE_NOT_FOUND; 405 con header Allow; il prefisso base è ignorato"),
+    ("BODY", "rt_api_body", "eg", "corpo con content-type errato, JSON non valido, NaN, corpo mancante o non previsto",
+     "415 JSON_REQUIRED; 400 con body: JSON non valido, obbligatorio o corpo non ammesso"),
+    ("ERRORS", "rt_api_errors", "eq", "errori del modello, del tenant, del database e inattesi; correlationId dato, non valido, assente",
+     "400, 409, 422, 403, 503 e 500 senza dettagli; il correlationId valido è riusato, altrimenti generato"),
+    ("CUSTOM", "rt_api_custom", "req", "metodo custom mancante, risposta come corpo o come ApiResponse, filtro per contesto",
+     "errore all'avvio se manca un metodo; stato del contratto o quello restituito; solo le operazioni dei contesti scelti"),
+    ("IDENTITY", "rt_api_identity", "eq", "claim da HTTP API (JWT e Lambda authorizer), REST API (claim e contesto), header del gateway",
+     "soggetto, tenant e scope letti in ogni forma (lista, spazi, virgole, [a b]); nessuna identità senza authorizer o header"),
+    ("LAMBDA", "rt_api_lambda", "req", "eventi API Gateway v1 e v2 con query multiple, corpo base64 e risposta proxy",
+     "la richiesta arriva al router com'era; risposta con statusCode, header e corpo JSON"),
+    ("HTTP", "rt_api_http", "req", "server senza framework (ASGI, node:http, HttpServer del JDK, ASP.NET Core)",
+     "stessa risposta del router, header di identità del gateway applicati"),
+    ("FRAMEWORK", "rt_api_framework", "req", "adattatore del framework (FastAPI, Fastify, Spring Boot, ASP.NET Core)",
+     "operazioni registrate con il loro operationId; 404 e 405 nel formato del contratto"),
+    ("CONVERT", "rt_api_convert", "bv", "date-ora con Z, fuso e frazioni, date-ora senza fuso, decimali e nulli",
+     "valori del modello corretti; date-ora in UTC al millisecondo, decimali con la scala della colonna"),
+]
+
+
+def add_api_cases(cat: Catalog, tables: Dict[str, Table], ops: list, default_asil: str) -> None:
+    """Casi di test delle API generate (contratto OpenAPI, validazione, controller, accesso), con lo stesso ASIL delle tabelle."""
+    import api_plan
+    reqs, add = cat.requirements, cat.tests.append
+    for n, t in tables.items():
+        tops = [o for o in ops if o.table == n]
+        if not tops:
+            continue
+        asil = table_asil(t, default_asil)
+        src = f"schemas/db/{n}.yaml: api"
+        kinds = {o.kind for o in tops}
+        path = "/" + t.api.path
+
+        def tc(key, rid, method, kind, title, exp, **args):
+            add(TestCase(f"TC-{n}-API-{key}", n, [rid], method, kind, title, exp, args, scope="api"))
+        if kinds & {"list", "get"}:
+            r = _req(reqs, t, "API-READ", f"GET {path} e GET {path}/{{id}} restituiscono i record di {n} nel formato del contratto; "
+                     "parametri non validi danno 400, un record inesistente 404.", src, asil)
+            if "list" in kinds:
+                tc("LIST", r, "req", "api_list", f"GET {path} con limit", "200, il record è nella pagina, limit rispettato")
+                tc("LIST-PARAMS", r, "bv", "api_list_params", f"GET {path} con limit=0 e con un parametro sconosciuto",
+                   "400 con limit: valore minimo 1; 400 con il parametro: parametro sconosciuto")
+            if "get" in kinds:
+                tc("GET", r, "req", "api_get", f"GET {path}/{{id}} di un record esistente", "200, corpo uguale al record nel formato del contratto")
+                tc("GET-MISSING", r, "eg", "api_get_missing", f"GET {path}/{{id}} di un record inesistente", "404 RECORD_NOT_FOUND")
+                rule = {"uuid": "formato uuid", "int": "tipo atteso: integer", "bigint": "formato non valido"}.get(t.pk.type)
+                if rule:
+                    tc("GET-BADID", r, "eq", "api_get_badid", f"GET {path}/{{id}} con una chiave non valida", f"400 con id: {rule}", rule=rule)
+        if kinds & {"create", "update", "delete"}:
+            r = _req(reqs, t, "API-WRITE", f"POST, PATCH e DELETE su {path} validano il corpo con lo schema del contratto (400), "
+                     "rispondono 201 con Location, 200 e 204, e 404 per un record inesistente.", src, asil)
+            writable = api_plan.writable_columns(t)
+            if "create" in kinds:
+                tc("CREATE", r, "req", "api_create", f"POST {path} con un corpo valido",
+                   "201, header Location con la chiave, corpo con i valori inviati")
+                req_col = next((c for c in writable if c.required and c.default is None), None)
+                if req_col:
+                    tc("CREATE-REQUIRED", r, "eq", "api_create_required", f"POST {path} senza {req_col.name}",
+                       f"400 con {api_plan.prop(req_col.name)}: obbligatorio", column=req_col.name)
+                tc("CREATE-EXTRA", r, "eg", "api_create_extra", f"POST {path} con un campo che il contratto non prevede",
+                   "400 con il campo: non ammesso")
+                typed = next((c for c in writable if c.type != "json"), None)
+                if typed:
+                    want = {"int": "integer", "bool": "boolean"}.get(typed.type, "string")
+                    tc("CREATE-TYPE", r, "eq", "api_create_type", f"POST {path} con {typed.name} di tipo errato",
+                       f"400 con {api_plan.prop(typed.name)}: tipo atteso: {want}", column=typed.name, rule=f"tipo atteso: {want}")
+                uq = next((c for c in writable if c.unique and not c.primary_key), None)
+                if uq:
+                    tc("CREATE-DUPLICATE", r, "eg", "api_create_duplicate", f"POST {path} con {uq.name} già usato",
+                       "409 CONSTRAINT o DUPLICATE", column=uq.name)
+            if "update" in kinds:
+                cands = [c for c in writable if not c.primary_key and c.name not in t.fk_columns() and c.type in ("string", "text", "int", "bigint", "decimal", "bool")]
+                upd = next((c for c in cands if not c.unique), None) or next(iter(cands), None)
+                tc("UPDATE", r, "req", "api_update", f"PATCH {path}/{{id}}" + (f" di {upd.name}" if upd else " con corpo vuoto"),
+                   "200, il campo ha il nuovo valore" if upd else "200, record invariato", **({"column": upd.name} if upd else {}))
+                tc("UPDATE-MISSING", r, "eg", "api_update_missing", f"PATCH {path}/{{id}} di un record inesistente", "404 RECORD_NOT_FOUND")
+                tc("UPDATE-KEY", r, "eq", "api_update_key", f"PATCH {path}/{{id}} con la chiave nel corpo",
+                   f"400 con {api_plan.prop(t.pk.name)}: non ammesso")
+            if "delete" in kinds:
+                tc("DELETE", r, "req", "api_delete", f"DELETE {path}/{{id}} e poi GET", "204, poi il record non esiste più")
+                tc("DELETE-MISSING", r, "eg", "api_delete_missing", f"DELETE {path}/{{id}} di un record inesistente", "404 RECORD_NOT_FOUND")
+        for o in tops:
+            if o.kind == "query":
+                r = _req(reqs, t, f"API-Q-{o.arg}", f"GET {o.path} passa i parametri, convertiti nei tipi del modello, alla query {o.arg}.",
+                         src, asil)
+                tc(f"Q-{o.arg}", r, "req", "api_query", f"GET {o.path} con parametri validi", "200 con la forma del risultato della query",
+                   operation=o.op_id)
+                if any(p.required for p in o.params):
+                    first = next(p for p in o.params if p.required)
+                    tc(f"Q-{o.arg}-PARAMS", r, "eq", "api_query_params", f"GET {o.path} senza {first.name}",
+                       f"400 con {first.name}: obbligatorio", operation=o.op_id, param=first.name)
+            elif o.kind == "rel":
+                rel = next(x for x in t.relations if x.name == o.arg)
+                r = _req(reqs, t, f"API-REL-{o.arg}", f"GET {o.path} restituisce {rel.target} collegat"
+                         f"{'i (pagina)' if rel.kind == 'one_to_many' else 'o'} a un record di {n}; un record inesistente dà 404.", src, asil)
+                tc(f"REL-{o.arg}", r, "req", "api_rel", f"GET {o.path} di un record con il collegamento",
+                   "200 con il record collegato" if rel.kind == "many_to_one" else "200, il record collegato è nella pagina",
+                   operation=o.op_id, relation=o.arg)
+                tc(f"REL-{o.arg}-MISSING", r, "eg", "api_rel_missing", f"GET {o.path} di un record inesistente", "404 RECORD_NOT_FOUND",
+                   operation=o.op_id)
+        r = _req(reqs, t, "API-ACCESS", f"Le operazioni su {path} richiedono l'identità verificata dal gateway, gli scope dichiarati"
+                 + (" e il tenant, e non vedono i record di altri tenant." if t.tenancy != "none" else "."), src, asil)
+        first = tops[0]
+        if first.secured:
+            tc("AUTH", r, "eg", "api_auth", f"{first.method.upper()} {first.path} senza identità", "401 IDENTITY_REQUIRED", operation=first.op_id)
+        rd = next((o for o in tops if o.scopes and o.kind in ("list", "get", "query", "rel")), None)
+        if rd:
+            tc("SCOPE-READ", r, "eg", "api_scope", f"{rd.method.upper()} {rd.path} senza lo scope {rd.scopes[0]}", "403 SCOPE_REQUIRED",
+               operation=rd.op_id)
+        wr = next((o for o in tops if o.scopes and o.kind in ("create", "update", "delete")), None)
+        if wr:
+            tc("SCOPE-WRITE", r, "eg", "api_scope", f"{wr.method.upper()} {wr.path} senza lo scope {wr.scopes[0]}", "403 SCOPE_REQUIRED",
+               operation=wr.op_id)
+        if t.tenancy != "none":
+            tc("TENANT-MISSING", r, "eg", "api_tenant_missing", f"{first.method.upper()} {first.path} con un'identità senza tenant",
+               "403 TENANT_REQUIRED", operation=first.op_id)
+            if "get" in kinds and t.tenancy == "column":
+                tc("TENANT-OTHER", r, "eg", "api_tenant_other", f"GET {path}/{{id}} di un record di un altro tenant", "404 RECORD_NOT_FOUND")
+    custom = [o for o in ops if o.kind == "custom"]
+    top = max((table_asil(t, default_asil) for t in tables.values()), key=ASIL.index, default=default_asil)
+    for o in custom:
+        rid = f"REQ-API-{o.op_id}"
+        reqs.append(Requirement(rid, API, f"{o.method.upper()} {o.path} valida l'input con il contratto e chiama {o.op_id} del service "
+                                "con path, query e corpo già convertiti.", f"schemas/openapi.yaml: {o.op_id}", top))
+        try:
+            good = {"path": {p.name: api_plan.sample(p.schema) for p in o.params if p.loc == "path"},
+                    "query": {p.name: api_plan.sample(p.schema) for p in o.params if p.loc == "query" and p.required},
+                    "body": api_plan.sample(o.body) if o.body is not None and o.body_required else None}
+        except api_plan.NoSample:
+            good = None
+        if good is not None:
+            cat.tests.append(TestCase(f"TC-API-{o.op_id}", API, [rid], "req", "api_custom", f"{o.method.upper()} {o.path} con input valido",
+                                      f"{o.status}, il service riceve l'input convertito", {"operation": o.op_id, "input": good}, scope="api"))
+            bad, field_ = None, None
+            if o.body is not None and o.body_required and (o.body.get("required") or []):
+                field_ = o.body["required"][0]
+                bad = {**good, "body": {k: v for k, v in good["body"].items() if k != field_}}
+            elif any(p.required and p.loc == "query" for p in o.params):
+                field_ = next(p.name for p in o.params if p.required and p.loc == "query")
+                bad = {**good, "query": {k: v for k, v in good["query"].items() if k != field_}}
+            elif o.body is not None and o.body_required:
+                field_, bad = "body", {**good, "body": None}
+            if bad is not None:
+                cat.tests.append(TestCase(f"TC-API-{o.op_id}-INVALID", API, [rid], "eg", "api_custom_invalid",
+                                          f"{o.method.upper()} {o.path} senza {field_}", f"400 con {field_}: obbligatorio; il service non è chiamato",
+                                          {"operation": o.op_id, "input": bad, "field": field_}, scope="api"))
+    if ops:
+        def req(key, text):
+            rid = f"REQ-KYBES-API-{key}"
+            reqs.append(Requirement(rid, RUNTIME, text, "modulo comune generato (API)", top))
+            return rid
+        texts = {"VALIDATE": "Il validatore applica a corpo e parametri le parole chiave supportate del contratto e riporta, per campo, "
+                 "la prima regola violata con lo stesso testo in tutti i linguaggi.",
+                 "ROUTE": "Il router sceglie l'operazione da percorso e metodo, applica identità, scope, validazione e corpo JSON nell'ordine "
+                 "documentato e converte ogni errore in una risposta sicura con correlationId.",
+                 "IDENTITY": "L'identità si legge dai claim verificati dal gateway, su Lambda e su Kubernetes, nei formati di API Gateway.",
+                 "ADAPTERS": "Gli adattatori Lambda, HTTP senza framework e del framework consegnano al router la stessa richiesta e "
+                 "restituiscono la stessa risposta.",
+                 "CONVERT": "Valori del JSON e del modello si convertono senza perdita nei due sensi, nel formato del contratto."}
+        rids = {k: req(k, v) for k, v in texts.items()}
+        group = {"VALIDATE": "VALIDATE", "COERCE": "VALIDATE", "ROUTE": "ROUTE", "BODY": "ROUTE", "ERRORS": "ROUTE", "CUSTOM": "ROUTE",
+                 "IDENTITY": "IDENTITY", "LAMBDA": "ADAPTERS", "HTTP": "ADAPTERS", "FRAMEWORK": "ADAPTERS", "CONVERT": "CONVERT"}
+        for key, kind, method, title, exp in API_RUNTIME:
+            cat.tests.append(TestCase(f"TC-KYBES-API-{key}", API_RT, [rids[group[key]]], method, kind, title, exp, scope="api"))
+
+
+API = "_api"          # endpoint custom del contratto
+API_RT = "_api_runtime"  # moduli comuni delle API

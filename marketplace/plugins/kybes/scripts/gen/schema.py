@@ -32,6 +32,10 @@ DURATION = re.compile(r"^([1-9][0-9]{0,4})([dmy])$")
 ARCHIVE_TARGETS = ("s3", "blob")
 PARTITIONS = ("tenant", "year", "month", "day")
 JOB_MODES = ("cron", "keda", "engine")
+API_OPS = ("list", "get", "create", "update", "delete")
+API_PATH = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*(?:/[a-z0-9]+(?:-[a-z0-9]+)*)*$")
+API_CONTEXT = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
+API_SCOPE = re.compile(r"^[A-Za-z0-9_.:/-]{1,128}$")
 CRON = re.compile(r"^\S+(\s+\S+){4}$")
 DEFAULT_LIMIT = 50
 DEFAULT_MAX_LIMIT = 100
@@ -148,6 +152,22 @@ def duration_days(d: str) -> int:
 
 
 @dataclass
+class Api:
+    """Esposizione REST della tabella (blocco api dello schema)."""
+    path: str                            # es. "segnalazioni" -> /segnalazioni
+    operations: List[str] = field(default_factory=lambda: list(API_OPS))
+    queries: List[str] = field(default_factory=list)
+    relations: List[str] = field(default_factory=list)
+    read_scopes: List[str] = field(default_factory=list)
+    write_scopes: List[str] = field(default_factory=list)
+    context: str = ""                    # contesto (function o microservizio) che espone le operazioni
+
+
+def kebab(name: str) -> str:
+    return snake(name).replace("_", "-")
+
+
+@dataclass
 class Table:
     name: str
     db_name: str
@@ -165,6 +185,7 @@ class Table:
     retention: Optional[Retention] = None
     job: Optional[Job] = None
     storage: str = "sql"                 # sql | mongo
+    api: Optional[Api] = None            # None = tabella non esposta come API
 
     @property
     def mongo(self) -> bool:
@@ -208,7 +229,7 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
     if not isinstance(data, dict):
         return None, [f"{f}: il file deve contenere una mappa con 'table' e 'columns'"]
     allowed = {"table", "db_name", "description", "columns", "relations", "indexes", "queries", "pagination", "transactions",
-               "verification", "tenancy", "archive", "retention", "storage"}
+               "verification", "tenancy", "archive", "retention", "storage", "api"}
     for k in data:
         if k in RESERVED_KEYS:
             errs.append(f"{f}: la chiave '{k}' è prevista nella fase {RESERVED_KEYS[k]} della roadmap e non è ancora supportata")
@@ -383,7 +404,62 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
               columns=cols, relations=rels, indexes=idx, source=str(path), queries=queries,
               pagination=pagination, isolation=isolation, asil=asil, tenancy=tenancy,
               archive=archive, retention=retention, job=job, storage=storage)
+    t.api = _parse_api(f, t, data.get("api"), errs)
     return t, errs
+
+
+def _scopes(where: str, v: Any, errs: List[str]) -> List[str]:
+    vals = [v] if isinstance(v, str) else v
+    if not isinstance(vals, list) or not all(isinstance(x, str) and API_SCOPE.match(x) for x in vals):
+        errs.append(f"{where}: uno scope o una lista di scope (lettere, cifre, . _ : / -)")
+        return []
+    return list(vals)
+
+
+def _parse_api(f: str, t: Table, raw: Any, errs: List[str]) -> Optional[Api]:
+    """api: true espone tutto con i valori predefiniti; una mappa sceglie percorso, operazioni, query, relazioni, scope, contesto."""
+    if raw is None or raw is False:
+        return None
+    if raw is True:
+        raw = {}
+    if not isinstance(raw, dict):
+        errs.append(f"{f}: api deve essere true o una mappa (path, operations, queries, relations, scopes, context)")
+        return None
+    w = f"{f}: api"
+    for k in raw:
+        if k not in ("path", "operations", "queries", "relations", "scopes", "context"):
+            errs.append(f"{w}: chiave sconosciuta '{k}' (ammesse: context, operations, path, queries, relations, scopes)")
+    path = raw.get("path", kebab(t.name))
+    if not isinstance(path, str) or not API_PATH.match(path):
+        errs.append(f"{w}.path: segmenti in minuscolo separati da / (es. ordini o vendite/ordini), senza / iniziale")
+        path = kebab(t.name)
+    ops = raw.get("operations", list(API_OPS))
+    if not isinstance(ops, list) or any(o not in API_OPS for o in ops) or len(set(ops)) != len(ops):
+        errs.append(f"{w}.operations: lista senza ripetizioni di {', '.join(API_OPS)}")
+        ops = list(API_OPS)
+    qnames = [q.name for q in t.queries]
+    qs = raw.get("queries", qnames)
+    if not isinstance(qs, list) or any(q not in qnames for q in qs):
+        errs.append(f"{w}.queries: nomi di query dichiarate in queries ({', '.join(qnames) or 'nessuna'})")
+        qs = []
+    rnames = [r.name for r in t.relations]
+    rs = raw.get("relations", rnames)
+    if not isinstance(rs, list) or any(r not in rnames for r in rs):
+        errs.append(f"{w}.relations: nomi di relazioni della tabella ({', '.join(rnames) or 'nessuna'})")
+        rs = []
+    sc = raw.get("scopes") or {}
+    read, write = [], []
+    if not isinstance(sc, dict) or any(k not in ("read", "write") for k in sc):
+        errs.append(f"{w}.scopes: mappa con read e/o write")
+    else:
+        read = _scopes(f"{w}.scopes.read", sc["read"], errs) if "read" in sc else []
+        write = _scopes(f"{w}.scopes.write", sc["write"], errs) if "write" in sc else []
+    ctx = raw.get("context", path.split("/")[0])
+    if not isinstance(ctx, str) or not API_CONTEXT.match(ctx):
+        errs.append(f"{w}.context: nome in minuscolo (lettere, cifre e -)")
+        ctx = path.split("/")[0]
+    return Api(path=path, operations=[o for o in API_OPS if o in ops], queries=list(qs), relations=list(rs),
+               read_scopes=read, write_scopes=write, context=ctx)
 
 
 def _duration(where: str, v: Any, errs: List[str]) -> Optional[str]:
@@ -645,6 +721,15 @@ def _cross_check(tables: Dict[str, Table]) -> List[str]:
     for t in tables.values():
         errs += _check_access(t)
         errs += _check_lifecycle(t)
+    paths: Dict[str, str] = {}
+    for t in tables.values():
+        if t.api:
+            if t.api.path in paths:
+                errs.append(f"{t.name}: api.path '{t.api.path}' già usato da {paths[t.api.path]}")
+            paths[t.api.path] = t.name
+            kebabs = [kebab(q) for q in t.api.queries]
+            if len(set(kebabs)) != len(kebabs):
+                errs.append(f"{t.name}: api.queries: due query hanno lo stesso percorso")
     return errs
 
 

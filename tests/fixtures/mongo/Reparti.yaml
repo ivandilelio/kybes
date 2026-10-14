@@ -29,3 +29,4 @@ queries:
     where:
       - { column: Dipendenti, op: gt, param: Oltre }
     order_by: [{ column: Dipendenti, dir: desc }]
+api: true

@@ -10,3 +10,4 @@ indexes:
 retention:
   delete_after: 90d
   column: AvvenutoIl
+api: true

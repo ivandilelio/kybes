@@ -186,6 +186,9 @@ def engine():
             dbapi_connection.execute("PRAGMA foreign_keys=ON")
     Base.metadata.create_all(eng)
     yield eng
+    if eng.dialect.name == "sqlite":  # dati confermati dai test delle API: senza vincoli si eliminano in qualsiasi ordine
+        with eng.connect() as c:
+            c.exec_driver_sql("PRAGMA foreign_keys=OFF")
     Base.metadata.drop_all(eng)
     eng.dispose()
 

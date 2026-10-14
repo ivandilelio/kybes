@@ -46,3 +46,6 @@ pagination:
   sortable: [Priorita, Titolo, Codice]
 verification:
   asil: C
+api:
+  scopes: { read: segnalazioni.read, write: segnalazioni.write }
+  context: assistenza
