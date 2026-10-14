@@ -154,7 +154,7 @@ def file_asil(rel: str, targets: List[dict], tables: dict, default: str) -> Opti
         if tg["lang"] == "jobs":
             return top, "motore dei job"
         tn = stem
-        for suffix in ("RepositoryBase", "Repository"):
+        for suffix in ("RepositoryBase", "Repository", "Api"):
             if stem.endswith(suffix) and stem[: -len(suffix)] in tables:
                 tn = stem[: -len(suffix)]
         if tn in tables:

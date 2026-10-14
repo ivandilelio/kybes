@@ -68,6 +68,18 @@ for f in sorted(glob.glob(sys.argv[2] + "/*.yaml")):
         assert norm(yaml.safe_load(text)) == mine, f
 PY
 then pass "lettore YAML senza PyYAML equivalente a PyYAML sugli schemi di esempio"; else fail "miniyaml"; fi
+# contratto OpenAPI generato (CRUD dai blocchi api + endpoint custom): valido per OpenAPI 3.0
+if python3 -c "import openapi_spec_validator" 2>/dev/null; then
+  if python3 -B - "$P/schemas/generated/openapi.yaml" "$MG/schemas/generated/openapi.yaml" <<'PY'
+import sys, yaml
+from openapi_spec_validator import validate
+for f in sys.argv[1:]:
+    doc = yaml.safe_load(open(f, encoding="utf-8"))
+    assert doc["paths"], f
+    validate(doc)
+PY
+  then pass "api: contratto OpenAPI 3.0 generato valido (esempi e collection MongoDB)"; else fail "api: contratto OpenAPI generato"; fi
+else skip "api: contratto non validato (pip install openapi-spec-validator)"; fi
 
 if want python; then
   if python3 -c "import sqlalchemy" 2>/dev/null; then
@@ -136,6 +148,13 @@ if want java; then
     if javac -Xlint:all -Werror -d "$WORK/javamongoonly" $(find "$KIT/tests/java/stubs" -name '*.java') $(find "$MO/libs/db-models/java" -name '*.java') 2>&1 | grep -v JAVA_TOOL_OPTIONS; then :; fi
     if [ -n "$(find "$WORK/javamongoonly" -name 'KybesRuntimeTest.class' 2>/dev/null | head -1)" ] && [ -z "$(find "$WORK/javamongoonly" -name 'UnitOfWork*.class' | head -1)" ]; then
       pass "java: compilazione con sole collection MongoDB, senza moduli SQL"; else fail "java sole collection"; fi
+    # API REST: nucleo solo JDK (JSON, validazione, router, Lambda, server del JDK) eseguito senza JUnit né database
+    javac -d "$WORK/javaout" -cp "$WORK/javaout" "$KIT/tests/java/runtime/RunTests.java" 2>&1 | grep -v JAVA_TOOL_OPTIONS || true
+    if java -cp "$WORK/javaout" RunTests "$(sed -n 's/^package \(.*\);/\1/p' "$(find "$PG/libs/db-models/java" -name KybesApiRuntimeTest.java)").KybesApiRuntimeTest" rt_api_framework rt_api_custom >"$WORK/javaapi.log" 2>&1; then
+      pass "java: test dei moduli comuni delle API eseguiti (nucleo JDK, Lambda, server HTTP del JDK)"; else cat "$WORK/javaapi.log"; fail "java api"; fi
+    if javac -d "$WORK/javamongo" -cp "$WORK/javamongo" "$KIT/tests/java/runtime/RunTests.java" 2>&1 | grep -v JAVA_TOOL_OPTIONS; then :; fi
+    if java -cp "$WORK/javamongo" RunTests "$(sed -n 's/^package \(.*\);/\1/p' "$(find "$MG/libs/db-models/java" -name KybesApiRuntimeTest.java)").KybesApiRuntimeTest" rt_api_framework rt_api_custom >"$WORK/javaapimongo.log" 2>&1; then
+      pass "java: test dei moduli comuni delle API con collection MongoDB"; else cat "$WORK/javaapimongo.log"; fail "java api mongo"; fi
     if javac -d "$WORK/javaout" -cp "$WORK/javaout" "$KIT/tests/java/runtime/PagingTest.java" 2>&1 | grep -v JAVA_TOOL_OPTIONS; then :; fi
     PYCUR=$(cd "$P" && python3 -B -c "import sys,uuid,datetime as dt; sys.path.insert(0,'libs/db-models/python/src'); from model.generated._paging import encode_cursor; from model.generated import PAGING_ORDINI as S
 class R: data=dt.date(2026,1,2); id=uuid.UUID('00000000-0000-0000-0000-000000000002')

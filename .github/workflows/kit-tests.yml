@@ -21,7 +21,7 @@ jobs:
           distribution: temurin
           java-version: "21"
       - name: Dipendenze di test
-        run: pip install sqlalchemy pytest pytest-cov pyyaml pglast tree-sitter tree-sitter-c-sharp pyarrow boto3 moto duckdb azure-storage-blob pymongo mongomock
+        run: pip install sqlalchemy pytest pytest-cov pyyaml pglast tree-sitter tree-sitter-c-sharp pyarrow boto3 moto duckdb azure-storage-blob pymongo mongomock fastapi httpx openapi-spec-validator
       - name: Azurite (Azure Blob locale) per i test dell'archivio
         run: |
           npx --yes azurite@3 azurite-blob --silent --skipApiVersionCheck --disableTelemetry --location "$RUNNER_TEMP/azurite" --blobHost 127.0.0.1 &

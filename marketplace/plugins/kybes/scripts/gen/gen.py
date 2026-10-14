@@ -24,8 +24,10 @@ sys.path.insert(0, str(HERE.parent))
 import api_plan  # noqa: E402
 import emit_api_python  # noqa: E402
 import emit_api_typescript  # noqa: E402
+import emit_api_java  # noqa: E402
 import test_api_python  # noqa: E402
 import test_api_typescript  # noqa: E402
+import test_api_java  # noqa: E402
 import emit_archive  # noqa: E402
 import emit_csharp  # noqa: E402
 import emit_db  # noqa: E402
@@ -74,8 +76,8 @@ DEFAULT_API = {
     "headers": {"subject": "x-kybes-subject", "tenant": "x-kybes-tenant", "scopes": "x-kybes-scopes"},
     "base_path": "",
 }
-API_EMITTERS = {"python": emit_api_python, "typescript": emit_api_typescript}
-API_TEST_EMITTERS = {"python": test_api_python, "typescript": test_api_typescript}
+API_EMITTERS = {"python": emit_api_python, "typescript": emit_api_typescript, "java": emit_api_java}
+API_TEST_EMITTERS = {"python": test_api_python, "typescript": test_api_typescript, "java": test_api_java}
 
 
 def api_config(cfg: dict) -> dict:
