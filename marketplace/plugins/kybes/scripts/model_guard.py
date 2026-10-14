@@ -45,7 +45,16 @@ def is_generated_zone(rel: str, cfg: dict) -> bool:
     if rel == mc["index_file"] or rel.startswith(mc["json_schema_dir"].rstrip("/") + "/") or \
             rel.startswith(mc["db_dir"].rstrip("/") + "/") or rel.startswith(mc.get("jobs_dir", "jobs/generated").rstrip("/") + "/"):
         return True
-    return any(rel.startswith(f"{d}/{GEN_DIR}/") for _, d in rules.model_target_dirs(cfg))
+    if any(rel.startswith(f"{d}/{GEN_DIR}/") for _, d in rules.model_target_dirs(cfg)):
+        return True
+    return is_api_zone(rel, cfg)
+
+
+def is_api_zone(rel: str, cfg: dict) -> bool:
+    """Codice API generato (<api>/generated) e contratto generato (schemas/generated/openapi.yaml)."""
+    if rel == G.api_config(cfg)["generated_contract"]:
+        return True
+    return any(rel.startswith(G.api_dir(tg) + f"/{GEN_DIR}/") for tg in (cfg.get("model") or {}).get("targets") or [])
 
 
 def expected_name(lang: str) -> str:
@@ -59,6 +68,13 @@ def check_write(rel: str, fragments: List[str], cfg: dict, proj: Path) -> List[F
     mc = G.model_config(cfg)
     sev = rules._sev(cfg, "generated_files")
     if sev and (is_generated_zone(rel, cfg) or _is_generated_on_disk(proj / rel)):
+        if is_api_zone(rel, cfg):
+            ac = G.api_config(cfg)
+            out.append(Finding("generated_files", sev, rel, 0,
+                               f"file API generato: non si modifica a mano. Gli endpoint CRUD vengono dal blocco api di "
+                               f"{mc['schema_dir']}/<Tabella>.yaml, quelli custom da {ac['contract']}: il generatore riparte da solo "
+                               "dopo il salvataggio. La logica degli endpoint custom va nel service che implementa Operations."))
+            return out
         out.append(Finding("generated_files", sev, rel, 0,
                            f"file generato: non si modifica a mano. Cambia lo schema in {mc['schema_dir']}/<Tabella>.yaml: "
                            "il generatore riparte da solo dopo il salvataggio. I metodi custom vanno nel file model/<Tabella>."))

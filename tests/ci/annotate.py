@@ -12,6 +12,7 @@ import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+SUMMARY = re.compile(r"Passed!|Failed!|Tests run:|^# (pass|fail)|verify:|AVVISO|BLOCCANTE|passed|failed")
 KEY = re.compile(r"\[ERROR\]|BLOCCANTE|FAIL|Failed|failed|error|Error|Exception|expected|Tests run", re.I)
 
 
@@ -49,6 +50,10 @@ def main(argv):
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     sys.stdout.write(r.stdout)
     if r.returncode == 0:
+        # anche quando riesce: una sintesi leggibile via API (numero di test, avvisi, esito della verifica)
+        summary = [l for l in r.stdout.splitlines() if SUMMARY.search(l)]
+        if summary:
+            print(f"::notice title={esc(title + ': esito')}::{esc(chr(10).join(summary)[-3000:])}", flush=True)
         return 0
     lines = r.stdout.splitlines()
     emit(f"{title}: sintesi", "\n".join(l for l in lines if KEY.search(l))[-6000:] or "(nessuna riga significativa)")

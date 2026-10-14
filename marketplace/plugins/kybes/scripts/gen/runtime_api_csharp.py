@@ -285,7 +285,7 @@ public static class Json
             if (integral)
             {
                 var big = BigInteger.Parse(text, CultureInfo.InvariantCulture);
-                return big >= long.MinValue && big <= long.MaxValue ? (long)big : big;
+                return big >= long.MinValue && big <= long.MaxValue ? (object)(long)big : big;
             }
             var d = double.Parse(text, CultureInfo.InvariantCulture);
             if (double.IsInfinity(d)) throw new JsonError("numero fuori intervallo");
@@ -457,7 +457,7 @@ public static class JsonSchema
         {
             if (!Integer.IsMatch(text)) return new Coerced(null, "tipo atteso: integer");
             var big = BigInteger.Parse(text, CultureInfo.InvariantCulture);
-            return new Coerced(big >= long.MinValue && big <= long.MaxValue ? (long)big : big, null);
+            return new Coerced(big >= long.MinValue && big <= long.MaxValue ? (object)(long)big : big, null);
         }
         if (type == "number")
             return NumberText.IsMatch(text) ? new Coerced(double.Parse(text, CultureInfo.InvariantCulture), null) : new Coerced(null, "tipo atteso: number");
