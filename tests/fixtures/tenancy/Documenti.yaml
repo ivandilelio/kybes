@@ -21,3 +21,4 @@ archive:
   partition_by: [year, month, day]
   read_through: true
   job: { mode: engine, interval: 600 }
+api: true

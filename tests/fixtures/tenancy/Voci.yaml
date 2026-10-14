@@ -23,3 +23,4 @@ archive:
   read_through: true
 retention:
   delete_after: 7y
+api: true

@@ -11,3 +11,4 @@ relations:
   - { name: Documenti, kind: one_to_many, target: Documenti, foreign_key: FascicoloId }
 pagination:
   sortable: [Titolo]
+api: true

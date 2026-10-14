@@ -24,8 +24,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Modello generato aggiornato (schemas/db → model, test, JSON Schema, MODEL_INDEX.md)
+      - name: Modello e API generati aggiornati (schemas → model, API, contratto OpenAPI, test, MODEL_INDEX.md)
         run: python3 -B tools/kybes/plugins/kybes/scripts/gen/gen.py . --check
+      - name: Contratto OpenAPI generato valido (schemas/generated/openapi.yaml)
+        if: hashFiles('schemas/generated/openapi.yaml') != ''
+        run: |
+          pip install --quiet openapi-spec-validator pyyaml
+          python3 -c "import yaml; from openapi_spec_validator import validate; validate(yaml.safe_load(open('schemas/generated/openapi.yaml', encoding='utf-8')))"
       - name: Regole architetturali, struttura e duplicati
         run: python3 -B tools/kybes/plugins/kybes/scripts/arch_check.py . --strict
       - uses: actions/setup-node@v4
@@ -43,7 +48,7 @@ jobs:
         if: hashFiles('libs/db-models/csharp/tests/*.csproj') != ''
         with:
           dotnet-version: "8.0.x"
-      - name: MongoDB con replica set per le collection (storage: mongo)
+      - name: "MongoDB con replica set per le collection (storage: mongo)"
         run: |
           if grep -rqsE '^storage:[[:space:]]*mongo' schemas/db; then
             docker run -d --name mongo -p 27017:27017 mongo:7 --replSet rs0 --bind_ip_all
@@ -52,12 +57,12 @@ jobs:
             for i in $(seq 1 30); do [ "$(docker exec mongo mongosh --quiet --eval 'db.hello().isWritablePrimary')" = "true" ] && break; sleep 1; done
             echo "KYBES_TEST_MONGO_URL=mongodb://localhost:27017/?replicaSet=rs0" >> "$GITHUB_ENV"
           fi
-      - name: Dipendenze dei test del modello
+      - name: Dipendenze dei test del modello e delle API
         run: |
           if [ -f libs/db-models/python/pyproject.toml ]; then pip install -e "libs/db-models/python[test,postgres,mongo]"; fi
           if [ -f jobs/generated/_engine/pyproject.toml ]; then pip install -e "jobs/generated/_engine[test]"; fi
           if [ -f libs/db-models/typescript/package.json ]; then (cd libs/db-models/typescript && npm install --no-audit --no-fund); fi
-      - name: Test di unità del modello e copertura per ASIL (ISO 26262-6), su PostgreSQL (e MongoDB per le collection)
+      - name: Test di unità del modello e delle API e copertura per ASIL (ISO 26262-6), su PostgreSQL (e MongoDB per le collection)
         env:
           KYBES_TEST_DATABASE_URL: postgresql://kybes:kybes@localhost:5432/kybes
         run: python3 -B tools/kybes/plugins/kybes/scripts/verify.py .
