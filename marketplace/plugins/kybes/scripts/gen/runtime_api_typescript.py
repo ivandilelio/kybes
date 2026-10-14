@@ -24,8 +24,14 @@ export function num(x: number): string {
 }
 
 function validDate(y: string, m: string, d: string): boolean {
-  const dt = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
-  return dt.getUTCFullYear() === Number(y) && dt.getUTCMonth() === Number(m) - 1 && dt.getUTCDate() === Number(d);
+  const dt = new Date(0);
+  dt.setUTCFullYear(Number(y), Number(m) - 1, Number(d)); // Date.UTC porterebbe gli anni 0-99 al Novecento
+  return Number(y) >= 1 && dt.getUTCFullYear() === Number(y) && dt.getUTCMonth() === Number(m) - 1 && dt.getUTCDate() === Number(d);
+}
+
+/** Proprietà propria (mai ereditata: "__proto__", "constructor" e simili sono campi come gli altri). */
+export function has(o: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(o, key);
 }
 
 export function checkFormat(fmt: string, s: string): boolean {
@@ -58,7 +64,7 @@ function same(a: unknown, b: unknown): boolean {
 /** Aggiunge a errors {percorso: regola} le violazioni di value; un solo errore per percorso. */
 export function validate(schema: Schema, value: unknown, path: string, errors: Record<string, string>): void {
   const where = path || "body";
-  if (where in errors) return;
+  if (has(errors, where)) return;
   if (value === null || value === undefined) {
     if (!schema.nullable && "type" in schema) errors[where] = "nullo non ammesso";
     return;
@@ -94,16 +100,16 @@ export function validate(schema: Schema, value: unknown, path: string, errors: R
     const props: Record<string, Schema> = schema.properties ?? {};
     const prefix = path ? `${path}.` : "";
     for (const name of (schema.required ?? []) as string[]) {
-      if (!(name in o) && !(prefix + name in errors)) errors[prefix + name] = "obbligatorio";
+      if (!has(o, name) && !has(errors, prefix + name)) errors[prefix + name] = "obbligatorio";
     }
     for (const [name, sub] of Object.entries(props)) {
-      if (name in o) validate(sub, o[name], prefix + name, errors);
+      if (has(o, name)) validate(sub, o[name], prefix + name, errors);
     }
     const extra = schema.additionalProperties ?? true;
     for (const name of Object.keys(o)) {
-      if (name in props) continue;
+      if (has(props, name)) continue;
       if (extra === false) {
-        if (!(prefix + name in errors)) errors[prefix + name] = "non ammesso";
+        if (!has(errors, prefix + name)) errors[prefix + name] = "non ammesso";
       } else if (typeof extra === "object") {
         validate(extra, o[name], prefix + name, errors);
       }
@@ -125,7 +131,7 @@ export function coerce(schema: Schema, raw: string[]): [unknown, string | null] 
   if (raw.length !== 1) return [null, "un solo valore"];
   const r = raw[0];
   if (schema.type === "integer") return INTEGER.test(r) ? [Number(r), null] : [null, "tipo atteso: integer"];
-  if (schema.type === "number") return NUMBER.test(r) ? [Number(r), null] : [null, "tipo atteso: number"];
+  if (schema.type === "number") return NUMBER.test(r) && Number.isFinite(Number(r)) ? [Number(r), null] : [null, "tipo atteso: number"];
   if (schema.type === "boolean") return r === "true" || r === "false" ? [r === "true", null] : [null, "tipo atteso: boolean"];
   return [r, null];
 }
@@ -185,6 +191,7 @@ export interface Call {
   identity: Identity;
   correlationId: string;
   tenant: string | null;
+  basePath: string;                    // prefisso dei percorsi dell'Api (per Location e collegamenti)
 }
 
 export function response(status: number, body?: unknown, headers: Record<string, string> = {}): ApiResponse {
@@ -206,6 +213,11 @@ export function errorBody(kind: string, code: string, cid: string, fields?: Reco
   const error: Record<string, unknown> = { code, message: MESSAGE[kind], correlationId: cid };
   if (fields && Object.keys(fields).length) error.fields = fields;
   return { error };
+}
+
+/** Oggetto normale con le stesse chiavi (anche "__proto__", come proprietà propria). */
+export function plain<T>(o: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(Object.entries(o));
 }
 
 export function anonymous(): Identity {
@@ -270,7 +282,7 @@ ROUTER = r'''// Router e middleware delle API: correlationId, percorso e metodo,
 import { randomUUID } from "node:crypto";
 import { ApiError, STATUS, anonymous, errorBody, isResponse, response } from "./_http";
 import type { ApiRequest, ApiResponse, Call } from "./_http";
-import { coerce, validate } from "./_schema";
+import { coerce, has, validate } from "./_schema";
 import type { Schema } from "./_schema";
 import { ModelValidationError, TenantError } from "../../model/generated";
 // kybes:sql-begin
@@ -279,7 +291,22 @@ import { isRetryable } from "../../model/generated/_uow";
 
 const CID = /^[A-Za-z0-9._-]{1,128}$/;
 const PAGING_FIELDS = new Set(["limit", "sort", "cursor"]);
-const UTF8 = new TextDecoder("utf-8", { fatal: true });
+const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }); // un BOM resta nel testo: JSON non valido
+
+/** Numeri fuori dall'intervallo di un double (1e400) rendono il JSON non valido, come negli altri linguaggi. */
+function finite(_key: string, value: unknown): unknown {
+  if (typeof value === "number" && !Number.isFinite(value)) throw new SyntaxError("numero fuori intervallo");
+  return value;
+}
+
+/** Segmento di percorso decodificato; se la codifica è malformata resta com'è. */
+function segment(p: string): string {
+  try {
+    return decodeURIComponent(p);
+  } catch {
+    return p;
+  }
+}
 
 export interface Param { name: string; in: "path" | "query"; required: boolean; schema: Schema }
 export interface Spec {
@@ -369,7 +396,7 @@ export class Api {
   private find(req: ApiRequest): [Route, Record<string, string>] {
     let path = req.path;
     if (this.basePath && (path === this.basePath || path.startsWith(this.basePath + "/"))) path = path.slice(this.basePath.length);
-    const parts = path.split("/").filter((p) => p.length > 0).map((p) => decodeURIComponent(p));
+    const parts = path.split("/").filter((p) => p.length > 0).map(segment);
     const allowed: string[] = [];
     for (const r of this.routes) {
       const params = r.match(parts);
@@ -387,7 +414,7 @@ export class Api {
     const identity = req.identity ?? anonymous();
     if (spec.secured && !identity.subject) throw new ApiError("AUTH", "IDENTITY_REQUIRED");
     if (!spec.scopes.every((s) => identity.scopes.has(s))) throw new ApiError("FORBIDDEN", "SCOPE_REQUIRED");
-    const errors: Record<string, string> = {};
+    const errors: Record<string, string> = Object.create(null);
     const pathVals: Record<string, unknown> = {};
     const queryVals: Record<string, unknown> = {};
     const known = new Set(spec.params.filter((p) => p.in === "query").map((p) => p.name));
@@ -395,12 +422,12 @@ export class Api {
     for (const p of spec.params) {
       const raw = p.in === "path" ? [rawPath[p.name]] : req.query[p.name];
       if (raw === undefined) {
-        if (p.required && !(p.name in errors)) errors[p.name] = "obbligatorio";
+        if (p.required && !has(errors, p.name)) errors[p.name] = "obbligatorio";
         continue;
       }
       const [value, err] = coerce(p.schema, raw);
       if (err) {
-        if (!(p.name in errors)) errors[p.name] = err;
+        if (!has(errors, p.name)) errors[p.name] = err;
         continue;
       }
       validate(p.schema, value, p.name, errors);
@@ -409,23 +436,27 @@ export class Api {
     let body: unknown = null;
     const hasBody = req.body !== null && req.body.length > 0;
     if (spec.body === null) {
-      if (hasBody && !("body" in errors)) errors.body = "corpo non ammesso";
+      if (hasBody && !has(errors, "body")) errors.body = "corpo non ammesso";
     } else if (hasBody) {
       const ctype = (req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
       if (ctype !== "application/json") throw new ApiError("UNSUPPORTED_MEDIA_TYPE", "JSON_REQUIRED");
       try {
-        body = JSON.parse(UTF8.decode(req.body as Uint8Array));
+        body = JSON.parse(UTF8.decode(req.body as Uint8Array), finite);
       } catch {
-        if (!("body" in errors)) errors.body = "JSON non valido";
+        if (!has(errors, "body")) errors.body = "JSON non valido";
       }
-      if (!("body" in errors)) validate(spec.body, body, "", errors);
-    } else if (spec.bodyRequired && !("body" in errors)) {
+      if (!has(errors, "body")) validate(spec.body, body, "", errors);
+    } else if (spec.bodyRequired && !has(errors, "body")) {
       errors.body = "obbligatorio";
     }
     if (Object.keys(errors).length) throw new ApiError("VALIDATION", "INVALID_REQUEST", errors);
     const result = await route.handler({ operation: spec.id, path: pathVals, query: queryVals, body, identity, correlationId: cid,
-      tenant: identity.tenant });
-    if (isResponse(result)) return response(result.status, result.body, { ...result.headers });
+      tenant: identity.tenant, basePath: this.basePath });
+    if (isResponse(result)) {
+      const headers: Record<string, string> = { ...result.headers };
+      if (result.body !== undefined && !has(headers, "content-type")) headers["content-type"] = "application/json";
+      return response(result.status, result.body, headers);
+    }
     if (spec.status === 204) return response(204, undefined, {});
     return response(spec.status, result, { "content-type": "application/json" });
   }
@@ -526,6 +557,11 @@ export function uuidText(v: unknown): string | null {
 
 /** Decimale con esattamente scale cifre dopo la virgola, senza passare dai numeri in virgola mobile. */
 export function decimalText(v: unknown, scale: number): string | null {
+  const out = decimalDigits(v, scale);
+  return out !== null && /^-0(\.0*)?$/.test(out) ? out.slice(1) : out; // lo zero senza segno
+}
+
+function decimalDigits(v: unknown, scale: number): string | null {
   if (v === null || v === undefined) return null;
   let s = String(v);
   const neg = s.startsWith("-");
@@ -549,17 +585,18 @@ export function datetimeText(v: unknown): string | null {
 
 LAMBDA = r'''// Adattatore AWS Lambda (API Gateway HTTP API v2 e REST API v1): evento -> ApiRequest -> risposta proxy.
 import type { ApiRequest, ApiResponse } from "./_http";
+import { plain } from "./_http";
 import { fromLambda } from "./_identity";
 import type { Api } from "./_router";
 
 export function toRequest(event: Record<string, any>): ApiRequest {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = Object.create(null);
   for (const [k, v] of Object.entries(event.headers ?? {})) headers[k.toLowerCase()] = String(v);
   let body: Uint8Array | null = null;
   if (event.body !== null && event.body !== undefined) {
     body = event.isBase64Encoded ? Buffer.from(String(event.body), "base64") : Buffer.from(String(event.body), "utf8");
   }
-  const query: Record<string, string[]> = {};
+  const query: Record<string, string[]> = Object.create(null);
   let method: string;
   let path: string;
   if (event.version === "2.0") {
@@ -573,7 +610,7 @@ export function toRequest(event: Record<string, any>): ApiRequest {
     if (multi) for (const [k, v] of Object.entries(multi)) query[k] = (v as unknown[]).map(String);
     else for (const [k, v] of Object.entries(event.queryStringParameters ?? {})) query[k] = [String(v)];
   }
-  return { method, path, query, headers, body, identity: fromLambda(event) };
+  return { method, path, query: plain(query), headers: plain(headers), body, identity: fromLambda(event) };
 }
 
 export function toProxy(resp: ApiResponse): Record<string, unknown> {
@@ -590,6 +627,7 @@ export function lambdaHandler(api: Api): (event: Record<string, any>) => Promise
 NODE_HTTP = r'''// Adattatore node:http senza framework, per i microservizi su Kubernetes dietro il gateway.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ApiRequest, ApiResponse } from "./_http";
+import { plain } from "./_http";
 import { fromHeaders } from "./_identity";
 import type { Api } from "./_router";
 
@@ -597,12 +635,13 @@ export async function readRequest(req: IncomingMessage): Promise<ApiRequest> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) chunks.push(chunk as Buffer);
   const body = Buffer.concat(chunks);
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = Object.create(null);
   for (const [k, v] of Object.entries(req.headers)) headers[k] = Array.isArray(v) ? v.join(", ") : String(v);
   const url = new URL(req.url ?? "/", "http://localhost");
-  const query: Record<string, string[]> = {};
+  const query: Record<string, string[]> = Object.create(null);
   for (const [k, v] of url.searchParams) (query[k] ??= []).push(v);
-  return { method: req.method ?? "GET", path: url.pathname, query, headers, body: body.length ? body : null, identity: fromHeaders(headers) };
+  return { method: req.method ?? "GET", path: url.pathname, query: plain(query), headers: plain(headers), body: body.length ? body : null,
+    identity: fromHeaders(headers) };
 }
 
 export function writeResponse(res: ServerResponse, resp: ApiResponse): void {
@@ -619,6 +658,7 @@ export function httpHandler(api: Api): (req: IncomingMessage, res: ServerRespons
 FASTIFY = r'''// Adattatore Fastify: ogni operazione del contratto diventa una route; validazione, errori e identità restano del
 // nucleo. Tipi strutturali: il pacchetto non dipende da fastify, che serve solo a chi usa questo adattatore.
 import type { ApiResponse } from "./_http";
+import { plain } from "./_http";
 import { fromHeaders } from "./_identity";
 import type { Api } from "./_router";
 
@@ -646,13 +686,14 @@ export function includeApi<T extends FastifyLike>(app: T, api: Api): T {
   app.removeAllContentTypeParsers();
   app.addContentTypeParser("*", { parseAs: "buffer" }, (_req, body, done) => done(null, body));
   const handler = async (req: FastifyRequestLike, reply: FastifyReplyLike): Promise<unknown> => {
-    const headers: Record<string, string> = {};
+    const headers: Record<string, string> = Object.create(null);
     for (const [k, v] of Object.entries(req.headers)) if (v !== undefined) headers[k.toLowerCase()] = Array.isArray(v) ? v.join(", ") : v;
     const url = new URL(req.url, "http://localhost");
-    const query: Record<string, string[]> = {};
+    const query: Record<string, string[]> = Object.create(null);
     for (const [k, v] of url.searchParams) (query[k] ??= []).push(v);
     const body = req.body instanceof Uint8Array && req.body.length ? req.body : null;
-    const resp: ApiResponse = await api.handle({ method: req.method, path: url.pathname, query, headers, body, identity: fromHeaders(headers) });
+    const resp: ApiResponse = await api.handle({ method: req.method, path: url.pathname, query: plain(query), headers: plain(headers), body,
+      identity: fromHeaders(headers) });
     return reply.code(resp.status).headers(resp.headers).send(resp.body === undefined ? "" : JSON.stringify(resp.body));
   };
   for (const r of api.routes) {

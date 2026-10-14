@@ -339,7 +339,7 @@ def support_file(tables: Dict[str, Table], ops: List[Operation], model_ns: str) 
     o += [f"using {model_ns};", f"using {api_ns};", "", f"namespace {model_ns}.Tests;", "",
           "/// <summary>Supporto dei test delle API: identità di prova, chiamate all'ApiRouter con il JSON come lo vede un client, metodi custom finti.</summary>",
           "public static class KybesApiSupport", "{",
-          "    public static readonly IReadOnlyList<string> Scopes = new[] { " + ", ".join(_cs(s) for s in scopes) + " };",
+          "    public static readonly IReadOnlyList<string> Scopes = new string[] { " + ", ".join(_cs(s) for s in scopes) + " };",
           "    public static readonly Identity Me = Who(KybesBuilders.TENANT_A.ToString(), Scopes);", "",
           "    /// <summary>Identità di prova: soggetto, tenant e scope indicati.</summary>",
           "    public static Identity Who(string? tenant, IEnumerable<string> scopes) =>",

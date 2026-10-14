@@ -79,7 +79,7 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_pk
         elif op.kind == "create":
             b += [f"        Map<String, Object> body = {write}em -> {{", f"            {n} e = new {n}();", "            apply(e, call.body());",
                   f"            return toJson(new {repo}(em).create(e));", "        });",
-                  f'        return ApiResponse.reply(201, body, Map.of("content-type", "application/json", "location", "{op.path}/" + body.get("{prop(t.pk.name)}")));']
+                  f'        return ApiResponse.reply(201, body, Map.of("content-type", "application/json", "location", call.basePath() + "{op.path}/" + body.get("{prop(t.pk.name)}")));']
         elif op.kind == "update":
             b += [f"        return {write}em -> {{", f"            {repo} repo = new {repo}(em);",
                   f'            {n} e = repo.getById({key}).orElseThrow(() -> new ApiError("NOT_FOUND", "RECORD_NOT_FOUND"));',

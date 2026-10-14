@@ -314,11 +314,11 @@ public sealed record Coerced(object? Value, string? Error);
 /// </summary>
 public static class JsonSchema
 {
-    private static readonly Regex Uuid = new("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
-    private static readonly Regex Date = new("^[0-9]{4}-[0-9]{2}-[0-9]{2}$");
-    private static readonly Regex DateTimeRe = new(@"^([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]{1,9})?(Z|[+-]([0-9]{2}):([0-9]{2}))$");
-    private static readonly Regex Integer = new("^-?[0-9]+$");
-    private static readonly Regex NumberText = new(@"^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$");
+    private static readonly Regex Uuid = new(@"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z");
+    private static readonly Regex Date = new(@"^[0-9]{4}-[0-9]{2}-[0-9]{2}\z");
+    private static readonly Regex DateTimeRe = new(@"^([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(\.[0-9]{1,9})?(Z|[+-]([0-9]{2}):([0-9]{2}))\z");
+    private static readonly Regex Integer = new(@"^-?[0-9]+\z");
+    private static readonly Regex NumberText = new(@"^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?\z");
 
     /// <summary>Numero nel testo di una regola: gli interi senza decimali.</summary>
     public static string Num(object x) => Convert.ToString(x, CultureInfo.InvariantCulture)!;
@@ -335,6 +335,12 @@ public static class JsonSchema
         if (int.Parse(m.Groups[2].Value) > 23 || int.Parse(m.Groups[3].Value) > 59 || int.Parse(m.Groups[4].Value) > 59) return false;
         return m.Groups[6].Value == "Z" || (int.Parse(m.Groups[7].Value) <= 23 && int.Parse(m.Groups[8].Value) <= 59);
     }
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, Regex> Patterns = new();
+
+    /// <summary>pattern del contratto con la semantica di JavaScript: $ chiude il testo (non accetta un a capo finale).</summary>
+    public static Regex JsPattern(string pattern) =>
+        Patterns.GetOrAdd(pattern, p => new Regex(Regex.Replace(p, @"(?<!\\)\$(?=$|\)|\|)", @"\z")));
 
     /// <summary>Tipo JSON di un valore non nullo (il nullo lo gestisce Validate).</summary>
     public static string TypeOf(object? v) => v switch
@@ -395,7 +401,7 @@ public static class JsonSchema
                 var n = s.EnumerateRunes().Count();
                 if (schema.ContainsKey("minLength") && n < Int(schema["minLength"])) errors[where] = "lunghezza minima " + Num(schema["minLength"]!);
                 else if (schema.ContainsKey("maxLength") && n > Int(schema["maxLength"])) errors[where] = "lunghezza massima " + Num(schema["maxLength"]!);
-                else if (schema.ContainsKey("pattern") && !Regex.IsMatch(s, (string)schema["pattern"]!)) errors[where] = "formato non valido";
+                else if (schema.ContainsKey("pattern") && !JsPattern((string)schema["pattern"]!).IsMatch(s)) errors[where] = "formato non valido";
                 else if (schema.ContainsKey("format") && !CheckFormat((string)schema["format"]!, s)) errors[where] = "formato " + schema["format"];
                 break;
             case "integer":
@@ -460,7 +466,10 @@ public static class JsonSchema
             return new Coerced(big >= long.MinValue && big <= long.MaxValue ? (object)(long)big : big, null);
         }
         if (type == "number")
-            return NumberText.IsMatch(text) ? new Coerced(double.Parse(text, CultureInfo.InvariantCulture), null) : new Coerced(null, "tipo atteso: number");
+        {
+            var x = NumberText.IsMatch(text) ? double.Parse(text, CultureInfo.InvariantCulture) : double.PositiveInfinity;
+            return double.IsFinite(x) ? new Coerced(x, null) : new Coerced(null, "tipo atteso: number");
+        }
         if (type == "boolean")
             return text is "true" or "false" ? new Coerced(text == "true", null) : new Coerced(null, "tipo atteso: boolean");
         return new Coerced(text, null);
@@ -574,7 +583,7 @@ public static class Errors
 
 /// <summary>Input già validato di un'operazione, passato al controller generato o al metodo del service.</summary>
 public sealed record Call(string Operation, IReadOnlyDictionary<string, object?> Path, IReadOnlyDictionary<string, object?> Query,
-    object? Body, Identity Identity, string CorrelationId, string? Tenant);
+    object? Body, Identity Identity, string CorrelationId, string? Tenant, string BasePath = "");
 
 /// <summary>Esegue un'operazione: restituisce il corpo JSON della risposta (stato del contratto) o un ApiResponse.</summary>
 public delegate Task<object?> Handler(Call call);
@@ -592,7 +601,7 @@ public static class IdentityReader
 {
     public const string ClaimSubject = __CLAIM_SUBJECT__;
     public const string ClaimTenant = __CLAIM_TENANT__;
-    public static readonly IReadOnlyList<string> ClaimScopes = new[] { __CLAIM_SCOPES__ };
+    public static readonly IReadOnlyList<string> ClaimScopes = new string[] { __CLAIM_SCOPES__ };
     public const string HeaderSubject = __HEADER_SUBJECT__;
     public const string HeaderTenant = __HEADER_TENANT__;
     public const string HeaderScopes = __HEADER_SCOPES__;
@@ -714,7 +723,7 @@ public sealed class Route
 /// <summary>Le operazioni del contratto con i loro handler: HandleAsync(ApiRequest) -> ApiResponse.</summary>
 public sealed class ApiRouter
 {
-    private static readonly Regex Cid = new("^[A-Za-z0-9._-]{1,128}$");
+    private static readonly Regex Cid = new(@"^[A-Za-z0-9._-]{1,128}\z");
     private static readonly HashSet<string> PagingFields = new() { "limit", "sort", "cursor" };
     private static readonly HashSet<string> Shown = new() { "VALIDATION", "CONFLICT", "UNPROCESSABLE" };
     private static readonly UTF8Encoding Utf8 = new(false, true);
@@ -863,8 +872,13 @@ public sealed class ApiRouter
             errors.TryAdd("body", "obbligatorio");
         }
         if (errors.Count > 0) throw new ApiError("VALIDATION", "INVALID_REQUEST", errors);
-        var result = await route.Handler!(new Call(spec.Id, pathValues, queryValues, body, identity, cid, identity.Tenant));
-        if (result is ApiResponse r) return new ApiResponse(r.Status, r.Body, r.Headers, r.HasBody);
+        var result = await route.Handler!(new Call(spec.Id, pathValues, queryValues, body, identity, cid, identity.Tenant, BasePath));
+        if (result is ApiResponse r)
+        {
+            var headers = new Dictionary<string, string>(r.Headers);
+            if (r.HasBody) headers.TryAdd("content-type", "application/json");
+            return new ApiResponse(r.Status, r.Body, headers, r.HasBody);
+        }
         if (spec.Status == 204) return ApiResponse.Reply(204);
         return ApiResponse.Reply(spec.Status, result);
     }
@@ -991,7 +1005,9 @@ public static class ApiConvert
     public static string? Text(object? v) => v is null ? null : Convert.ToString(v, CultureInfo.InvariantCulture);
 
     public static string? DecimalText(decimal? v, int scale) =>
-        v is null ? null : Math.Round(v.Value, scale, MidpointRounding.ToZero).ToString("F" + scale, CultureInfo.InvariantCulture);
+        v is null ? null : Unsigned(Math.Round(v.Value, scale, MidpointRounding.ToZero)).ToString("F" + scale, CultureInfo.InvariantCulture);
+
+    private static decimal Unsigned(decimal d) => d == 0m ? 0m : d;
 
     public static string? DateText(DateOnly? v) => v?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
@@ -1115,10 +1131,15 @@ public static class AspNetAdapter
     {
         foreach (var path in api.Routes.Select(r => api.BasePath + r.Spec.Path).Distinct())
         {
-            app.Map(path, async context => await WriteAsync(context.Response, await api.HandleAsync(await ToRequestAsync(context.Request))));
+            app.Map(path, Handle(api));
         }
+        app.MapFallback(Handle(api)); // percorsi sconosciuti: 404 del nucleo, come gli altri adattatori
         return app;
     }
+
+    private static RequestDelegate Handle(ApiRouter api) =>
+        async context => await WriteAsync(context.Response, await api.HandleAsync(await ToRequestAsync(context.Request)));
+
 }
 '''
 

@@ -74,7 +74,8 @@ public sealed class KybesApiRuntimeTests
     private static ApiRouter Synthetic(string basePath = "", Handler? boom = null) => new(Synth, new Dictionary<string, Handler>
     {
         ["getItem"] = Echo,
-        ["special"] = call => Task.FromResult<object?>(ApiResponse.Reply(202, new Dictionary<string, object?> { ["x"] = 1L })),
+        ["special"] = call => Task.FromResult<object?>(ApiResponse.Reply(202, new Dictionary<string, object?> { ["x"] = 1L },
+            new Dictionary<string, string> { ["location"] = call.BasePath + "/items/special" })),
         ["putItem"] = Echo,
         ["postOpt"] = Echo,
         ["boom"] = boom ?? (call => throw new InvalidOperationException("dettaglio interno da non mostrare")),
@@ -173,6 +174,14 @@ BODIES: Dict[str, str] = {
                      "2026-01-01T10:00:60Z", "2026-01-01T10:00:00+24:00", "2026-01-01T10:00:00+01:60" })
             Assert.False(JsonSchema.CheckFormat("date-time", bad), bad);
         Assert.True(JsonSchema.CheckFormat("uuid", "00000000-0000-4000-8000-00000000000A"));
+        Assert.False(JsonSchema.CheckFormat("uuid", "00000000-0000-4000-8000-00000000000A\n"));
+        Assert.False(JsonSchema.CheckFormat("date", "2024-01-02\n"));
+        Assert.False(JsonSchema.CheckFormat("date-time", "2024-01-02T03:04:05Z\n"));
+        Same(J("{'campo': 'formato non valido'}"), Check("{'type': 'string', 'pattern': '^[0-9]+$'}", "12\n"));
+        Assert.Matches(JsonSchema.JsPattern("^(a|b$)$"), "b");
+        Assert.DoesNotMatch(JsonSchema.JsPattern("^(a|b$)$"), "b\n");
+        Assert.Matches(JsonSchema.JsPattern("^a\\$$"), "a$");
+        Assert.Same(JsonSchema.JsPattern("^x$"), JsonSchema.JsPattern("^x$"));
         Assert.True(JsonSchema.CheckFormat("date", "2024-02-29"));
         Assert.False(JsonSchema.CheckFormat("date", "2026-1-1"));
         await Task.CompletedTask;
@@ -185,6 +194,9 @@ BODIES: Dict[str, str] = {
         var number = (IReadOnlyDictionary<string, object?>)J("{'type': 'number'}")!;
         Assert.Equal(new Coerced(150.0, null), JsonSchema.Coerce(number, new[] { "1.5e2" }));
         Assert.Equal(new Coerced(null, "tipo atteso: number"), JsonSchema.Coerce(number, new[] { "abc" }));
+        Assert.Equal(new Coerced(null, "tipo atteso: number"), JsonSchema.Coerce(number, new[] { "1e400" }));
+        Assert.Equal(new Coerced(null, "tipo atteso: integer"), JsonSchema.Coerce(integer, new[] { "1\n" }));
+        Assert.Equal(new Coerced(null, "tipo atteso: number"), JsonSchema.Coerce(number, new[] { "1\n" }));
         var boolean = (IReadOnlyDictionary<string, object?>)J("{'type': 'boolean'}")!;
         Assert.Equal(new Coerced(true, null), JsonSchema.Coerce(boolean, new[] { "true" }));
         Assert.Equal(new Coerced(false, null), JsonSchema.Coerce(boolean, new[] { "false" }));
@@ -206,6 +218,8 @@ BODIES: Dict[str, str] = {
         var api = Synthetic();
         var r = await api.HandleAsync(Req("GET", "/items/special"));
         Assert.Equal(202, r.Status);
+        Assert.Equal("application/json", r.Headers["content-type"]);
+        Assert.Equal("/items/special", r.Headers["location"]);
         Same(J("{'x': 1}"), BodyOf(r));
         r = await api.HandleAsync(Req("GET", "/items/7", Qs("n", "2", "tag", "a", "tag", "b")));
         Assert.Equal(200, r.Status);
@@ -234,6 +248,7 @@ BODIES: Dict[str, str] = {
         var based = Synthetic("/v1/", call => Task.FromResult<object?>(null));
         Assert.Equal("/v1", based.BasePath);
         Assert.Equal(202, (await based.HandleAsync(Req("GET", "/v1/items/special"))).Status);
+        Assert.Equal("/v1/items/special", (await based.HandleAsync(Req("GET", "/v1/items/special"))).Headers["location"]);
         Assert.Equal(404, (await based.HandleAsync(Req("GET", "/v1"))).Status);
         Assert.Equal(202, (await based.HandleAsync(Req("GET", "/items/special"))).Status);
         Assert.Equal(404, (await based.HandleAsync(Req("GET", "/v1x/items/special"))).Status);
@@ -253,7 +268,7 @@ BODIES: Dict[str, str] = {
         r = await api.HandleAsync(Req("PUT", "/items/1", body: "{\"nome\": \"abc\"}", headers: new() { ["content-type"] = "Application/JSON; charset=utf-8" }));
         Assert.Equal(200, r.Status);
         Same(J("{'nome': 'abc'}"), BodyOf(r)["body"]);
-        foreach (var raw in new object[] { "{", "{\"nome\": NaN}", new byte[] { 0xff } })
+        foreach (var raw in new object[] { "{", "{\"nome\": NaN}", new byte[] { 0xff }, "{\"nome\": 1e400}", new byte[] { 0xef, 0xbb, 0xbf, (byte)'{', (byte)'}' } })
         {
             r = await api.HandleAsync(Req("PUT", "/items/1", body: raw));
             Assert.Equal(400, r.Status);
@@ -485,6 +500,7 @@ BODIES: Dict[str, str] = {
             Assert.Equal(204, (int)r.StatusCode);
             r = await client.GetAsync("/altro");
             Assert.Equal(404, (int)r.StatusCode);
+            Assert.Equal("ROUTE_NOT_FOUND", ((Dictionary<string, object?>)((Dictionary<string, object?>)Json.Parse(await r.Content.ReadAsStringAsync())!)["error"]!)["code"]);
         }
         finally
         {
@@ -515,6 +531,7 @@ BODIES: Dict[str, str] = {
         Assert.Equal("1.50", ApiConvert.DecimalText(1.5m, 2));
         Assert.Equal("3", ApiConvert.DecimalText(3m, 0));
         Assert.Equal("-7.12", ApiConvert.DecimalText(-7.129m, 2));
+        Assert.Equal("0.00", ApiConvert.DecimalText(-0.001m, 2));
         Assert.Equal(new DateOnly(2026, 2, 3), ApiConvert.ToDate("2026-02-03"));
         Assert.Equal("2026-02-03", ApiConvert.DateText(new DateOnly(2026, 2, 3)));
         var utc = new DateTimeOffset(2026, 2, 3, 4, 5, 6, 123, TimeSpan.Zero);
@@ -577,8 +594,8 @@ def _custom_body(ops: List[Operation], tables: Dict[str, Table]) -> str:
               '        Assert.Equal("/x", KybesApi.Build(new ApiData(), null, "/x").BasePath);',
               f"        var one = KybesApi.Build(new ApiData(), new[] {{ {ctx} }});"]
     o += [f"        Assert.NotEmpty(one.Routes);", f"        Assert.All(one.Routes, r => Assert.Equal({ctx}, r.Spec.Context));",
-          '        var call = new Call("op", Q(), Q(), null, Self, "cid", "t1");',
-          '        Assert.Equal(("op", "cid", "t1", Self), (call.Operation, call.CorrelationId, call.Tenant, call.Identity));']
+          '        var call = new Call("op", Q(), Q(), null, Self, "cid", "t1", "/v1");',
+          '        Assert.Equal(("op", "cid", "t1", Self, "/v1"), (call.Operation, call.CorrelationId, call.Tenant, call.Identity, call.BasePath));']
     if has_sql(tables):
         o += ["        var noSql = await Assert.ThrowsAsync<InvalidOperationException>(() => new ApiData().ReadAsync(null, db => Task.FromResult(1)));",
               '        Assert.Contains("SqlFor", noSql.Message);', "        KybesDb.Open().Dispose();",

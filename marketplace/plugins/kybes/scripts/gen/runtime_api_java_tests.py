@@ -118,7 +118,7 @@ class KybesApiRuntimeTest {
     private static Api synthetic(String basePath, Handler boom) {
         Map<String, Handler> handlers = new HashMap<>();
         handlers.put("getItem", ECHO);
-        handlers.put("special", call -> ApiResponse.reply(202, Map.of("x", 1L)));
+        handlers.put("special", call -> ApiResponse.reply(202, Map.of("x", 1L), Map.of("location", call.basePath() + "/items/special")));
         handlers.put("putItem", ECHO);
         handlers.put("postOpt", ECHO);
         handlers.put("boom", boom);
@@ -201,6 +201,8 @@ BODIES: Dict[str, List[str]] = {
             {"{'type': 'string'}", UUID.randomUUID(), "tipo atteso: string"}, {"{'type': 'number'}", "x", "tipo atteso: number"},
             {"{'type': 'string', 'minLength': 2}", "ab", null}, {"{'type': 'array', 'minItems': 1}", List.of(1L), null},
             {"{'type': 'array', 'maxItems': 1}", List.of(1L), null}, {"{}", UUID.randomUUID(), null},
+            {"{'type': 'string', 'pattern': '^[0-9]+$'}", "12\n", "formato non valido"}, {"{'type': 'string', 'pattern': '^(a|b)$|^c$'}", "c", null},
+            {"{'type': 'string', 'format': 'uuid'}", "00000000-0000-4000-8000-00000000000a\n", "formato uuid"},
         };
         for (Object[] c : cases) {
             Map<String, String> expected = c[2] == null ? Map.of() : Map.of("campo", (String) c[2]);
@@ -234,6 +236,9 @@ BODIES: Dict[str, List[str]] = {
         assertTrue(JsonSchema.checkFormat("uuid", "00000000-0000-4000-8000-00000000000A"));
         assertTrue(JsonSchema.checkFormat("date", "2024-02-29"));
         assertFalse(JsonSchema.checkFormat("date", "2026-1-1"));
+        assertTrue(JsonSchema.checkFormat("date", "0050-01-01"));
+        assertFalse(JsonSchema.checkFormat("date", "0000-01-01"), "l'anno 0 non esiste negli altri linguaggi");
+        assertTrue(JsonSchema.jsPattern("^a\\$").matcher("a$").find());
 ''',
     "rt_api_coerce": r'''
         Map<String, Object> integer = asMap(j("{'type': 'integer'}"));
@@ -252,6 +257,8 @@ BODIES: Dict[str, List[str]] = {
         assertEquals(new JsonSchema.Coerced(null, "tipo atteso: integer"), JsonSchema.coerce(ints, List.of("1", "x")));
         assertEquals(new JsonSchema.Coerced(List.of(), null), JsonSchema.coerce(asMap(j("{'type': 'array'}")), List.of()));
         assertEquals(new JsonSchema.Coerced(List.of("a"), null), JsonSchema.coerce(asMap(j("{'type': 'array'}")), List.of("a")));
+        assertEquals(new JsonSchema.Coerced(null, "tipo atteso: number"), JsonSchema.coerce(asMap(j("{'type': 'number'}")), List.of("1e400")));
+        assertEquals(new JsonSchema.Coerced(null, "tipo atteso: integer"), JsonSchema.coerce(integer, List.of("1\n")));
         assertEquals(j("{'a': ['1', '3'], 'b': [''], 'c': ['x y', '%zz']}"), ApiRequest.parseQuery("a=1&&b&a=3&c=x+y&c=%zz"));
         assertEquals(Map.of(), ApiRequest.parseQuery(null));
         assertEquals("a+b c", ApiRequest.decode("a+b%20c", false));
@@ -261,6 +268,9 @@ BODIES: Dict[str, List[str]] = {
         ApiResponse r = api.handle(req("GET", "/items/special"));
         assertEquals(202, r.status(), "il segmento fisso vince sul parametro");
         assertEquals(j("{'x': 1}"), body(r));
+        assertEquals(List.of("application/json", "/items/special"), List.of(r.headers().get("content-type"), r.headers().get("location")));
+        r = api.handle(req("GET", "/items/%zz", q("n", "1")));
+        assertEquals(List.of(400, j("{'id': 'tipo atteso: integer'}")), List.of(r.status(), fields(r)));
         r = api.handle(req("GET", "/items/7", q("n", "2", "tag", "a", "tag", "b")));
         assertEquals(200, r.status());
         assertEquals(j("{'op': 'getItem', 'path': {'id': 7}, 'query': {'n': 2, 'tag': ['a', 'b']}, 'body': null}"), body(r));
@@ -287,7 +297,7 @@ BODIES: Dict[str, List[str]] = {
         assertEquals("SCOPE_REQUIRED", error(r).get("code"));
         Api based = synthetic("/v1/", call -> null);
         assertEquals("/v1", based.basePath());
-        assertEquals(202, based.handle(req("GET", "/v1/items/special")).status());
+        assertEquals("/v1/items/special", based.handle(req("GET", "/v1/items/special")).headers().get("location"));
         assertEquals(404, based.handle(req("GET", "/v1")).status());
         assertEquals(202, based.handle(req("GET", "/items/special")).status());
         assertEquals(404, based.handle(req("GET", "/v1x/items/special")).status());
@@ -309,7 +319,7 @@ BODIES: Dict[str, List[str]] = {
         r = api.handle(req("PUT", "/items/1", Map.of(), "{\"nome\": \"abc\"}", ME, Map.of("content-type", "Application/JSON; charset=utf-8")));
         assertEquals(200, r.status());
         assertEquals(j("{'nome': 'abc'}"), body(r).get("body"));
-        for (Object raw : List.of("{", "{\"nome\": NaN}", new byte[] {(byte) 0xff})) {
+        for (Object raw : List.of("{", "{\"nome\": NaN}", new byte[] {(byte) 0xff}, "{\"nome\": 1e400}", new byte[] {(byte) 0xef, (byte) 0xbb, (byte) 0xbf, '{', '}'})) {
             r = api.handle(req("PUT", "/items/1", Map.of(), raw, ME, Map.of()));
             assertEquals(400, r.status());
             assertEquals(j("{'body': 'JSON non valido'}"), fields(r));
@@ -331,7 +341,10 @@ BODIES: Dict[str, List[str]] = {
         assertEquals(204, r.status());
         assertFalse(r.hasBody());
         assertEquals("", r.text());
-        assertEquals(204, api.handle(req("POST", "/opt", Map.of(), "{}", ME, Map.of())).status());
+        assertEquals(204, api.handle(req("POST", "/opt", Map.of(), "{\"x\": 1.5}", ME, Map.of())).status());
+        r = synthetic("", call -> ApiResponse.reply(204)).handle(req("POST", "/boom"));
+        assertEquals(204, r.status());
+        assertFalse(r.headers().containsKey("content-type"));
         assertEquals(204, api.handle(req("POST", "/opt", Map.of(), new byte[0], ME, Map.of())).status());
         r = api.handle(req("GET", "/items/special", Map.of(), "{}", ME, Map.of()));
         assertEquals(400, r.status());
@@ -550,7 +563,8 @@ BODIES: Dict[str, List[str]] = {
         http = new MockHttpServletRequest("GET", "/altro");
         ServletRequestPathUtils.parseAndCache(http);
         request = ServerRequest.create(http, List.of(new ByteArrayHttpMessageConverter()));
-        assertTrue(routes.route(request).isEmpty());
+        resp = routes.route(request).orElseThrow().handle(request);
+        assertEquals(404, resp.statusCode().value(), "percorso sconosciuto: 404 del nucleo, come gli altri adattatori");
         assertEquals(500, SpringAdapter.toResponse(ApiResponse.reply(500, Map.of())).statusCode().value());
 ''',
     "rt_api_convert": r'''
@@ -576,6 +590,7 @@ BODIES: Dict[str, List[str]] = {
         assertEquals("1.50", Convert.decimalText(new BigDecimal("1.5"), 2));
         assertEquals("3", Convert.decimalText(new BigDecimal("3"), 0));
         assertEquals("-7.12", Convert.decimalText(new BigDecimal("-007.129"), 2));
+        assertEquals("0.00", Convert.decimalText(new BigDecimal("-0.001"), 2));
         assertEquals(LocalDate.of(2026, 2, 3), Convert.toDate("2026-02-03"));
         assertEquals("2026-02-03", Convert.dateText(LocalDate.of(2026, 2, 3)));
         OffsetDateTime utc = OffsetDateTime.of(2026, 2, 3, 4, 5, 6, 123_000_000, ZoneOffset.UTC);
@@ -614,7 +629,7 @@ def _custom_body(ops: List[Operation], tables: Dict[str, Table]) -> str:
               '        assertEquals("/x", KybesApi.build(new ApiData(), rec, null, "/x").basePath());']
         first = custom[0]
         o += [f'        Object res = full.routes().stream().filter(r -> r.spec().id().equals("{first.op_id}")).findFirst().orElseThrow()',
-              '                .handler().handle(new Call("x", Map.of(), Map.of(), null, ME, "c", null));',
+              '                .handler().handle(new Call("x", Map.of(), Map.of(), null, ME, "c", null, ""));',
               '        assertEquals(Map.of("operation", "x"), res);', '        assertEquals(1, rec.calls.size());']
     else:
         o += ["        Api empty = KybesApi.build(new ApiData(), List.of());", "        assertEquals(List.of(), empty.routes());",
@@ -624,8 +639,8 @@ def _custom_body(ops: List[Operation], tables: Dict[str, Table]) -> str:
     ctx = json.dumps(ops[0].context)
     o += [f"        Api one = KybesApi.build(new ApiData(){', new KybesApiSupport.Recorder()' if custom else ''}, List.of({ctx}));",
           f"        assertTrue(!one.routes().isEmpty() && one.routes().stream().allMatch(r -> r.spec().context().equals({ctx})));"]
-    o += ["        Call call = new Call(\"op\", Map.of(), Map.of(), null, ME, \"cid\", \"t1\");",
-          '        assertEquals(List.of("op", "cid", "t1", ME), List.of(call.operation(), call.correlationId(), call.tenant(), call.identity()));']
+    o += ["        Call call = new Call(\"op\", Map.of(), Map.of(), null, ME, \"cid\", \"t1\", \"/v1\");",
+          '        assertEquals(List.of("op", "cid", "t1", ME, "/v1"), List.of(call.operation(), call.correlationId(), call.tenant(), call.identity(), call.basePath()));']
     if has_sql(tables):
         o += ["        IllegalStateException noSql = assertThrows(IllegalStateException.class, () -> new ApiData().read(null, em -> 1));",
               '        assertTrue(noSql.getMessage().contains("emf"));', "        KybesDb.reset();",

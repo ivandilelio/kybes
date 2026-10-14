@@ -84,7 +84,7 @@ def _table_file(t: Table, ops: List[Operation], ns: str, model_ns: str) -> str:
             b += [f"        var body = await {write}", "        {", f"            var e = new {n}();", "            Apply(e, call.Body);",
                   f"            return ToJson(await new {repo}(db).CreateAsync(e));", "        });",
                   "        return ApiResponse.Reply(201, body, new Dictionary<string, string> { [\"content-type\"] = \"application/json\", "
-                  f'["location"] = "{op.path}/" + body["{prop(t.pk.name)}"] }});']
+                  f'["location"] = call.BasePath + "{op.path}/" + body["{prop(t.pk.name)}"] }});']
         elif op.kind == "update":
             b += [f"        return await {write}", "        {", f"            var repo = new {repo}(db);",
                   f"            var e = await repo.GetByIdAsync({key}) ?? {nf};", "            Apply(e, call.Body);",

@@ -16,8 +16,10 @@ violata, con lo stesso testo in tutti i linguaggi: il client riceve {campo: rego
 """
 from __future__ import annotations
 
+import math
 import re
 from datetime import date
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -42,16 +44,22 @@ def _valid_date(y: str, m: str, d: str) -> bool:
 
 def check_format(fmt: str, s: str) -> bool:
     if fmt == "uuid":
-        return bool(UUID.match(s))
+        return bool(UUID.fullmatch(s))
     if fmt == "date":
-        mt = DATE.match(s)
+        mt = DATE.fullmatch(s)
         return bool(mt) and _valid_date(*mt.groups())
-    mt = DATE_TIME.match(s)
+    mt = DATE_TIME.fullmatch(s)
     if not mt or not _valid_date(mt.group(1), mt.group(2), mt.group(3)):
         return False
     if int(mt.group(4)) > 23 or int(mt.group(5)) > 59 or int(mt.group(6)) > 59:
         return False
     return mt.group(8) == "Z" or (int(mt.group(9)) <= 23 and int(mt.group(10)) <= 59)
+
+
+@lru_cache(maxsize=256)
+def js_pattern(pattern: str) -> "re.Pattern[str]":
+    """pattern del contratto con la semantica di JavaScript: $ chiude il testo (non accetta un a capo finale)."""
+    return re.compile(re.sub(r"(?<!\\\\)\\$(?=$|\\)|\\|)", r"\\\\Z", pattern))
 
 
 def type_of(v: Any) -> str:
@@ -96,7 +104,7 @@ def validate(schema: Dict[str, Any], value: Any, path: str, errors: Dict[str, st
             errors[where] = f"lunghezza minima {schema['minLength']}"
         elif "maxLength" in schema and n > schema["maxLength"]:
             errors[where] = f"lunghezza massima {schema['maxLength']}"
-        elif "pattern" in schema and not re.search(schema["pattern"], value):
+        elif "pattern" in schema and not js_pattern(schema["pattern"]).search(value):
             errors[where] = "formato non valido"
         elif "format" in schema and not check_format(schema["format"], value):
             errors[where] = f"formato {schema['format']}"
@@ -145,9 +153,10 @@ def coerce(schema: Dict[str, Any], raw: List[str]) -> Tuple[Any, Optional[str]]:
         return None, "un solo valore"
     r, want = raw[0], schema.get("type")
     if want == "integer":
-        return (int(r), None) if INTEGER.match(r) else (None, "tipo atteso: integer")
+        return (int(r), None) if INTEGER.fullmatch(r) else (None, "tipo atteso: integer")
     if want == "number":
-        return (float(r), None) if NUMBER.match(r) else (None, "tipo atteso: number")
+        x = float(r) if NUMBER.fullmatch(r) else math.inf
+        return (x, None) if math.isfinite(x) else (None, "tipo atteso: number")
     if want == "boolean":
         return (r == "true", None) if r in ("true", "false") else (None, "tipo atteso: boolean")
     return r, None
@@ -212,6 +221,7 @@ class Call:
     body: Any
     identity: Identity
     correlation_id: str
+    base_path: str = ""  # prefisso dei percorsi dell'Api (per Location e collegamenti)
 
     @property
     def tenant(self) -> Optional[str]:
@@ -297,6 +307,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import uuid
 from typing import Any, Callable, Dict, Iterable, List, Optional
@@ -338,6 +349,14 @@ def map_error(exc: BaseException) -> ApiError:
         return ApiError("TRANSIENT", "RETRY_LATER")
     # kybes:sql-end
     return ApiError("INTERNAL", "UNEXPECTED")
+
+
+def _finite(text: str) -> float:
+    """Numero JSON con decimali o esponente: fuori dall'intervallo di un double (1e400) il JSON non è valido."""
+    x = float(text)
+    if math.isinf(x):
+        raise ValueError("numero fuori intervallo")
+    return x
 
 
 def _no_constant(name: str) -> Any:
@@ -447,7 +466,7 @@ class Api:
             if ctype != "application/json":
                 raise ApiError("UNSUPPORTED_MEDIA_TYPE", "JSON_REQUIRED")
             try:
-                body = json.loads(req.body, parse_constant=_no_constant)
+                body = json.loads(req.body.decode("utf-8"), parse_constant=_no_constant, parse_float=_finite)
             except (ValueError, UnicodeDecodeError):
                 errors.setdefault("body", "JSON non valido")
             else:
@@ -456,9 +475,12 @@ class Api:
             errors.setdefault("body", "obbligatorio")
         if errors:
             raise ApiError("VALIDATION", "INVALID_REQUEST", errors)
-        result = route.handler(Call(spec["id"], path_vals, query_vals, body, identity, cid))
+        result = route.handler(Call(spec["id"], path_vals, query_vals, body, identity, cid, self.base_path))
         if isinstance(result, ApiResponse):
-            return result
+            headers = dict(result.headers)
+            if result.body is not None:
+                headers.setdefault("content-type", "application/json")
+            return ApiResponse(result.status, result.body, headers)
         if spec["status"] == 204:
             return ApiResponse(204)
         return ApiResponse(spec["status"], result, {"content-type": "application/json"})
@@ -574,7 +596,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any, Awaitable, Callable, Dict, List
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 from ._http import ApiRequest, ApiResponse
 from ._identity import from_headers
@@ -593,10 +615,16 @@ async def read_body(receive: Receive) -> bytes:
             return b"".join(chunks)
 
 
+def raw_path(scope: Dict[str, Any]) -> str:
+    """Percorso ancora codificato (lo decodifica il router, una volta sola); senza raw_path lo si ricodifica."""
+    raw = scope.get("raw_path")
+    return raw.decode("latin-1") if raw else quote(scope["path"])
+
+
 def request_of(scope: Dict[str, Any], body: bytes) -> ApiRequest:
     headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
     query = parse_qs(scope.get("query_string", b"").decode("utf-8"), keep_blank_values=True)
-    return ApiRequest(method=scope["method"], path=scope["path"], query=query, headers=headers, body=body or None,
+    return ApiRequest(method=scope["method"], path=raw_path(scope), query=query, headers=headers, body=body or None,
                       identity=from_headers(headers))
 
 
@@ -637,6 +665,7 @@ from fastapi.responses import Response
 from ._http import ApiRequest, ApiResponse
 from ._identity import from_headers
 from ._router import Api
+from .asgi_adapter import raw_path
 
 METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 
@@ -647,7 +676,7 @@ def include_api(app: Any, api: Api) -> Any:
         headers = {k.lower(): v for k, v in request.headers.items()}
         query = {k: request.query_params.getlist(k) for k in request.query_params.keys()}
         body = await request.body()
-        req = ApiRequest(method=request.method, path=request.url.path, query=query, headers=headers, body=body or None,
+        req = ApiRequest(method=request.method, path=raw_path(request.scope), query=query, headers=headers, body=body or None,
                          identity=from_headers(headers))
         resp: ApiResponse = await asyncio.to_thread(api.handle, req)
         content = b"" if resp.body is None else json.dumps(resp.body, ensure_ascii=False).encode("utf-8")

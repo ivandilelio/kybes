@@ -21,7 +21,7 @@ from __future__ import annotations
 import re
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from typing import Any, Optional
 
 _DT = re.compile(r"^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\\.([0-9]{1,9}))?(Z|([+-])([0-9]{2}):([0-9]{2}))$")
@@ -49,7 +49,7 @@ def to_datetime(v: Any) -> Any:
     m = _DT.match(v)
     y, mo, d, h, mi, s, frac, z, sign, oh, om = m.groups()
     tz = timezone.utc if z == "Z" else timezone((1 if sign == "+" else -1) * timedelta(hours=int(oh), minutes=int(om)))
-    return datetime(int(y), int(mo), int(d), int(h), int(mi), int(s), int((frac or "0").ljust(6, "0")[:6]), tzinfo=tz)
+    return datetime(int(y), int(mo), int(d), int(h), int(mi), int(s), int((frac or "0").ljust(3, "0")[:3]) * 1000, tzinfo=tz)
 
 
 def text(v: Any) -> Optional[str]:
@@ -57,7 +57,11 @@ def text(v: Any) -> Optional[str]:
 
 
 def decimal_text(v: Any, scale: int) -> Optional[str]:
-    return None if v is None else format(Decimal(v), f".{scale}f")
+    """Esattamente scale decimali, troncando (mai arrotondando); lo zero senza segno."""
+    if v is None:
+        return None
+    d = Decimal(v).quantize(Decimal(1).scaleb(-scale), rounding=ROUND_DOWN)
+    return format(d.copy_abs() if d == 0 else d, "f")
 
 
 def date_text(v: Any) -> Optional[str]:
@@ -137,7 +141,7 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation]) -> str
         elif op.kind == "create":
             o += ["    def work(s: Any) -> Dict[str, Any]:", f"        return to_json({repo}(s).create({n}(**values(call.body))))", "",
                   "    body = _write(data, call, work)",
-                  f'    return ApiResponse(201, body, {{"content-type": "application/json", "location": "{op.path}/" + str(body["{prop(t.pk.name)}"])}})']
+                  f'    return ApiResponse(201, body, {{"content-type": "application/json", "location": call.base_path + "{op.path}/" + str(body["{prop(t.pk.name)}"])}})']
         elif op.kind == "update":
             o += ["    def work(s: Any) -> Dict[str, Any]:", f"        e = {repo}(s).update({key}, values(call.body))",
                   "        if e is None:", '            raise ApiError("NOT_FOUND", "RECORD_NOT_FOUND")', "        return to_json(e)", "",

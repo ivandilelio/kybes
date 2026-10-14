@@ -92,4 +92,4 @@ I nomi sono identici in tutti i linguaggi, così il database ha lo stesso schema
 | TypeScript | `typeorm`, `reflect-metadata`, `experimentalDecorators` ed `emitDecoratorMetadata` nel `tsconfig` |
 | Java | Jakarta Persistence 3.1, Hibernate 6.2+; con colonne `json` su PostgreSQL una libreria JSON (es. `jackson-databind`) |
 
-Le API generate usano solo la libreria standard per JSON, validazione e routing. Gli adattatori hanno dipendenze facoltative, che servono solo a chi li usa: FastAPI (Python), Fastify 5 (TypeScript), `spring-webmvc` 6 e `jakarta.servlet-api` 6 (Java, scope `provided`), il framework condiviso `Microsoft.AspNetCore.App` (C#). Gli adattatori Lambda e il server HTTP senza framework non richiedono pacchetti.
+Le API generate usano solo la libreria standard per JSON, validazione e routing. Gli adattatori hanno dipendenze facoltative, che servono solo a chi li usa: FastAPI (Python), Fastify 5 (TypeScript), `spring-webmvc` 6 e `jakarta.servlet-api` 6 (Java, scope `provided`), il framework condiviso `Microsoft.AspNetCore.App` (C#). Gli adattatori Lambda e il server HTTP senza framework (Python, TypeScript, Java) non richiedono pacchetti.

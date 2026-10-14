@@ -73,7 +73,7 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation]) -> str
                   '    if (e === null) throw new ApiError("NOT_FOUND", "RECORD_NOT_FOUND");', "    return toJson(e);", "  });"]
         elif op.kind == "create":
             b += [f"  const body = await {write}({write_args}, async (em) => toJson(await new {repo}(em).create(values(call.body as Record<string, unknown>) as never)));",
-                  f'  return reply(201, body, {{ "content-type": "application/json", location: "{op.path}/" + String(body.{prop(t.pk.name)}) }});']
+                  f'  return reply(201, body, {{ "content-type": "application/json", location: call.basePath + "{op.path}/" + String(body.{prop(t.pk.name)}) }});']
         elif op.kind == "update":
             b += [f"  return {write}({write_args}, async (em) => {{",
                   f"    const e = await new {repo}(em).update({key}, values(call.body as Record<string, unknown>) as never);",

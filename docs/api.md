@@ -67,7 +67,7 @@ Uguale in tutti i linguaggi, perché un client non deve sapere in che linguaggio
 | `string`, `text` | stringa (`maxLength` dalla lunghezza della colonna) |
 | `int` | intero a 32 bit |
 | `bigint` | stringa di cifre (un numero JSON perde precisione oltre 2^53) |
-| `decimal` | stringa con al più `scale` decimali in ingresso, esattamente `scale` decimali in uscita (`"12.50"`) |
+| `decimal` | stringa con al più `scale` decimali in ingresso; in uscita esattamente `scale` decimali (`"12.50"`), troncati verso lo zero e mai arrotondati, con lo zero sempre senza segno (`"0.00"`) |
 | `bool` | booleano |
 | `date` | `"AAAA-MM-GG"` |
 | `datetime` | ISO 8601 in ingresso (qualsiasi fuso); in uscita sempre UTC al millisecondo (`"2026-02-03T04:05:06.123Z"`) |
@@ -129,7 +129,7 @@ Gli scope di un endpoint custom sono quelli della sua `security` (o della `secur
 
 ### Implementare gli endpoint custom
 
-Ogni metodo riceve il `Call` con path, query e body **già validati e convertiti**, l'identità e il correlationId. Restituisce il corpo JSON (con lo stato del contratto) oppure una risposta costruita con `reply`. Gli errori applicativi si sollevano con `ApiError(kind, code, fields)`; gli errori del modello (`ModelValidationError`, tenant mancante, vincoli del database) vengono tradotti dal nucleo.
+Ogni metodo riceve il `Call` con path, query e body **già validati e convertiti**, l'identità e il correlationId. Restituisce il corpo JSON (con lo stato del contratto) oppure una risposta con stato e header propri: `ApiResponse(status, body, headers)` in Python, `reply(...)` in TypeScript, `ApiResponse.reply(...)` in Java, `ApiResponse.Reply(...)` in C#. I nomi degli header vanno in minuscolo; se la risposta ha un corpo e non indica `content-type`, il nucleo aggiunge `application/json`. `call.base_path` (`basePath`, `BasePath`) è il prefisso dei percorsi, da usare negli header `location`. Gli errori applicativi si sollevano con `ApiError(kind, code, fields)`; gli errori del modello (`ModelValidationError`, tenant mancante, vincoli del database) vengono tradotti dal nucleo.
 
 ```python
 # Python: un metodo per operationId, nome in snake_case
@@ -259,7 +259,7 @@ I controller generati usano `ApiData`, che sa come aprire le sessioni:
 | Java | `new ApiData().emf(emf)` o `.sqlFor(tenant -> emf)` | `.mongo(client, database)`, `.mongoDatabaseFor(...)` |
 | C# | `new ApiData { SqlFor = tenant => new AppDbContext(options) }` | `MongoClient`, `MongoDatabase`, `MongoDatabaseFor` |
 
-`sql_for` e `mongo_database_for` servono alle tabelle con tenancy `schema` o `database`.
+`sql_for` e `mongo_database_for` servono alle tabelle con tenancy `schema` o `database`. In Python e TypeScript `ApiData` accetta anche `levels`, i livelli di isolamento passati alla Unit of Work (ad esempio con SQLite, che conosce solo `SERIALIZABLE`).
 
 ## Runtime: Lambda, server HTTP, framework
 
@@ -270,7 +270,9 @@ Lo stesso `Api` gira in tre modi. Il nucleo non cambia: cambiano solo la lettura
 | Python | `lambda_handler(api)` | ASGI: `asgi_app(api)` (uvicorn) | FastAPI: `include_api(app, api)` |
 | TypeScript | `lambdaHandler(api)` | `node:http`: `createServer(httpHandler(api))` | Fastify: `includeApi(fastify(), api)` |
 | Java | `LambdaAdapter.handle(api, event)` (handler POJO a `Map`) | server del JDK: `HttpServerAdapter.handler(api)` | Spring Boot: `@Bean RouterFunction<ServerResponse> SpringAdapter.routes(api)` |
-| C# | `LambdaAdapter.HandleAsync(api, stream)` (handler a stream) | ASP.NET Core minimal API: `app.MapKybesApi(api)` | ASP.NET Core minimal API |
+| C# | `LambdaAdapter.HandleAsync(api, stream)` (handler a stream) | — (in .NET il server HTTP è già ASP.NET Core) | ASP.NET Core minimal API: `app.MapKybesApi(api)` |
+
+In tutti gli adattatori un percorso sconosciuto riceve il 404 `ROUTE_NOT_FOUND` del nucleo, con correlationId, e non la pagina di errore del framework.
 
 Gli adattatori Lambda accettano gli eventi di API Gateway HTTP API (v2) e REST API (v1), con corpo anche in base64. Fastify, FastAPI e Spring sono dipendenze facoltative: servono solo a chi usa quell'adattatore.
 

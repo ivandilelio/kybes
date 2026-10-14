@@ -148,7 +148,7 @@ Inoltre `schemas/generated/json/<Tabella>.schema.json` (validazione di API Gatew
 - kybes genera in `api/generated` (accanto al model) contratto, validazione dell'input, routing, middleware, controller e test, e il contratto completo `schemas/generated/openapi.yaml` da pubblicare sul gateway. Mai a mano: gli hook lo rifiutano.
 - La logica di un endpoint custom sta nel service che implementa `Operations` (`IOperations` in C#): un metodo per `operationId`, input già validato nel `Call`, errori applicativi con `ApiError(kind, code, fields)`.
 - Ogni function o microservizio costruisce l'Api con il **proprio contesto** (`build_api(data, custom, ["vendite"])`, `buildApi`, `KybesApi.build`, `KybesApi.Build`): niente servizi che espongono tutti i contesti.
-- Runtime: Lambda (`lambda_handler`, `lambdaHandler`, `LambdaAdapter`), server senza framework (ASGI, `node:http`, server del JDK, ASP.NET Core) o framework (FastAPI, Fastify, Spring Boot, ASP.NET Core), scelto con l'albero della sez. 2.
+- Runtime: Lambda (`lambda_handler`, `lambdaHandler`, `LambdaAdapter`), server senza framework (ASGI, `node:http`, server del JDK; in C# non serve, il server è già ASP.NET Core) o framework (FastAPI, Fastify, Spring Boot, ASP.NET Core minimal API), scelto con l'albero della sez. 2.
 - Identità solo dai claim già verificati dal gateway (authorizer Lambda o header `x-kybes-*` impostati dal gateway); il servizio non verifica token e non è raggiungibile se non dal gateway. Il tenant viene dall'identità, mai dal payload.
 - Dettagli: docs/api.md del kit.
 

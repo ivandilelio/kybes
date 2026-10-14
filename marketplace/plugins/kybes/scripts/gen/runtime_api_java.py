@@ -315,8 +315,7 @@ public final class JsonSchema {
 
     private static boolean validDate(Matcher m) {
         try {
-            LocalDate.of(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3)));
-            return true;
+            return LocalDate.of(Integer.parseInt(m.group(1)), Integer.parseInt(m.group(2)), Integer.parseInt(m.group(3))).getYear() >= 1;
         } catch (DateTimeException e) {
             return false;
         }
@@ -332,6 +331,11 @@ public final class JsonSchema {
         if (!m.matches() || !validDate(m)) return false;
         if (Integer.parseInt(m.group(4)) > 23 || Integer.parseInt(m.group(5)) > 59 || Integer.parseInt(m.group(6)) > 59) return false;
         return m.group(8).equals("Z") || (Integer.parseInt(m.group(9)) <= 23 && Integer.parseInt(m.group(10)) <= 59);
+    }
+
+    /** pattern del contratto con la semantica di JavaScript: $ chiude il testo (non accetta un a capo finale). */
+    public static Pattern jsPattern(String pattern) {
+        return Pattern.compile(pattern.replaceAll("(?<!\\\\)\\$(?=$|\\)|\\|)", "\\\\z"));
     }
 
     /** Tipo JSON di un valore non nullo (il nullo lo gestisce validate). */
@@ -378,7 +382,7 @@ public final class JsonSchema {
                 } else if (schema.containsKey("maxLength") && n > ((Number) schema.get("maxLength")).intValue()) {
                     errors.put(where, "lunghezza massima " + schema.get("maxLength"));
                 } else if (schema.containsKey("pattern")
-                        && !PATTERNS.computeIfAbsent((String) schema.get("pattern"), Pattern::compile).matcher(s).find()) {
+                        && !PATTERNS.computeIfAbsent((String) schema.get("pattern"), JsonSchema::jsPattern).matcher(s).find()) {
                     errors.put(where, "formato non valido");
                 } else if (schema.containsKey("format") && !checkFormat((String) schema.get("format"), s)) {
                     errors.put(where, "formato " + schema.get("format"));
@@ -449,7 +453,10 @@ public final class JsonSchema {
             BigInteger b = new BigInteger(r);
             return new Coerced(b.bitLength() < 64 ? (Object) b.longValue() : b, null);
         }
-        if ("number".equals(type)) return NUMBER.matcher(r).matches() ? new Coerced(Double.valueOf(r), null) : new Coerced(null, "tipo atteso: number");
+        if ("number".equals(type)) {
+            double x = NUMBER.matcher(r).matches() ? Double.parseDouble(r) : Double.POSITIVE_INFINITY;
+            return Double.isFinite(x) ? new Coerced(x, null) : new Coerced(null, "tipo atteso: number");
+        }
         if ("boolean".equals(type)) {
             return r.equals("true") || r.equals("false") ? new Coerced(r.equals("true"), null) : new Coerced(null, "tipo atteso: boolean");
         }
@@ -627,7 +634,7 @@ import java.util.Map;
 
 /** Input già validato di un'operazione, passato al controller generato o al metodo del service. */
 public record Call(String operation, Map<String, Object> path, Map<String, Object> query, Object body, Identity identity,
-                   String correlationId, String tenant) {
+                   String correlationId, String tenant, String basePath) {
 }
 '''
 
@@ -996,8 +1003,12 @@ public final class Api {
             errors.putIfAbsent("body", "obbligatorio");
         }
         if (!errors.isEmpty()) throw new ApiError("VALIDATION", "INVALID_REQUEST", errors);
-        Object result = route.handler().handle(new Call(spec.id(), pathValues, queryValues, body, identity, cid, identity.tenant()));
-        if (result instanceof ApiResponse r) return new ApiResponse(r.status(), r.body(), new LinkedHashMap<>(r.headers()), r.hasBody());
+        Object result = route.handler().handle(new Call(spec.id(), pathValues, queryValues, body, identity, cid, identity.tenant(), basePath));
+        if (result instanceof ApiResponse r) {
+            Map<String, String> headers = new LinkedHashMap<>(r.headers());
+            if (r.hasBody()) headers.putIfAbsent("content-type", "application/json");
+            return new ApiResponse(r.status(), r.body(), headers, r.hasBody());
+        }
         if (spec.status() == 204) return ApiResponse.reply(204);
         return ApiResponse.reply(spec.status(), result);
     }
@@ -1383,14 +1394,14 @@ public final class SpringAdapter {
         return resp.hasBody() ? out.body(resp.text().getBytes(StandardCharsets.UTF_8)) : out.build();
     }
 
-    /** Route per i percorsi delle operazioni dell'Api (almeno una). */
+    /** Route per i percorsi delle operazioni dell'Api e una route finale per i percorsi sconosciuti (404 uniforme). */
     public static RouterFunction<ServerResponse> routes(Api api) {
         HandlerFunction<ServerResponse> handler = request -> toResponse(api.handle(toRequest(request)));
         Set<String> paths = new LinkedHashSet<>();
         for (Route r : api.routes()) paths.add(api.basePath() + r.spec().path());
         RouterFunctions.Builder builder = RouterFunctions.route();
         for (String p : paths) builder.route(RequestPredicates.path(p), handler);
-        return builder.build();
+        return builder.route(RequestPredicates.all(), handler).build(); // percorsi sconosciuti: 404 del nucleo, come gli altri adattatori
     }
 }
 '''
