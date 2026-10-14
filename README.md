@@ -239,3 +239,7 @@ kybes automates the part of ISO 26262-6 that can be automated at software-unit l
 ## Author
 
 Ivan Di Lelio · [Meta Innovation](https://www.metainnovation.it)
+
+## License
+
+[MIT](LICENSE): free to use, modify and redistribute, including commercially, as long as the copyright notice is kept.

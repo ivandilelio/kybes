@@ -7,7 +7,7 @@
     "email": "ivan.dilelio@metainnovation.it",
     "url": "https://www.metainnovation.it"
   },
-  "license": "UNLICENSED",
+  "license": "MIT",
   "keywords": [
     "backend",
     "code-generation",

@@ -27,3 +27,7 @@ Then ask Claude, inside your project: *"set up kybes in this project"*.
 Hooks are inactive in a repository until it has `.claude/kybes.config.json`, so installing the plugin does not affect other projects.
 
 Full documentation: https://github.com/ivandilelio/kybes
+
+## License
+
+MIT, see [LICENSE](LICENSE).
