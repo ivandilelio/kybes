@@ -12,7 +12,7 @@
     "sourceMap": true,
     "types": ["node"],
     "outDir": "dist",
-    "rootDir": "."
+    "rootDir": "../../.."
   },
-  "include": ["src", "tests"]
+  "include": ["src", "tests", "../../../api/generated", "../../../controllers/generated"]
 }

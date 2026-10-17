@@ -229,12 +229,14 @@ def _head(asil: str, what: str) -> List[str]:
             "import pytest", ""]
 
 
-def table_file(t: Table, cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str) -> str:
+def table_file(t: Table, cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str, opts: Dict) -> str:
     n = t.name
+    api_import = opts.get("api_dir", "api").replace("/", ".")
+    ctrl_import = opts.get("controller_dir", "controllers").replace("/", ".")
     others = sorted({r.target for r in t.relations} | {n})
     o = _head(table_asil(t, asil), f"Test di unità generati per le API di {n}")
     mixed_mongo = t.mongo and has_sql(tables)
-    o += ["from api.generated import Identity", f"from api.generated.{n} import to_json", f"from model.{n} import {tp.repo_class(L, n)}", "from api.generated._convert import datetime_text",
+    o += [f"from {api_import}.generated import Identity", f"from {ctrl_import}.generated.{n} import to_json", f"from model.{n} import {tp.repo_class(L, n)}", f"from {ctrl_import}.generated._convert import datetime_text",
           "from model.generated import PageRequest",
           "from kybes_builders import (" + ", ".join(f"build_{snake(x)}" for x in others) + ", different, greater, next_n, smaller, text_value, TENANT_A, TENANT_B)",
           "from kybes_api import SCOPES, api, custom, qv" + (", seed_mongo, seeding_mongo" if mixed_mongo else ", seed, seeding")
@@ -280,7 +282,9 @@ def _qstr(v) -> str:
     return ("true" if v else "false") if isinstance(v, bool) else str(v)
 
 
-def api_module(tables: Dict[str, Table], ops: List[Operation]) -> str:
+def api_module(tables: Dict[str, Table], ops: List[Operation], opts: Dict) -> str:
+    api_import = opts.get("api_dir", "api").replace("/", ".")
+    ctrl_import = opts.get("controller_dir", "controllers").replace("/", ".")
     sql, mongo = has_sql(tables), any(t.mongo for t in tables.values())
     scopes = sorted({s for o in ops for s in o.scopes})
     fx = (["session_factory", "isolation_levels"] if sql else []) + (["mongo_client", "mongo_db"] if mongo else [])
@@ -295,7 +299,7 @@ def api_module(tables: Dict[str, Table], ops: List[Operation]) -> str:
     o = [header(L, "kit").rstrip("\n") + "\n# ruff: noqa",
          '"""Fixture dei test delle API: build_api con i dati dei test, identità di prova, seed confermato, metodi custom finti."""',
          "import contextlib", "import json", "from datetime import date, datetime", "from typing import Any", "", "import pytest", "",
-         "from api.generated import ApiData, ApiRequest, Identity, build_api", "from api.generated._convert import datetime_text",
+         f"from {api_import}.generated import ApiRequest, Identity, build_api", f"from {ctrl_import}.generated._data import ApiData", f"from {ctrl_import}.generated._convert import datetime_text",
          "from model.generated import bind_tenant", "from kybes_builders import TENANT_A", "",
          f"SCOPES = frozenset({scopes!r})", "ME = Identity(subject='kybes-test', tenant=str(TENANT_A), scopes=SCOPES)", "", "",
          "def qv(v: Any) -> Any:", '    """Valore del modello come testo di un parametro di query."""',
@@ -333,17 +337,17 @@ def api_module(tables: Dict[str, Table], ops: List[Operation]) -> str:
 def emit(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str, opts: Dict) -> Dict[str, str]:
     tp._TABLES.clear()
     tp._TABLES.update(tables)
-    files = {"generated/kybes_api.py": api_module(tables, ops)}
+    files = {"generated/kybes_api.py": api_module(tables, ops, opts)}
     for n, t in tables.items():
         if any(o.table == n for o in ops):
-            files[f"generated/test_api_{snake(n)}.py"] = table_file(t, cat, tables, ops, asil)
+            files[f"generated/test_api_{snake(n)}.py"] = table_file(t, cat, tables, ops, asil, opts)
     if any(o.kind == "custom" for o in ops):
         top = max((table_asil(t, asil) for t in tables.values()), default=asil)
         files["generated/test_api_custom.py"] = custom_file(cat, ops, top)
-    files["generated/test_api_runtime.py"] = runtime_file(cat, tables, ops, asil)
+    files["generated/test_api_runtime.py"] = runtime_file(cat, tables, ops, asil, opts)
     return files
 
 
-def runtime_file(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str) -> str:
+def runtime_file(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str, opts: Dict) -> str:
     import runtime_api_python_tests as rtt
-    return rtt.render(cat, tables, ops, asil)
+    return rtt.render(cat, tables, ops, asil, opts)

@@ -35,6 +35,7 @@ using MongoDB.Driver;
 using Xunit;
 using __MODEL__;
 using __API__;
+using __CTRL__;
 using static __MODEL__.Tests.KybesApiSupport;
 
 namespace __MODEL__.Tests;
@@ -615,7 +616,7 @@ def _custom_body(ops: List[Operation], tables: Dict[str, Table]) -> str:
     return "\n".join(o) + "\n"
 
 
-def render(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str, model_ns: str, api_ns: str) -> str:
+def render(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str, model_ns: str, api_ns: str, ctrl_ns: str) -> str:
     sql, mongo = has_sql(tables), any(t.mongo for t in tables.values())
     bodies = dict(BODIES)
     bodies["rt_api_custom"] = _custom_body(ops, tables)
@@ -627,5 +628,5 @@ def render(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: s
     o.append("}")
     o.append(FAKE_DB.rstrip("\n"))
     text = "\n".join(o) + "\n"
-    text = text.replace("__API__", api_ns).replace("__MODEL__", model_ns)
+    text = text.replace("__CTRL__", ctrl_ns).replace("__API__", api_ns).replace("__MODEL__", model_ns)
     return _strip_block(strip_sql(text, sql), "mongo", mongo)

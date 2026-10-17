@@ -377,12 +377,25 @@ def _data_body(tables: Dict[str, Table]) -> List[str]:
     return o
 
 
-def render(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str) -> str:
+def render(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str, opts: Dict) -> str:
+    api_import = opts.get("api_dir", "api").replace("/", ".")
+    ctrl_import = opts.get("controller_dir", "controllers").replace("/", ".")
     sql, mongo = has_sql(tables), any(t.mongo for t in tables.values())
     fx = (["session_factory", "isolation_levels"] if sql else []) + (["mongo_client", "mongo_db"] if mongo else [])
     bodies = dict(BODIES)
     bodies["rt_api_custom"] = _custom_body(ops) + _data_body(tables)
-    o = [header("python", "kit").rstrip("\n") + "\n" + strip_sql(HEAD, sql)]
+    head = HEAD.replace(
+        "from api.generated import ApiData, ApiError, ApiRequest, ApiResponse, Identity, build_api",
+        f"from {api_import}.generated import ApiError, ApiRequest, ApiResponse, Identity, build_api\n"
+        f"from {ctrl_import}.generated._data import ApiData"
+    ).replace(
+        "from api.generated._convert import",
+        f"from {ctrl_import}.generated._convert import"
+    ).replace(
+        "from api.generated.",
+        f"from {api_import}.generated."
+    )
+    o = [header("python", "kit").rstrip("\n") + "\n" + strip_sql(head, sql)]
     for tc in cat.for_table(API_RT, "api"):
         args = ", ".join(fx) if tc.kind == "rt_api_custom" else ""
         o += ["", f"def test_{tc.slug}({args}):", f'    r"""{tc.id} · {", ".join(tc.reqs)} · {METHODS[tc.method]}: {tc.title}. Atteso: {tc.expected}."""']

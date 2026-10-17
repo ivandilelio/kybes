@@ -121,31 +121,36 @@ if want typescript; then
       if (cd "$P" && python3 -B -c "import sys; sys.path.insert(0,'libs/db-models/python/src'); from model.generated._paging import decode_cursor; from model.generated import PAGING_ORDINI as S; v=decode_cursor(S,S.default_order,sys.argv[1]); assert str(v[0])=='2026-01-02' and str(v[1]).endswith('2')" "$TSCUR"); then pass "cursore compatibile TypeScript → Python"; else fail "cursore TS→Python"; fi
       # test generati nel progetto: stesso pacchetto e stessi strumenti di un progetto reale (tsc, c8, node --test)
       ln -s "$T/node_modules" "$P/libs/db-models/typescript/node_modules"
+      ln -s "$T/node_modules" "$P/node_modules"
       if python3 -B "$VERIFY" "$P" --lang=typescript --quiet; then pass "typescript: test ISO 26262-6 generati nel progetto, copertura entro le soglie ASIL"; else fail "typescript: test generati o copertura"; fi
-      rm -f "$P/libs/db-models/typescript/node_modules"
+      rm -f "$P/libs/db-models/typescript/node_modules" "$P/node_modules"
       ln -s "$T/node_modules" "$FIX/libs/db-models/typescript/node_modules"
+      ln -s "$T/node_modules" "$FIX/node_modules"
       if python3 -B "$VERIFY" "$FIX" --lang=typescript --quiet; then pass "typescript: test generati con tabelle per schema e per database"; else fail "typescript: progetto tenancy"; fi
-      rm -f "$FIX/libs/db-models/typescript/node_modules"
+      rm -f "$FIX/libs/db-models/typescript/node_modules" "$FIX/node_modules"
       ln -s "$T/node_modules" "$PG/libs/db-models/typescript/node_modules"
+      ln -s "$T/node_modules" "$PG/node_modules"
       if (cd "$PG/libs/db-models/typescript" && "$T/node_modules/.bin/tsc" -p . --noEmit); then pass "typescript: compilazione strict dialetto postgres (model e test generati)"; else fail "typescript postgres"; fi
-      rm -f "$PG/libs/db-models/typescript/node_modules"
+      rm -f "$PG/libs/db-models/typescript/node_modules" "$PG/node_modules"
       ln -s "$T/node_modules" "$MG/libs/db-models/typescript/node_modules"
+      ln -s "$T/node_modules" "$MG/node_modules"
       if (cd "$MG/libs/db-models/typescript" && "$T/node_modules/.bin/tsc" -p . --noEmit); then pass "typescript: compilazione strict con collection MongoDB (model e test generati)"; else fail "typescript mongo"; fi
-      rm -f "$MG/libs/db-models/typescript/node_modules"
+      rm -f "$MG/libs/db-models/typescript/node_modules" "$MG/node_modules"
       ln -s "$T/node_modules" "$MO/libs/db-models/typescript/node_modules"
+      ln -s "$T/node_modules" "$MO/node_modules"
       if (cd "$MO/libs/db-models/typescript" && "$T/node_modules/.bin/tsc" -p . --noEmit); then pass "typescript: compilazione strict con sole collection MongoDB"; else fail "typescript sole collection"; fi
-      rm -f "$MO/libs/db-models/typescript/node_modules"
+      rm -f "$MO/libs/db-models/typescript/node_modules" "$MO/node_modules"
     else skip "typescript: npm install non riuscito"; fi
   else skip "typescript: npm non disponibile"; fi
 fi
 
 if want java; then
   if command -v javac >/dev/null; then
-    if javac -Xlint:all -Werror -d "$WORK/javaout" $(find "$KIT/tests/java/stubs" -name '*.java') $(find "$PG/libs/db-models/java" -name '*.java') 2>&1 | grep -v JAVA_TOOL_OPTIONS; then :; fi
+    if javac -Xlint:all -Werror -d "$WORK/javaout" $(find "$KIT/tests/java/stubs" -name '*.java') $(find "$PG/libs/db-models/java" "$PG/api" "$PG/controllers" -name '*.java' 2>/dev/null) 2>&1 | grep -v JAVA_TOOL_OPTIONS; then :; fi
     if [ -d "$WORK/javaout" ] && [ -n "$(find "$WORK/javaout" -name '*Repository.class' | head -1)" ]; then pass "java: compilazione -Xlint:all -Werror (stub JPA/Hibernate)"; else fail "java"; fi
-    if javac -Xlint:all -Werror -d "$WORK/javamongo" $(find "$KIT/tests/java/stubs" -name '*.java') $(find "$MG/libs/db-models/java" -name '*.java') 2>&1 | grep -v JAVA_TOOL_OPTIONS; then :; fi
+    if javac -Xlint:all -Werror -d "$WORK/javamongo" $(find "$KIT/tests/java/stubs" -name '*.java') $(find "$MG/libs/db-models/java" "$MG/api" "$MG/controllers" -name '*.java' 2>/dev/null) 2>&1 | grep -v JAVA_TOOL_OPTIONS; then :; fi
     if [ -n "$(find "$WORK/javamongo" -name 'MongoSession.class' 2>/dev/null | head -1)" ]; then pass "java: compilazione -Xlint:all -Werror con collection MongoDB (stub del driver)"; else fail "java mongo"; fi
-    if javac -Xlint:all -Werror -d "$WORK/javamongoonly" $(find "$KIT/tests/java/stubs" -name '*.java') $(find "$MO/libs/db-models/java" -name '*.java') 2>&1 | grep -v JAVA_TOOL_OPTIONS; then :; fi
+    if javac -Xlint:all -Werror -d "$WORK/javamongoonly" $(find "$KIT/tests/java/stubs" -name '*.java') $(find "$MO/libs/db-models/java" "$MO/api" "$MO/controllers" -name '*.java' 2>/dev/null) 2>&1 | grep -v JAVA_TOOL_OPTIONS; then :; fi
     if [ -n "$(find "$WORK/javamongoonly" -name 'KybesRuntimeTest.class' 2>/dev/null | head -1)" ] && [ -z "$(find "$WORK/javamongoonly" -name 'UnitOfWork*.class' | head -1)" ]; then
       pass "java: compilazione con sole collection MongoDB, senza moduli SQL"; else fail "java sole collection"; fi
     # API REST: nucleo solo JDK (JSON, validazione, router, Lambda, server del JDK) eseguito senza JUnit né database

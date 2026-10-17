@@ -13,7 +13,7 @@ from typing import Dict, List
 import api_plan
 import test_java as tj
 from api_plan import Operation, prop
-from emit_api_java import api_package
+from emit_api_java import api_package, controller_package
 from naming import header, member, repo_class
 from schema import Table, camel
 from sqlonly import has_sql
@@ -240,10 +240,10 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
     raise ValueError(k)
 
 
-def _head(pkg: str, api_pkg: str, extra: List[str]) -> List[str]:
+def _head(pkg: str, api_pkg: str, ctrl_pkg: str, extra: List[str]) -> List[str]:
     return [f"package {pkg}.generated;", "", "import static org.junit.jupiter.api.Assertions.*;",
             f"import static {pkg}.generated.KybesApiSupport.*;", f"import static {pkg}.generated.KybesBuilders.*;", ""] + sorted(
-        extra + [f"import {api_pkg}.generated.Api;", f"import {api_pkg}.generated.ApiData;", f"import {api_pkg}.generated.KybesApi;",
+        extra + [f"import {api_pkg}.generated.Api;", f"import {ctrl_pkg}.generated.ApiData;", f"import {api_pkg}.generated.KybesApi;",
                  "import java.math.BigDecimal;", "import java.time.LocalDate;", "import java.time.OffsetDateTime;", "import java.time.ZoneOffset;",
                  "import java.util.*;", "import org.junit.jupiter.api.AfterEach;", "import org.junit.jupiter.api.BeforeEach;",
                  "import org.junit.jupiter.api.DisplayName;", "import org.junit.jupiter.api.Test;"])
@@ -252,14 +252,15 @@ def _head(pkg: str, api_pkg: str, extra: List[str]) -> List[str]:
 def table_file(t: Table, cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str, pkg: str) -> str:
     n = t.name
     api_pkg = api_package(pkg)
+    ctrl_pkg = controller_package(pkg)
     custom = any(o.kind == "custom" for o in ops)
-    extra = [f"import {api_pkg}.generated.{n}Api;", f"import {api_pkg}.generated.Convert;", f"import {api_pkg}.generated.Identity;",
+    extra = [f"import {ctrl_pkg}.generated.{n}Api;", f"import {ctrl_pkg}.generated.Convert;", f"import {api_pkg}.generated.Identity;",
              f"import {pkg}.{repo_class(L, n)};"]
     em_t = "MongoSession" if t.mongo else "EntityManager"
     if not t.mongo:
         extra.append("import jakarta.persistence.EntityManager;")
     rec = ", new Recorder()" if custom else ""
-    o = [header(L, f"schemas/db/{n}.yaml").rstrip("\n")] + _head(pkg, api_pkg, extra) + [
+    o = [header(L, f"schemas/db/{n}.yaml").rstrip("\n")] + _head(pkg, api_pkg, ctrl_pkg, extra) + [
         "", f"/** Test di unità generati per le API di {n} (ASIL {table_asil(t, asil)}). Specifica: docs/generated/verification/{n}.md. */",
         f"class {n}ApiTest {{", "", f"    private {em_t} em;", "    private Api api;", "", "    @BeforeEach", "    void open() {"]
     if t.mongo:
@@ -310,7 +311,8 @@ def _qstr(v) -> str:
 
 def custom_file(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], pkg: str) -> str:
     api_pkg = api_package(pkg)
-    o = [header(L, "schemas/openapi.yaml").rstrip("\n")] + _head(pkg, api_pkg, [f"import {api_pkg}.generated.Call;"]) + [
+    ctrl_pkg = controller_package(pkg)
+    o = [header(L, "schemas/openapi.yaml").rstrip("\n")] + _head(pkg, api_pkg, ctrl_pkg, [f"import {api_pkg}.generated.Call;"]) + [
         "", "/** Test di unità generati per gli endpoint custom del contratto. */", "class KybesApiCustomTest {"]
     by_id = {x.op_id: x for x in ops}
     for tc in cat.for_table(API, "api"):
@@ -342,10 +344,12 @@ def custom_file(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], pk
 
 def support_file(tables: Dict[str, Table], ops: List[Operation], pkg: str) -> str:
     api_pkg = api_package(pkg)
+    ctrl_pkg = controller_package(pkg)
     sql = has_sql(tables)
     scopes = sorted({s for o in ops for s in o.scopes})
     custom = [o for o in ops if o.kind == "custom"]
-    imports = [f"import {api_pkg}.generated.{x};" for x in ("Api", "ApiRequest", "ApiResponse", "Convert", "Identity", "Json")]
+    imports = [f"import {api_pkg}.generated.{x};" for x in ("Api", "ApiRequest", "ApiResponse", "Identity", "Json")]
+    imports.append(f"import {ctrl_pkg}.generated.Convert;")
     if custom:
         imports += [f"import {api_pkg}.generated.Call;", f"import {api_pkg}.generated.Operations;"]
     imports += ["import java.math.BigDecimal;", "import java.nio.charset.StandardCharsets;", "import java.time.OffsetDateTime;",
@@ -419,5 +423,5 @@ def emit(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str
             files[f"generated/{n}ApiTest.java"] = table_file(t, cat, tables, ops, asil, pkg)
     if any(o.kind == "custom" for o in ops):
         files["generated/KybesApiCustomTest.java"] = custom_file(cat, tables, ops, pkg)
-    files["generated/KybesApiRuntimeTest.java"] = rtt.render(cat, tables, ops, asil, pkg, api_package(pkg))
+    files["generated/KybesApiRuntimeTest.java"] = rtt.render(cat, tables, ops, asil, pkg, api_package(pkg), controller_package(pkg))
     return files

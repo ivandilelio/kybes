@@ -11,7 +11,7 @@ kybes genera le API REST esposte dai servizi con lo stesso approccio del modello
 | esecuzione | — | adattatori per AWS Lambda, server HTTP senza framework e framework |
 | test ISO 26262-6 | — | test di unità per ogni operazione e per il nucleo, con copertura per ASIL |
 
-Il codice API generato sta accanto al modello, nella cartella `api` (`api/generated`), ed è protetto dagli hook come il resto del codice generato.
+Il codice API generato è diviso in due cartelle alla root del progetto: `api/generated` (routing, validazione, adattatori) e `controllers/generated` (controller per tabella, convertitori, logica di accesso ai dati). Entrambe sono protette dagli hook come il resto del codice generato.
 
 ## Il blocco `api` dello schema
 

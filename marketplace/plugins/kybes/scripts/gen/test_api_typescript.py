@@ -19,6 +19,18 @@ from verification import API, API_RT, METHODS, RUNTIME, Catalog, TestCase, table
 L = "typescript"
 
 
+def _ts_relpath(from_dir: str, to_dir: str) -> str:
+    parts_from = from_dir.split("/")
+    parts_to = to_dir.split("/")
+    common = 0
+    for a, b in zip(parts_from, parts_to):
+        if a != b:
+            break
+        common += 1
+    ups = len(parts_from) - common
+    return "/".join([".."] * ups + parts_to[common:])
+
+
 def index(tables: Dict[str, Table], ops: List[Operation]) -> Dict[str, str]:
     out = {n: f"generated/{n}.api.test.ts" for n in tables if any(o.table == n for o in ops)}
     out[API_RT] = out[RUNTIME] = "generated/kybes_api_runtime.test.ts"
@@ -219,25 +231,26 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
     raise ValueError(k)
 
 
-def _imports(tables: Dict[str, Table], t: Table) -> List[str]:
+def _imports(tables: Dict[str, Table], t: Table, ctrl_rel: str, model_rel: str) -> List[str]:
     others = sorted({r.target for r in t.relations} | {t.name})
     o = ['import { randomUUID } from "node:crypto";', 'import { test } from "node:test";', 'import assert from "node:assert/strict";',
-         f'import {{ toJson }} from "../../src/api/generated/{t.name}";', f'import {{ {repo_class(L, t.name)} }} from "../../src/model/{t.name}";',
+         f'import {{ toJson }} from "{ctrl_rel}/{t.name}";', f'import {{ {repo_class(L, t.name)} }} from "{model_rel}/{t.name}";',
          "import { " + ", ".join(f"build{x}" for x in others) + ", dayValue, different, greater, nextN, smaller, textValue, TENANT_A, TENANT_B } from \"./kybes_builders\";",
          'import { caller, data, identity, qv } from "./kybes_api";']
     if t.mongo:
-        o += ['import { withMongo } from "./_mongo_db";', 'import type { MongoSession } from "../../src/model/generated";']
+        o += ['import { withMongo } from "./_mongo_db";', f'import type {{ MongoSession }} from "{model_rel}/generated";']
     else:
         o += ['import { withDb } from "./_db";', 'import type { EntityManager } from "typeorm";']
     return o
 
 
-def table_file(t: Table, cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str) -> str:
+def table_file(t: Table, cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str,
+               ctrl_rel: str, model_rel: str) -> str:
     n = t.name
     runner = "withMongo" if t.mongo else "withDb"
     o = [header(L, f"schemas/db/{n}.yaml").rstrip("\n") + "\n/* eslint-disable */",
          f"// Test di unità generati per le API di {n} (ASIL {table_asil(t, asil)}). Specifica: docs/generated/verification/{n}.md."]
-    o += _imports(tables, t)
+    o += _imports(tables, t, ctrl_rel, model_rel)
     o += ["", "void [randomUUID, dayValue, different, greater, smaller, textValue, nextN, TENANT_A, TENANT_B, qv, identity, toJson];", ""]
     o += _body_fn(t, tables)
     o.append(f"void body;")
@@ -282,12 +295,12 @@ def _qstr(v) -> str:
     return ("true" if v else "false") if isinstance(v, bool) else str(v)
 
 
-def api_module(tables: Dict[str, Table], ops: List[Operation]) -> str:
+def api_module(tables: Dict[str, Table], ops: List[Operation], api_rel: str) -> str:
     sql, mongo = has_sql(tables), any(t.mongo for t in tables.values())
     scopes = sorted({s for o in ops for s in o.scopes})
     o = [header(L, "kit").rstrip("\n") + "\n/* eslint-disable */",
          "// Supporto dei test delle API: buildApi con i dati dei test, identità di prova, metodi custom finti.",
-         'import { ApiData, buildApi } from "../../src/api/generated";', 'import type { ApiResponse, Call, Identity } from "../../src/api/generated";',
+         f'import {{ ApiData, buildApi }} from "{api_rel}";', f'import type {{ ApiResponse, Call, Identity }} from "{api_rel}";',
          'import { TENANT_A } from "./kybes_builders";']
     if sql:
         o.append('import type { DataSource } from "typeorm";')
@@ -328,11 +341,15 @@ def api_module(tables: Dict[str, Table], ops: List[Operation]) -> str:
 
 def emit(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str, opts: Dict) -> Dict[str, str]:
     import runtime_api_typescript_tests as rtt
-    files = {"generated/kybes_api.ts": api_module(tables, ops)}
+    tests_gen = opts.get("tests_dir", "tests") + "/generated"
+    api_rel = _ts_relpath(tests_gen, opts.get("api_dir", "api") + "/generated")
+    ctrl_rel = _ts_relpath(tests_gen, opts.get("controller_dir", "controllers") + "/generated")
+    model_rel = _ts_relpath(tests_gen, opts.get("model_dir", "model"))
+    files = {"generated/kybes_api.ts": api_module(tables, ops, api_rel)}
     for n, t in tables.items():
         if any(o.table == n for o in ops):
-            files[f"generated/{n}.api.test.ts"] = table_file(t, cat, tables, ops, asil)
+            files[f"generated/{n}.api.test.ts"] = table_file(t, cat, tables, ops, asil, ctrl_rel, model_rel)
     if any(o.kind == "custom" for o in ops):
         files["generated/kybes_api_custom.test.ts"] = custom_file(cat, tables, ops)
-    files["generated/kybes_api_runtime.test.ts"] = rtt.render(cat, tables, ops, asil)
+    files["generated/kybes_api_runtime.test.ts"] = rtt.render(cat, tables, ops, asil, api_rel, ctrl_rel, model_rel)
     return files

@@ -91,12 +91,17 @@ def api_config(cfg: dict) -> dict:
 
 
 def api_dir(tg: dict) -> str:
-    """Cartella del codice API generato, accanto al model: src/model -> src/api, .../app/model -> .../app/api."""
+    """Cartella del codice API generato: default 'api' alla root del progetto."""
     if tg.get("api_dir"):
         return tg["api_dir"].rstrip("/")
-    d = tg["dir"].rstrip("/")
-    head, _, last = d.rpartition("/")
-    return f"{head}/api" if last == "model" else f"{d}_api"
+    return "api"
+
+
+def controller_dir(tg: dict) -> str:
+    """Cartella dei controller generati: default 'controllers' alla root del progetto."""
+    if tg.get("controller_dir"):
+        return tg["controller_dir"].rstrip("/")
+    return "controllers"
 
 
 def load_contract(proj: Path, ac: dict) -> Optional[dict]:
@@ -398,7 +403,12 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
                 test_files[tg["lang"]] = {n: f"{td}/{GEN_DIR}/{TEST_FILE[tg['lang']](n)}" for n in tables}
                 aem = API_TEST_EMITTERS.get(tg["lang"])
                 if aem and ops:
-                    files = aem.emit(cat, tables, ops, vc["asil"], gen_options(tg))
+                    test_opts = gen_options(tg)
+                    test_opts["api_dir"] = api_dir(tg)
+                    test_opts["controller_dir"] = controller_dir(tg)
+                    test_opts["model_dir"] = tg["dir"].rstrip("/")
+                    test_opts["tests_dir"] = td
+                    files = aem.emit(cat, tables, ops, vc["asil"], test_opts)
                     for rel, text in files.items():
                         desired[f"{td}/{rel}"] = text
                     test_files[f"{tg['lang']}-api"] = {k: f"{td}/{v}" for k, v in aem.index(tables, ops).items()}
@@ -426,10 +436,19 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
             if not em:
                 continue
             ad = api_dir(tg)
+            cd = controller_dir(tg)
             managed_dirs.append(proj / ad / GEN_DIR)
+            managed_dirs.append(proj / cd / GEN_DIR)
             if ops:
-                for rel, text in em.emit(tables, ops, ac, gen_options(tg)).items():
+                opts = gen_options(tg)
+                opts["api_dir"] = ad
+                opts["controller_dir"] = cd
+                opts["model_dir"] = tg["dir"].rstrip("/")
+                api_files, ctrl_files = em.emit(tables, ops, ac, opts)
+                for rel, text in api_files.items():
                     desired[f"{ad}/{rel}"] = text
+                for rel, text in ctrl_files.items():
+                    desired[f"{cd}/{rel}"] = text
         for n, t in tables.items():
             desired[f"{mc['json_schema_dir']}/{n}.schema.json"] = json_schema(t)
         if tables:

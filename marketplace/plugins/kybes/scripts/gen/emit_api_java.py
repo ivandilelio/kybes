@@ -20,6 +20,12 @@ def api_package(model_pkg: str) -> str:
     return (f"{head}.api" if head else "api") if last == "model" else f"{model_pkg}_api"
 
 
+def controller_package(model_pkg: str) -> str:
+    """Pacchetto dei controller: app.model -> app.controllers."""
+    head, _, last = model_pkg.rpartition(".")
+    return (f"{head}.controllers" if head else "controllers") if last == "model" else f"{model_pkg}_controllers"
+
+
 def _cap(s: str) -> str:
     return s[:1].upper() + s[1:]
 
@@ -44,7 +50,7 @@ def _conv_fn(c) -> str:
             "date": "Convert::toDate", "datetime": "Convert::toDatetime", "bool": "x -> (Boolean) x"}.get(c.type, "x -> (String) x")
 
 
-def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_pkg: str, model_pkg: str) -> str:
+def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_pkg: str, ctrl_pkg: str, model_pkg: str) -> str:
     n = t.name
     repo = repo_class(L, n)
     exposed = [c for c in t.columns if not c.tenant]
@@ -119,7 +125,7 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_pk
             b.append("        });")
         b.append("    }")
     if ops:
-        b += ["", "    /** Controller delle operazioni di questa tabella. */", "    static void register(Map<String, Controller> out) {"]
+        b += ["", "    /** Controller delle operazioni di questa tabella. */", "    public static void register(Map<String, Controller> out) {"]
         b += [f'        out.put("{fn}", {n}Api::{fn});' for fn in reg]
         b.append("    }")
     b.append("}")
@@ -127,11 +133,16 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_pk
     imports = [f"import {model_pkg}.generated.{n};", "import java.util.LinkedHashMap;", "import java.util.Map;"]
     if ops:
         imports.append(f"import {model_pkg}.{repo};")
+        imports.append(f"import {api_pkg}.generated.ApiError;")
+        imports.append(f"import {api_pkg}.generated.Call;")
+        imports.append(f"import {api_pkg}.generated.Controller;")
+    if any(op.kind in ("create", "delete") for op in ops):
+        imports.append(f"import {api_pkg}.generated.ApiResponse;")
     if "List.of(" in body:
         imports.append("import java.util.List;")
     for tg in targets:
         pass  # stesso pacchetto: <Target>Api senza import
-    o = [header(L, f"schemas/db/{n}.yaml").rstrip("\n"), f"package {api_pkg}.generated;", ""] + sorted(imports) + ["", body]
+    o = [header(L, f"schemas/db/{n}.yaml").rstrip("\n"), f"package {ctrl_pkg}.generated;", ""] + sorted(imports) + ["", body]
     return "\n".join(o) + "\n"
 
 
@@ -161,13 +172,16 @@ def _specs_file(ops: List[Operation], api_pkg: str) -> str:
     return "\n".join(o) + "\n"
 
 
-def _index_file(tables: Dict[str, Table], ops: List[Operation], ac: Dict, api_pkg: str) -> str:
+def _index_file(tables: Dict[str, Table], ops: List[Operation], ac: Dict, api_pkg: str, ctrl_pkg: str) -> str:
     registered = [n for n in tables if any(o.table == n for o in ops)]
     custom = [o for o in ops if o.kind == "custom"]
     o = [header(L, "kit").rstrip("\n"), f"package {api_pkg}.generated;", "", "import java.util.ArrayList;", "import java.util.HashMap;",
          "import java.util.List;", "import java.util.Map;"]
     if custom:
         o.append("import java.util.function.Function;")
+    o.append(f"import {ctrl_pkg}.generated.ApiData;")
+    for rn in registered:
+        o.append(f"import {ctrl_pkg}.generated.{rn}Api;")
     o += ["", "/** API REST generate: build(data, custom, contexts) -> Api; adattatori LambdaAdapter, HttpServerAdapter e SpringAdapter. */",
           "public final class KybesApi {", "", f"    public static final String BASE_PATH = {rt.jstr(ac.get('base_path', ''))};", "",
           "    private static final Map<String, Controller> CONTROLLERS = new HashMap<>();"]
@@ -195,19 +209,39 @@ def _index_file(tables: Dict[str, Table], ops: List[Operation], ac: Dict, api_pk
     return "\n".join(o) + "\n"
 
 
-def emit(tables: Dict[str, Table], ops: List[Operation], ac: Dict, opts: Dict) -> Dict[str, str]:
+def emit(tables: Dict[str, Table], ops: List[Operation], ac: Dict, opts: Dict):
+    """Restituisce (api_files, controller_files): file separati per il layer HTTP e per i controller."""
     model_pkg = opts["package"]
     api_pkg = api_package(model_pkg)
+    ctrl_pkg = controller_package(model_pkg)
     sql, mongo = has_sql(tables), any(t.mongo for t in tables.values())
-    files = {f"generated/{k}": header(L, "kit").rstrip("\n") + "\n" + v
-             for k, v in rt.files(f"{api_pkg}.generated", model_pkg, sql, mongo, ac["claims"], ac["headers"]).items()}
-    files["generated/Specs.java"] = _specs_file(ops, api_pkg)
+    rt_files = rt.files(f"{api_pkg}.generated", model_pkg, sql, mongo, ac["claims"], ac["headers"])
+    ctrl_rt_keys = {"ApiData.java", "Convert.java"}
+    api_files: Dict[str, str] = {}
+    ctrl_files: Dict[str, str] = {}
+    for k, v in rt_files.items():
+        text = header(L, "kit").rstrip("\n") + "\n" + v
+        if k in ctrl_rt_keys:
+            text = text.replace(f"package {api_pkg}.generated;", f"package {ctrl_pkg}.generated;", 1)
+            if k == "Convert.java":
+                text = text.replace(f"package {ctrl_pkg}.generated;\n",
+                                    f"package {ctrl_pkg}.generated;\n\nimport {api_pkg}.generated.Json;\n", 1)
+            ctrl_files[f"generated/{k}"] = text
+        else:
+            api_files[f"generated/{k}"] = text
+    # Controller.java (interfaccia funzionale) resta nelle API ma referenzia ApiData nei controller
+    if "generated/Controller.java" in api_files:
+        ct = api_files["generated/Controller.java"]
+        ct = ct.replace(f"package {api_pkg}.generated;\n",
+                        f"package {api_pkg}.generated;\n\nimport {ctrl_pkg}.generated.ApiData;\n", 1)
+        api_files["generated/Controller.java"] = ct
+    api_files["generated/Specs.java"] = _specs_file(ops, api_pkg)
     targets = rel_targets(tables, ops)
     for n, t in tables.items():
         tops = [o for o in ops if o.table == n]
         if tops or n in targets:
-            files[f"generated/{n}Api.java"] = _table_file(t, tables, tops, api_pkg, model_pkg)
+            ctrl_files[f"generated/{n}Api.java"] = _table_file(t, tables, tops, api_pkg, ctrl_pkg, model_pkg)
     if any(o.kind == "custom" for o in ops):
-        files["generated/Operations.java"] = _custom_file([o for o in ops if o.kind == "custom"], api_pkg)
-    files["generated/KybesApi.java"] = _index_file(tables, ops, ac, api_pkg)
-    return files
+        api_files["generated/Operations.java"] = _custom_file([o for o in ops if o.kind == "custom"], api_pkg)
+    api_files["generated/KybesApi.java"] = _index_file(tables, ops, ac, api_pkg, ctrl_pkg)
+    return api_files, ctrl_files

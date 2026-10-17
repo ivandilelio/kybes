@@ -145,7 +145,7 @@ Inoltre `schemas/generated/json/<Tabella>.schema.json` (validazione di API Gatew
 ## 4b-quinquies. API REST
 
 - Gli endpoint non si scrivono a mano: CRUD, query dichiarate e relazioni di una tabella si espongono con il blocco `api` dello schema (`path`, `operations`, `queries`, `relations`, `scopes`, `context`); gli altri endpoint si dichiarano in `schemas/openapi.yaml` con un `operationId` ciascuno.
-- kybes genera in `api/generated` (accanto al model) contratto, validazione dell'input, routing, middleware, controller e test, e il contratto completo `schemas/generated/openapi.yaml` da pubblicare sul gateway. Mai a mano: gli hook lo rifiutano.
+- kybes genera in `api/generated` (alla root del progetto) contratto, validazione dell'input, routing e adattatori, e in `controllers/generated` i controller, i convertitori e la logica di accesso ai dati per ogni tabella. Il contratto completo `schemas/generated/openapi.yaml` va pubblicato sul gateway. Mai a mano: gli hook lo rifiutano.
 - La logica di un endpoint custom sta nel service che implementa `Operations` (`IOperations` in C#): un metodo per `operationId`, input già validato nel `Call`, errori applicativi con `ApiError(kind, code, fields)`.
 - Ogni function o microservizio costruisce l'Api con il **proprio contesto** (`build_api(data, custom, ["vendite"])`, `buildApi`, `KybesApi.build`, `KybesApi.Build`): niente servizi che espongono tutti i contesti.
 - Runtime: Lambda (`lambda_handler`, `lambdaHandler`, `LambdaAdapter`), server senza framework (ASGI, `node:http`, server del JDK; in C# non serve, il server è già ASP.NET Core) o framework (FastAPI, Fastify, Spring Boot, ASP.NET Core minimal API), scelto con l'albero della sez. 2.
@@ -222,7 +222,8 @@ Modulo errori condiviso (`libs/errors`) che garantisce:
 /frontend
 /schemas/openapi.yaml       endpoint custom delle API (operationId), sicurezza
 /schemas/generated/openapi.yaml  contratto completo generato
-/libs/db-models/<lang>/.../api/generated  API REST generate (controller, router, validazione, adattatori)
+/api/generated                API REST generate (router, validazione, adattatori)
+/controllers/generated        controller, convertitori, logica di accesso ai dati per tabella
 ```
 
 ## Formato obbligatorio del piano

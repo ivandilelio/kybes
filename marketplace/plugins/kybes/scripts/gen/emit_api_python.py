@@ -96,7 +96,7 @@ def _to_model(c, expr: str) -> str:
     return f"{TO_MODEL[c.type]}({expr})" if c.type in TO_MODEL else expr
 
 
-def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation]) -> str:
+def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_import: str) -> str:
     n = t.name
     repo = repo_class(L, n)
     exposed = [c for c in t.columns if not c.tenant]
@@ -104,12 +104,12 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation]) -> str
     read, write = ("data.mongo_read", "data.mongo_write") if t.mongo else ("data.read", None)
     targets = sorted({next(r for r in t.relations if r.name == o.arg).target for o in ops if o.kind == "rel"} - {n})
     o = [header(L, f"schemas/db/{n}.yaml").rstrip("\n") + "\n# ruff: noqa",
-         f'"""API REST di {n}: JSON <-> modello e controller delle operazioni generate (blocco api dello schema)."""',
+         f'"""Controller di {n}: logica CRUD e query; riceve le chiamate dall\'API layer e accede al model."""',
          "from __future__ import annotations", "", "from typing import Any, Dict", "",
          "from model.generated import PageRequest",
          f"from model.generated.{n} import {n}", f"from model.{n} import {repo}",
          "from ._convert import date_text, datetime_text, decimal_text, text, to_date, to_datetime, to_decimal, to_int, to_uuid",
-         "from ._data import ApiData", "from ._http import ApiError, ApiResponse, Call"]
+         "from ._data import ApiData", f"from {api_import}.generated._http import ApiError, ApiResponse, Call"]
     for tg in targets:
         o.append(f"from . import {tg} as {snake(tg)}_api  # import del modulo: le relazioni possono essere circolari")
     o += ["", "", f"def to_json(e: {n}) -> Dict[str, Any]:", f'    """{n} nel formato del contratto (senza tenant)."""', "    return {"]
@@ -211,16 +211,16 @@ def _custom_file(ops: List[Operation]) -> str:
     return "\n".join(o).rstrip("\n") + "\n"
 
 
-def _init_file(tables: Dict[str, Table], ops: List[Operation], ac: Dict) -> str:
+def _init_file(tables: Dict[str, Table], ops: List[Operation], ac: Dict, ctrl_import: str) -> str:
     exposed = [n for n in tables if any(o.table == n for o in ops) or n in rel_targets(tables, ops)]
     o = [header(L, "kit").rstrip("\n") + "\n# ruff: noqa",
          '"""API REST generate: build_api(data, custom, contexts) -> Api; adattatori per Lambda, ASGI e FastAPI."""',
          "from __future__ import annotations", "", "from functools import partial", "from typing import Any, Dict, Iterable, Optional", "",
-         "from ._data import ApiData", "from ._http import ApiError, ApiRequest, ApiResponse, Call, Identity",
+         f"from {ctrl_import}.generated._data import ApiData", "from ._http import ApiError, ApiRequest, ApiResponse, Call, Identity",
          "from ._router import Api", "from .operations import SPECS",
          *(["from .custom import Operations"] if any(x.kind == "custom" for x in ops) else [])]
     for n in exposed:
-        o.append(f"from .{n} import HANDLERS as _{snake(n)}")
+        o.append(f"from {ctrl_import}.generated.{n} import HANDLERS as _{snake(n)}")
     o += ["", "CONTROLLERS: Dict[str, Any] = {" + ", ".join(f"**_{snake(n)}" for n in exposed) + "}",
           f"BASE_PATH = {ac.get('base_path', '')!r}",
           *([f"CUSTOM = {{{', '.join(f'{x.op_id!r}: {snake(x.op_id)!r}' for x in ops if x.kind == 'custom')}}}  # operationId -> metodo di custom.Operations"]
@@ -239,21 +239,28 @@ def _init_file(tables: Dict[str, Table], ops: List[Operation], ac: Dict) -> str:
     return "\n".join(o) + "\n"
 
 
-def emit(tables: Dict[str, Table], ops: List[Operation], ac: Dict, opts: Dict) -> Dict[str, str]:
-    """File relativi alla cartella api (es. libs/db-models/python/src/api)."""
+def emit(tables: Dict[str, Table], ops: List[Operation], ac: Dict, opts: Dict):
+    """Restituisce (api_files, controller_files): file separati per il layer HTTP e per i controller."""
     sql, mongo = has_sql(tables), any(t.mongo for t in tables.values())
-    files = {f"generated/{k}": v for k, v in rt.files(sql, mongo, ac["claims"], ac["headers"]).items()}
-    files["generated/_convert.py"] = rt.HEAD + CONVERT
+    api_import = opts.get("api_dir", "api").replace("/", ".")
+    ctrl_import = opts.get("controller_dir", "controllers").replace("/", ".")
+    rt_files = rt.files(sql, mongo, ac["claims"], ac["headers"])
+    api_rt_keys = {"_schema.py", "_http.py", "_identity.py", "_router.py", "lambda_adapter.py", "asgi_adapter.py", "fastapi_adapter.py"}
+    ctrl_rt_keys = {"_data.py"}
+    api_files = {f"generated/{k}": v for k, v in rt_files.items() if k in api_rt_keys}
+    ctrl_files = {f"generated/{k}": v for k, v in rt_files.items() if k in ctrl_rt_keys}
+    ctrl_files["generated/_convert.py"] = rt.HEAD + CONVERT
     specs = json.dumps([op_spec(o) for o in ops], ensure_ascii=False, indent=1)
-    files["generated/operations.py"] = (header(L, "schemas/generated/openapi.yaml").rstrip("\n") + "\n# ruff: noqa\n"
-                                        '"""Operazioni del contratto: percorso, metodo, contesto, scope, schemi di parametri e corpo."""\n'
-                                        "import json\n\nSPECS = json.loads(r'''" + specs + "''')\n")
+    api_files["generated/operations.py"] = (header(L, "schemas/generated/openapi.yaml").rstrip("\n") + "\n# ruff: noqa\n"
+                                            '"""Operazioni del contratto: percorso, metodo, contesto, scope, schemi di parametri e corpo."""\n'
+                                            "import json\n\nSPECS = json.loads(r'''" + specs + "''')\n")
     for n, t in tables.items():
         tops = [o for o in ops if o.table == n]
-        if tops or n in rel_targets(tables, ops):  # anche i target delle relazioni esposte: servono to_json
-            files[f"generated/{n}.py"] = _table_file(t, tables, tops)
+        if tops or n in rel_targets(tables, ops):
+            ctrl_files[f"generated/{n}.py"] = _table_file(t, tables, tops, api_import)
     if any(o.kind == "custom" for o in ops):
-        files["generated/custom.py"] = _custom_file([o for o in ops if o.kind == "custom"])
-    files["generated/__init__.py"] = _init_file(tables, ops, ac)
-    files["__init__.py"] = header(L, "kit").rstrip("\n") + '\n"""Pacchetto delle API REST: il codice è in generated/ (vedi schemas/generated/openapi.yaml)."""\n'
-    return files
+        api_files["generated/custom.py"] = _custom_file([o for o in ops if o.kind == "custom"])
+    api_files["generated/__init__.py"] = _init_file(tables, ops, ac, ctrl_import)
+    api_files["__init__.py"] = header(L, "kit").rstrip("\n") + '\n"""Pacchetto API REST: routing, validazione e adattatori (vedi schemas/generated/openapi.yaml)."""\n'
+    ctrl_files["__init__.py"] = header(L, "kit").rstrip("\n") + '\n"""Controller generati: logica CRUD, query e conversioni JSON <-> modello."""\n'
+    return api_files, ctrl_files

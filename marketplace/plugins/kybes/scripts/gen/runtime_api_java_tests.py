@@ -15,13 +15,13 @@ HEAD = r'''
 import static org.junit.jupiter.api.Assertions.*;
 
 import __API__.Api;
-import __API__.ApiData;
 import __API__.ApiError;
 import __API__.ApiRequest;
 import __API__.ApiResponse;
 import __API__.Call;
-import __API__.Convert;
 import __API__.Errors;
+import __CTRL__.ApiData;
+import __CTRL__.Convert;
 import __API__.Handler;
 import __API__.HttpServerAdapter;
 import __API__.Identity;
@@ -661,7 +661,7 @@ def _custom_body(ops: List[Operation], tables: Dict[str, Table]) -> str:
     return "\n".join(o) + "\n"
 
 
-def render(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str, model_pkg: str, api_pkg: str) -> str:
+def render(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str, model_pkg: str, api_pkg: str, ctrl_pkg: str) -> str:
     sql, mongo = has_sql(tables), any(t.mongo for t in tables.values())
     bodies = dict(BODIES)
     bodies["rt_api_custom"] = _custom_body(ops, tables)
@@ -674,5 +674,5 @@ def render(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: s
               f"        // atteso: {tc.expected}", bodies[tc.kind].strip("\n"), "    }"]
     o.append("}")
     text = "\n".join(o) + "\n"
-    text = text.replace("__API__", api_pkg + ".generated").replace("__MGEN__", model_pkg + ".generated")
+    text = text.replace("__CTRL__", ctrl_pkg + ".generated").replace("__API__", api_pkg + ".generated").replace("__MGEN__", model_pkg + ".generated")
     return _strip_block(strip_sql(text, sql), "mongo", mongo)

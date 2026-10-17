@@ -52,16 +52,16 @@ Lo stato è questo:
 
 ### API REST
 
-Il codice API sta accanto al modello, nella cartella `api` della stessa libreria, ed è tutto generato: la logica degli endpoint custom va nel service che implementa `Operations` ([API REST](api.md)).
+Il codice API è diviso in due cartelle alla root del progetto: `api/generated` (routing, validazione, adattatori, contratto) e `controllers/generated` (controller per tabella, convertitori, logica di accesso ai dati). Entrambe sono generate: la logica degli endpoint custom va nel service che implementa `Operations` ([API REST](api.md)).
 
-| Linguaggio | Codice generato | Test generati |
-|---|---|---|
-| C# | `libs/db-models/csharp/src/api/generated/`: `<T>Api.cs`, `KybesApi.cs`, `IOperations.cs`, nucleo e adattatori | `libs/db-models/csharp/tests/generated/<T>ApiTests.cs`, `KybesApiRuntimeTests.cs`, `KybesApiCustomTests.cs` |
-| Python | `libs/db-models/python/src/api/generated/`: `<T>.py`, `__init__.py` (`build_api`), `custom.py`, nucleo e adattatori | `libs/db-models/python/tests/generated/test_api_<t>.py`, `test_api_runtime.py`, `test_api_custom.py` |
-| TypeScript | `libs/db-models/typescript/src/api/generated/`: `<T>.ts`, `index.ts` (`buildApi`), `custom.ts`, nucleo e adattatori | `libs/db-models/typescript/tests/generated/<T>.api.test.ts`, `kybes_api_runtime.test.ts`, `kybes_api_custom.test.ts` |
-| Java | `libs/db-models/java/src/main/java/<api>/generated/`: `<T>Api.java`, `KybesApi.java`, `Operations.java`, nucleo e adattatori | `libs/db-models/java/src/test/java/<pkg>/generated/<T>ApiTest.java`, `KybesApiRuntimeTest.java`, `KybesApiCustomTest.java` |
+| Linguaggio | `api/generated` | `controllers/generated` | Test generati |
+|---|---|---|---|
+| C# | `KybesApi.cs`, `IOperations.cs`, nucleo e adattatori | `<T>Api.cs`, `ApiData.cs`, `ApiConvert.cs` | `<T>ApiTests.cs`, `KybesApiRuntimeTests.cs`, `KybesApiCustomTests.cs` |
+| Python | `__init__.py` (`build_api`), `custom.py`, nucleo e adattatori | `<T>.py`, `_data.py`, `_convert.py` | `test_api_<t>.py`, `test_api_runtime.py`, `test_api_custom.py` |
+| TypeScript | `index.ts` (`buildApi`), `custom.ts`, nucleo e adattatori | `<T>.ts`, `_data.ts`, `_convert.ts` | `<T>.api.test.ts`, `kybes_api_runtime.test.ts`, `kybes_api_custom.test.ts` |
+| Java | `KybesApi.java`, `Operations.java`, nucleo e adattatori | `<T>Api.java`, `ApiData.java`, `Convert.java` | `<T>ApiTest.java`, `KybesApiRuntimeTest.java`, `KybesApiCustomTest.java` |
 
-`<api>` è il pacchetto del modello con `api` al posto di `model` (`app.model` → `app.api`); in C# il namespace segue la stessa regola (`App.Model` → `App.Api`).
+In Java il pacchetto API è `app.model` → `app.api`, il pacchetto controller `app.model` → `app.controllers`. In C# il namespace segue la stessa regola (`App.Model` → `App.Api` / `App.Controllers`).
 
 ### Database, archivio e job
 

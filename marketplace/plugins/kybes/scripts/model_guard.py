@@ -51,10 +51,12 @@ def is_generated_zone(rel: str, cfg: dict) -> bool:
 
 
 def is_api_zone(rel: str, cfg: dict) -> bool:
-    """Codice API generato (<api>/generated) e contratto generato (schemas/generated/openapi.yaml)."""
+    """Codice API/controller generato e contratto generato (schemas/generated/openapi.yaml)."""
     if rel == G.api_config(cfg)["generated_contract"]:
         return True
-    return any(rel.startswith(G.api_dir(tg) + f"/{GEN_DIR}/") for tg in (cfg.get("model") or {}).get("targets") or [])
+    targets = (cfg.get("model") or {}).get("targets") or []
+    return any(rel.startswith(G.api_dir(tg) + f"/{GEN_DIR}/") or rel.startswith(G.controller_dir(tg) + f"/{GEN_DIR}/")
+               for tg in targets)
 
 
 def expected_name(lang: str) -> str:

@@ -21,7 +21,7 @@ Regole operative:
    - collection MongoDB: `storage: mongo` nello schema, sessione `mongo_session`/`mongoSession`/`MongoSession`, transazione MongoDB per scritture su più documenti; mai il driver usato fuori dal model;
    - dati che invecchiano: `archive` (Parquet su S3/Blob, con `read_through` se servono letture per chiave) e/o `retention` nello schema; mai job di spostamento o cancellazione per età scritti a mano;
    - endpoint REST: CRUD, query e relazioni di una tabella con il blocco `api` dello schema; ogni altro endpoint in `schemas/openapi.yaml` con un `operationId`, e la sua logica nel service che implementa `Operations` (`IOperations` in C#); il servizio costruisce l'Api con il proprio contesto e uno degli adattatori generati (Lambda, server, framework); mai router, validatori o controller scritti a mano;
-   - non scrivere mai nei file `generated/` (compresi `jobs/generated/` e `api/generated/`), in `schemas/generated/` o in `MODEL_INDEX.md`.
+   - non scrivere mai nei file `generated/` (compresi `jobs/generated/`, `api/generated/` e `controllers/generated/`), in `schemas/generated/` o in `MODEL_INDEX.md`.
    Prima di scrivere un blocco di logica, cerca se esiste già: se sì, riusalo o estrailo invece di copiarlo.
 4. Errori solo tramite il modulo in `libs/errors`; mai restituire messaggi di eccezione, stack trace o dettagli interni al client.
 5. Ogni handler passa dall'Api generata (validazione, identità, errori): niente endpoint fuori dal contratto.

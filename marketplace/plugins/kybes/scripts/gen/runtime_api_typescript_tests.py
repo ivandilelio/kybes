@@ -16,18 +16,18 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { Api, ApiData, ApiError, buildApi, httpHandler, includeApi, lambdaHandler, reply } from "../../src/api/generated";
-import type { ApiRequest, Call, Identity } from "../../src/api/generated";
-import { dateText, datetimeText, decimalText, text, toDatetime, toUuid, uuidText } from "../../src/api/generated/_convert";
-import { errorBody, isResponse, response } from "../../src/api/generated/_http";
-import { CLAIMS, HEADERS, fromClaims, fromHeaders, fromLambda, scopesOf } from "../../src/api/generated/_identity";
-import { Route, mapError } from "../../src/api/generated/_router";
-import type { Spec } from "../../src/api/generated/_router";
-import { checkFormat, coerce, num, typeOf, validate } from "../../src/api/generated/_schema";
-import { toProxy, toRequest } from "../../src/api/generated/lambda";
-import { readRequest } from "../../src/api/generated/http";
+import { Api, ApiData, ApiError, buildApi, httpHandler, includeApi, lambdaHandler, reply } from "__API_REL__";
+import type { ApiRequest, Call, Identity } from "__API_REL__";
+import { dateText, datetimeText, decimalText, text, toDatetime, toUuid, uuidText } from "__CTRL_REL__/_convert";
+import { errorBody, isResponse, response } from "__API_REL__/_http";
+import { CLAIMS, HEADERS, fromClaims, fromHeaders, fromLambda, scopesOf } from "__API_REL__/_identity";
+import { Route, mapError } from "__API_REL__/_router";
+import type { Spec } from "__API_REL__/_router";
+import { checkFormat, coerce, num, typeOf, validate } from "__API_REL__/_schema";
+import { toProxy, toRequest } from "__API_REL__/lambda";
+import { readRequest } from "__API_REL__/http";
 import { Readable } from "node:stream";
-import { ModelValidationError, TenantError } from "../../src/model/generated";
+import { ModelValidationError, TenantError } from "__MODEL_REL__/generated";
 import { TENANT_A } from "./kybes_builders";
 __RUNNERS__
 
@@ -350,7 +350,7 @@ def _custom_body(ops: List[Operation]) -> List[str]:
     return o
 
 
-def _data_body(tables: Dict[str, Table]) -> List[str]:
+def _data_body(tables: Dict[str, Table], model_rel: str) -> List[str]:
     sql, mongo = has_sql(tables), any(t.mongo for t in tables.values())
     o = []
     if sql:
@@ -358,7 +358,7 @@ def _data_body(tables: Dict[str, Table]) -> List[str]:
               "    await assert.rejects(new ApiData().read(null, async () => 1), /dataSource/);",
               "    const data = new ApiData({ sqlFor: () => ds });",
               "    assert.equal(await data.read(null, async (em) => em.connection === ds), true);",
-              '    const { tenantOf } = await import("../../src/model/generated");',
+              f'    const {{ tenantOf }} = await import("{model_rel}/generated");',
               "    assert.equal(await data.read(String(TENANT_A), async (em) => tenantOf(em)), String(TENANT_A).toLowerCase());",
               "    assert.equal(await new ApiData({ dataSource: ds, levels: process.env.KYBES_TEST_DATABASE_URL ? undefined : "
               "{ read_committed: null, repeatable_read: null, serializable: null } }).write([], null, async () => 5), 5);",
@@ -374,7 +374,9 @@ def _data_body(tables: Dict[str, Table]) -> List[str]:
     return o
 
 
-def render(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str) -> str:
+def render(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str,
+           api_rel: str = "../../src/api/generated", ctrl_rel: str = "../../src/api/generated",
+           model_rel: str = "../../src/model") -> str:
     sql, mongo = has_sql(tables), any(t.mongo for t in tables.values())
     runners = []
     if sql:
@@ -382,8 +384,9 @@ def render(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: s
     if mongo:
         runners.append('import { withMongo } from "./_mongo_db";')
     bodies = dict(BODIES)
-    bodies["rt_api_custom"] = _custom_body(ops) + _data_body(tables)
+    bodies["rt_api_custom"] = _custom_body(ops) + _data_body(tables, model_rel)
     head = strip_sql(HEAD, sql).replace("__RUNNERS__", "\n".join(runners))
+    head = head.replace("__API_REL__", api_rel).replace("__CTRL_REL__", ctrl_rel).replace("__MODEL_REL__", model_rel)
     o = [header("typescript", "kit").rstrip("\n") + "\n" + head]
     for tc in cat.for_table(API_RT, "api"):
         title = json.dumps(tc.id + " · " + ", ".join(tc.reqs) + " · " + METHODS[tc.method] + ": " + tc.title)
