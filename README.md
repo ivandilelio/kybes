@@ -133,6 +133,7 @@ The generator also creates the index `(ClienteId, Data)` that covers both `listB
 | before every write | a file in `model/` that doesn't map to a table, or a sub-folder | block |
 | before every write | a custom method named like a generated one | block |
 | before every write | secrets in clear text (AWS keys, private keys, tokens, passwords) | block |
+| before every write | Docker: ports on `0.0.0.0` in compose, Dockerfile without non-root `USER` | block |
 | before finishing | a custom model method without a traced test (`TC-<Table>-…`) in `tests/custom/` | block |
 | after every write | schema saved → model regenerated in every language; linters; architecture warnings | — |
 | before finishing (main agent and every subagent) | `arch_check` (incl. duplicated blocks of 8+ lines), `gen --check`, `verify.py` (model tests + coverage per ASIL), your test commands | block |
