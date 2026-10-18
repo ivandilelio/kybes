@@ -14,6 +14,7 @@ La scrittura viene rifiutata e l'agente riceve il motivo con la correzione da fa
 | `generated_files` | modifiche ai file generati, ai JSON Schema, al DDL generato, ai job in `jobs/generated/` e a `MODEL_INDEX.md` | block |
 | `model_layout` | file o sottocartelle nella cartella model che non corrispondono a una tabella | block |
 | `custom_method_collision` | metodi custom con il nome di un metodo generato | block |
+| `docker_insecure` | porte su `0.0.0.0` nel docker-compose, Dockerfile senza `USER` non-root | block |
 
 ## Dopo la scrittura (`post_edit`)
 
