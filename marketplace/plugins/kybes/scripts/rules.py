@@ -44,6 +44,7 @@ DEFAULT_CONFIG = {
         "custom_method_collision": "block",
         "custom_tests": "block",
         "duplicate_code": "block",
+        "docker_insecure": "block",
     },
     "duplicates": {"min_lines": 8, "include_tests": False, "ignore": []},
     "extra_forbidden_modules": [],
@@ -220,6 +221,9 @@ FN_SLEEP_PY = re.compile(r"(?:time|asyncio)\.sleep\(\s*(?:[1-9]\d+|\d{3,})(?:\.\
 FN_SLEEP_JS = re.compile(r"setTimeout\([^;]*,\s*\d{5,}\s*\)")
 FN_SOCKET = re.compile(r"""^\s*(?:from|import)\s+(?:websockets|socketio|flask_socketio)\b|['"](?:ws|socket\.io|socket\.io-client)['"]""", re.M)
 
+DOCKER_BIND_ALL = re.compile(r"""['"]?0\.0\.0\.0:\d+""")
+DOCKER_NO_USER = re.compile(r"^\s*USER\s+(?!root\b)\S+", re.M)
+
 
 def _line_of(text: str, idx: int) -> int:
     return text.count("\n", 0, idx) + 1
@@ -301,6 +305,21 @@ def check_content(rel: str, content: str, cfg: dict) -> List[Finding]:
                 out.append(Finding("function_long_running", sev, rel, _line_of(content, m.start()),
                                    "attese lunghe o WebSocket in una function: oltre 10 s o connessioni persistenti "
                                    "vanno su microservizio Kubernetes; trigger/schedule vanno in un Job."))
+
+    # 7. Docker: porte esposte su 0.0.0.0 e container che girano come root
+    sev = _sev(cfg, "docker_insecure")
+    if sev and not is_test:
+        is_compose = name in ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
+        is_dockerfile = name == "dockerfile" or name.startswith("dockerfile.")
+        if is_compose:
+            for m in DOCKER_BIND_ALL.finditer(content):
+                out.append(Finding("docker_insecure", sev, rel, _line_of(content, m.start()),
+                                   "porta esposta su 0.0.0.0: in sviluppo i servizi infrastrutturali vanno esposti "
+                                   "solo su 127.0.0.1 (es. \"127.0.0.1:5432:5432\")."))
+        if is_dockerfile and not DOCKER_NO_USER.search(content):
+            out.append(Finding("docker_insecure", sev, rel, 1,
+                               "Dockerfile senza USER non-root: aggiungi un utente dedicato "
+                               "(RUN adduser ...; USER appuser) per non eseguire il container come root."))
     return out
 
 

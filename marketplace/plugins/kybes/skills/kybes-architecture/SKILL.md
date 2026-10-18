@@ -29,7 +29,7 @@ Nessun controller contiene SQL, query ORM o driver DB: tutto passa da DB-Models.
 - Nota: API Gateway REST ha comunque un timeout di integrazione di circa 29 s.
 - Ogni function o microservizio espone **un solo bounded context**, mai l'accesso generico al DB. Niente endpoint "CRUD universale".
 - Le function accedono al DB relazionale tramite connection pooler (RDS Proxy / PgBouncer).
-- Le scritture sono **idempotenti** (`Idempotency-Key` o chiave naturale).
+- Le scritture sono **idempotenti** (`Idempotency-Key` o chiave naturale). La chiave di idempotenza è sempre **legata all'identità** (`(subject, key)` o `(tenant, key)`): la lookup non deve avvenire solo per chiave, altrimenti un utente può riusare o indovinare la chiave di un altro (IDOR).
 
 ## 3. Kubernetes e Job
 
@@ -196,12 +196,15 @@ Modulo errori condiviso (`libs/errors`) che garantisce:
 - **SSO con account aziendale** via OIDC/SAML (es. Microsoft Entra ID).
 - Authorization Code + PKCE nella SPA; JWT validati da un authorizer su API Gateway.
 - Ruoli dai gruppi/claim dell'IdP, verificati di nuovo nel middleware.
+- Se il servizio verifica JWT localmente (dev senza gateway), il segreto viene **solo** da una variabile d'ambiente (`JWT_SECRET`, almeno 32 caratteri); l'applicazione rifiuta l'avvio se manca o è troppo corta. Nessun valore di fallback nel codice.
+- Se l'applicazione gestisce credenziali proprie (non SSO): hashing con **Argon2id** (preferito) o PBKDF2 ≥ 600 000 iterazioni HMAC-SHA256 (OWASP 2023); confronto sempre con funzione a tempo costante; login con utente inesistente → hash fittizio per eliminare l'oracolo di temporizzazione.
 
 ## 10. Requisiti trasversali
 
 - **IaC** (Terraform o CDK) per ogni risorsa.
 - **Segreti** in Secrets Manager / Parameter Store, mai nel codice (un hook blocca i segreti in chiaro).
 - **Osservabilità**: log JSON con `correlationId` propagato ovunque; metriche e tracing OpenTelemetry.
+- **Docker sicuro**: il Dockerfile dichiara un `USER` non-root; `docker-compose.yml` espone le porte dei servizi infrastrutturali solo su `127.0.0.1`; il repository contiene un `.dockerignore` che esclude `.git`, `.env`, `node_modules`, test e documentazione. Il hook `docker_insecure` blocca le violazioni.
 - **Ambienti** dev/staging/prod e pipeline CI: lint, test, contract test DB-Models, `arch_check`, scansione dipendenze.
 
 ## Struttura di repository
@@ -249,6 +252,8 @@ seguita da: modifiche agli schemi `schemas/db/<Tabella>.yaml` (colonne, relazion
 - [ ] Endpoint limitati al proprio bounded context
 - [ ] Validazione ai tre livelli
 - [ ] Errori dal modulo comune, nessun dettaglio interno in risposta
-- [ ] Scritture idempotenti, transazioni/compensazioni definite
-- [ ] SSO e autorizzazione verificati
+- [ ] Scritture idempotenti (chiave legata all'identità), transazioni/compensazioni definite
+- [ ] SSO e autorizzazione verificati; nessun segreto hardcoded, JWT_SECRET solo da env ≥ 32 char
+- [ ] Se credenziali proprie: Argon2id o PBKDF2 ≥ 600k, hash fittizio su utente inesistente
+- [ ] Docker: USER non-root, porte su 127.0.0.1, .dockerignore presente
 - [ ] IaC, segreti, log con correlationId inclusi
