@@ -103,17 +103,31 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
                 f"    r = api('GET', {base!r}, query={{'kybesSconosciuto': 1}})",
                 "    assert r.status == 400 and r.body['error']['fields'] == {'kybesSconosciuto': 'parametro sconosciuto'}"]
     if k == "api_list_expand":
-        rel = next(x for x in t.relations if x.name == tc.args["relation"])
-        tg = tables[rel.target]
-        fk = member(L, rel.foreign_key)
-        exp_prop = tc.args["expand"]
-        return ["    with seeding() as session:",
-                f"        p = build_{snake(rel.target)}(session)",
-                f"        e = build_{snake(n)}(session, {fk}=p.{member(L, tg.pk.name)})",
-                f"    r = api('GET', {base!r}, query={{'expand': {exp_prop!r}, 'limit': {t.pagination.max_limit}}})",
-                "    assert r.status == 200, r.body",
-                f"    hit = next(x for x in r.body['items'] if x[{pkp!r}] == {_jkey(t.pk, 'e.' + member(L, t.pk.name))})",
-                f"    assert {exp_prop!r} in hit and hit[{exp_prop!r}] is not None"]
+        rels = [next(x for x in t.relations if x.name == rn) for rn in tc.args["relations"]]
+        exp_val = tc.args["expand"]
+        o = ["    with seeding() as session:"]
+        seen_targets = {}
+        fk_args = []
+        for rel in rels:
+            tg = tables[rel.target]
+            if rel.target == n:
+                var = "self_p"
+            elif rel.target not in seen_targets:
+                var = f"p_{snake(rel.target)}"
+                o.append(f"        {var} = build_{snake(rel.target)}(session)")
+                seen_targets[rel.target] = var
+            else:
+                var = seen_targets[rel.target]
+            fk_args.append(f"{member(L, rel.foreign_key)}={var}.{member(L, tg.pk.name)}")
+        if any(r.target == n for r in rels):
+            o.append(f"        self_p = build_{snake(n)}(session)")
+        o.append(f"        e = build_{snake(n)}(session, {', '.join(fk_args)})")
+        o += [f"    r = api('GET', {base!r}, query={{'expand': {exp_val!r}, 'limit': {t.pagination.max_limit}}})",
+              "    assert r.status == 200, r.body",
+              f"    hit = next(x for x in r.body['items'] if x[{pkp!r}] == {_jkey(t.pk, 'e.' + member(L, t.pk.name))})"]
+        for rel in rels:
+            o.append(f"    assert {prop(rel.name)!r} in hit and hit[{prop(rel.name)!r}] is not None")
+        return o
     if k == "api_list_expand_bad":
         return [f"    r = api('GET', {base!r}, query={{'expand': 'kybesNonEsiste'}})",
                 "    assert r.status == 400 and 'invalid expand' in r.body['error']['code']"]

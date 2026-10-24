@@ -124,17 +124,34 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
                 f'        r = call("GET", {B}, null, q("kybesSconosciuto", 1), ME);', "        assertEquals(400, r.status());",
                 '        assertEquals(Map.of("kybesSconosciuto", "parametro sconosciuto"), r.fields());']
     if k == "api_list_expand":
-        rel = next(x for x in t.relations if x.name == tc.args["relation"])
-        tg = tables[rel.target]
-        fkset = f"set{_cap(member(L, rel.foreign_key))}"
-        tget = f"get{_cap(member(L, tg.pk.name))}()"
-        exp_prop = tc.args["expand"]
-        return [f"        {rel.target} p = build{rel.target}(em);",
-                f"        {n} e = build{n}(em, x -> x.{fkset}(p.{tget}));",
-                f'        Result r = call("GET", {B}, null, q("expand", {_js(exp_prop)}, "limit", {t.pagination.max_limit}), ME);',
-                "        assertEquals(200, r.status(), r.text());",
-                f"        var hit = r.items().stream().filter(x -> Objects.equals(x.get({pkp}), {key})).findFirst().orElseThrow();",
-                f"        assertNotNull(hit.get({_js(exp_prop)}), \"relazione espansa mancante\");"]
+        rels = [next(x for x in t.relations if x.name == rn) for rn in tc.args["relations"]]
+        exp_val = tc.args["expand"]
+        o = []
+        seen_targets = {}
+        setter_parts = []
+        for rel in rels:
+            tg = tables[rel.target]
+            fkset = f"set{_cap(member(L, rel.foreign_key))}"
+            tget = f"get{_cap(member(L, tg.pk.name))}()"
+            if rel.target == n:
+                var = "selfP"
+            elif rel.target not in seen_targets:
+                var = f"p{rel.target}"
+                o.append(f"        {rel.target} {var} = build{rel.target}(em);")
+                seen_targets[rel.target] = var
+            else:
+                var = seen_targets[rel.target]
+            setter_parts.append(f"x.{fkset}({var}.{tget})")
+        if any(r.target == n for r in rels):
+            o.append(f"        {n} selfP = build{n}(em);")
+        lam = "; ".join(setter_parts)
+        o.append(f"        {n} e = build{n}(em, x -> {{ {lam}; }});")
+        o += [f'        Result r = call("GET", {B}, null, q("expand", {_js(exp_val)}, "limit", {t.pagination.max_limit}), ME);',
+              "        assertEquals(200, r.status(), r.text());",
+              f"        var hit = r.items().stream().filter(x -> Objects.equals(x.get({pkp}), {key})).findFirst().orElseThrow();"]
+        for rel in rels:
+            o.append(f"        assertNotNull(hit.get({_js(prop(rel.name))}), \"relazione espansa mancante\");")
+        return o
     if k == "api_list_expand_bad":
         return [f'        Result r = call("GET", {B}, null, q("expand", "kybesNonEsiste"), ME);',
                 "        assertEquals(400, r.status());",

@@ -660,9 +660,10 @@ def add_api_cases(cat: Catalog, tables: Dict[str, Table], ops: list, default_asi
                    "400 con limit: valore minimo 1; 400 con il parametro: parametro sconosciuto")
                 has_expand = t.api and t.api.expandable and not t.mongo and not t.neo4j
                 if has_expand:
-                    first_exp = api_plan.prop(t.api.expandable[0])
-                    tc("LIST-EXPAND", r, "req", "api_list_expand", f"GET {path}?expand={first_exp}",
-                       "200, ogni item ha la relazione espansa", expand=first_exp, relation=t.api.expandable[0])
+                    all_exp = ",".join(api_plan.prop(x) for x in t.api.expandable)
+                    all_rels = list(t.api.expandable)
+                    tc("LIST-EXPAND", r, "req", "api_list_expand", f"GET {path}?expand={all_exp}",
+                       "200, ogni item ha tutte le relazioni espanse", expand=all_exp, relations=all_rels)
                     tc("LIST-EXPAND-BAD", r, "bv", "api_list_expand_bad", f"GET {path}?expand=kybesNonEsiste",
                        "400 invalid expand")
             if "get" in kinds:

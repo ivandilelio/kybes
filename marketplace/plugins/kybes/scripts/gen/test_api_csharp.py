@@ -125,17 +125,34 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
                 f'        r = await Call("GET", {B}, null, Q("kybesSconosciuto", 1), Me);', "        Assert.Equal(400, r.Status);",
                 "        " + eq.format('J("{\'kybesSconosciuto\': \'parametro sconosciuto\'}")', "r.Fields()")]
     if k == "api_list_expand":
-        rel = next(x for x in t.relations if x.name == tc.args["relation"])
-        tg = tables[rel.target]
-        fk = member(L, rel.foreign_key)
-        tpk = member(L, tg.pk.name)
-        exp_prop = tc.args["expand"]
-        return [f"        var p = await Build{rel.target}(db);",
-                f"        var e = await Build{n}(db, x => x.{fk} = p.{tpk});",
-                f'        var r = await Call("GET", {B}, null, Q("expand", {_cs(exp_prop)}, "limit", {t.pagination.max_limit}), Me);',
-                "        Assert.True(r.Status == 200, r.Text);",
-                f"        var hit = r.Items().First(x => Canon(x[{pkp}]) == Canon({key}));",
-                f"        Assert.True(hit.ContainsKey({_cs(exp_prop)}) && hit[{_cs(exp_prop)}] != null, \"relazione espansa mancante\");"]
+        rels = [next(x for x in t.relations if x.name == rn) for rn in tc.args["relations"]]
+        exp_val = tc.args["expand"]
+        o = []
+        seen_targets = {}
+        assign_parts = []
+        for rel in rels:
+            tg = tables[rel.target]
+            fk = member(L, rel.foreign_key)
+            tpk = member(L, tg.pk.name)
+            if rel.target == n:
+                var = "selfP"
+            elif rel.target not in seen_targets:
+                var = f"p{rel.target}"
+                o.append(f"        var {var} = await Build{rel.target}(db);")
+                seen_targets[rel.target] = var
+            else:
+                var = seen_targets[rel.target]
+            assign_parts.append(f"x.{fk} = {var}.{tpk}")
+        if any(r.target == n for r in rels):
+            o.append(f"        var selfP = await Build{n}(db);")
+        lam = "; ".join(assign_parts)
+        o.append(f"        var e = await Build{n}(db, x => {{ {lam}; }});")
+        o += [f'        var r = await Call("GET", {B}, null, Q("expand", {_cs(exp_val)}, "limit", {t.pagination.max_limit}), Me);',
+              "        Assert.True(r.Status == 200, r.Text);",
+              f"        var hit = r.Items().First(x => Canon(x[{pkp}]) == Canon({key}));"]
+        for rel in rels:
+            o.append(f"        Assert.True(hit.ContainsKey({_cs(prop(rel.name))}) && hit[{_cs(prop(rel.name))}] != null, \"relazione espansa mancante\");")
+        return o
     if k == "api_list_expand_bad":
         return [f'        var r = await Call("GET", {B}, null, Q("expand", "kybesNonEsiste"), Me);',
                 "        Assert.Equal(400, r.Status);",
