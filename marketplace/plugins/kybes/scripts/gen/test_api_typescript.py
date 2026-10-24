@@ -117,6 +117,22 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
                 '    assert.deepEqual((r.body as any).error.fields, { limit: "valore minimo 1" });',
                 f"    r = await api(\"GET\", {B}, undefined, {{ kybesSconosciuto: 1 }});",
                 '    assert.equal(r.status, 400);', '    assert.deepEqual((r.body as any).error.fields, { kybesSconosciuto: "parametro sconosciuto" });']
+    if k == "api_list_expand":
+        rel = next(x for x in t.relations if x.name == tc.args["relation"])
+        tg = tables[rel.target]
+        fk = member(L, rel.foreign_key)
+        exp_prop = tc.args["expand"]
+        return [f"    const p = await build{rel.target}(em);",
+                f"    const e = await build{n}(em, {{ {fk}: p.{member(L, tg.pk.name)} }});",
+                f"    const r = await api(\"GET\", {B}, undefined, {{ expand: {json.dumps(exp_prop)}, limit: {t.pagination.max_limit} }});",
+                "    assert.equal(r.status, 200, JSON.stringify(r.body));",
+                f"    const hit = (r.body as any).items.find((x: any) => x.{pkp} === {key});",
+                f"    assert.ok(hit, 'record non trovato nella pagina');",
+                f"    assert.ok({json.dumps(exp_prop)} in hit && hit.{exp_prop} != null, 'relazione espansa mancante');"]
+    if k == "api_list_expand_bad":
+        return [f"    const r = await api(\"GET\", {B}, undefined, {{ expand: \"kybesNonEsiste\" }});",
+                "    assert.equal(r.status, 400);",
+                '    assert.ok((r.body as any).error.code.includes("invalid expand"));']
     if k == "api_get":
         return [f"    const e = await build{n}(em);", f"    const r = await api(\"GET\", {B} + \"/\" + String({key}));",
                 "    assert.equal(r.status, 200, JSON.stringify(r.body));",

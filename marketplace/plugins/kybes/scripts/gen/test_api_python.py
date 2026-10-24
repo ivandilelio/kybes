@@ -102,6 +102,21 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
         return [f"    r = api('GET', {base!r}, query={{'limit': 0}})", "    assert r.status == 400 and r.body['error']['fields'] == {'limit': 'valore minimo 1'}",
                 f"    r = api('GET', {base!r}, query={{'kybesSconosciuto': 1}})",
                 "    assert r.status == 400 and r.body['error']['fields'] == {'kybesSconosciuto': 'parametro sconosciuto'}"]
+    if k == "api_list_expand":
+        rel = next(x for x in t.relations if x.name == tc.args["relation"])
+        tg = tables[rel.target]
+        fk = member(L, rel.foreign_key)
+        exp_prop = tc.args["expand"]
+        return ["    with seeding() as session:",
+                f"        p = build_{snake(rel.target)}(session)",
+                f"        e = build_{snake(n)}(session, {fk}=p.{member(L, tg.pk.name)})",
+                f"    r = api('GET', {base!r}, query={{'expand': {exp_prop!r}, 'limit': {t.pagination.max_limit}}})",
+                "    assert r.status == 200, r.body",
+                f"    hit = next(x for x in r.body['items'] if x[{pkp!r}] == {_jkey(t.pk, 'e.' + member(L, t.pk.name))})",
+                f"    assert {exp_prop!r} in hit and hit[{exp_prop!r}] is not None"]
+    if k == "api_list_expand_bad":
+        return [f"    r = api('GET', {base!r}, query={{'expand': 'kybesNonEsiste'}})",
+                "    assert r.status == 400 and 'invalid expand' in r.body['error']['code']"]
     if k == "api_get":
         return [f"    e = {build}", f"    r = api('GET', {base!r} + '/' + str({key}))", "    assert r.status == 200, r.body",
                 "    assert r.body == to_json(e)"]

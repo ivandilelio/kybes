@@ -123,6 +123,22 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
                 '        assertEquals(Map.of("limit", "valore minimo 1"), r.fields());',
                 f'        r = call("GET", {B}, null, q("kybesSconosciuto", 1), ME);', "        assertEquals(400, r.status());",
                 '        assertEquals(Map.of("kybesSconosciuto", "parametro sconosciuto"), r.fields());']
+    if k == "api_list_expand":
+        rel = next(x for x in t.relations if x.name == tc.args["relation"])
+        tg = tables[rel.target]
+        fkset = f"set{_cap(member(L, rel.foreign_key))}"
+        tget = f"get{_cap(member(L, tg.pk.name))}()"
+        exp_prop = tc.args["expand"]
+        return [f"        {rel.target} p = build{rel.target}(em);",
+                f"        {n} e = build{n}(em, x -> x.{fkset}(p.{tget}));",
+                f'        Result r = call("GET", {B}, null, q("expand", {_js(exp_prop)}, "limit", {t.pagination.max_limit}), ME);',
+                "        assertEquals(200, r.status(), r.text());",
+                f"        var hit = r.items().stream().filter(x -> Objects.equals(x.get({pkp}), {key})).findFirst().orElseThrow();",
+                f"        assertNotNull(hit.get({_js(exp_prop)}), \"relazione espansa mancante\");"]
+    if k == "api_list_expand_bad":
+        return [f'        Result r = call("GET", {B}, null, q("expand", "kybesNonEsiste"), ME);',
+                "        assertEquals(400, r.status());",
+                '        assertTrue(r.error().get("code").toString().contains("invalid expand"));']
     if k == "api_get":
         return [f"        {n} e = build{n}(em);", f'        Result r = call("GET", {B} + "/" + {ktext}, null, q(), ME);',
                 "        assertEquals(200, r.status(), r.text());",

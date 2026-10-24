@@ -124,6 +124,22 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
                 "        " + eq.format('J("{\'limit\': \'valore minimo 1\'}")', "r.Fields()"),
                 f'        r = await Call("GET", {B}, null, Q("kybesSconosciuto", 1), Me);', "        Assert.Equal(400, r.Status);",
                 "        " + eq.format('J("{\'kybesSconosciuto\': \'parametro sconosciuto\'}")', "r.Fields()")]
+    if k == "api_list_expand":
+        rel = next(x for x in t.relations if x.name == tc.args["relation"])
+        tg = tables[rel.target]
+        fk = member(L, rel.foreign_key)
+        tpk = member(L, tg.pk.name)
+        exp_prop = tc.args["expand"]
+        return [f"        var p = await Build{rel.target}(db);",
+                f"        var e = await Build{n}(db, x => x.{fk} = p.{tpk});",
+                f'        var r = await Call("GET", {B}, null, Q("expand", {_cs(exp_prop)}, "limit", {t.pagination.max_limit}), Me);',
+                "        Assert.True(r.Status == 200, r.Text);",
+                f"        var hit = r.Items().First(x => Canon(x[{pkp}]) == Canon({key}));",
+                f"        Assert.True(hit.ContainsKey({_cs(exp_prop)}) && hit[{_cs(exp_prop)}] != null, \"relazione espansa mancante\");"]
+    if k == "api_list_expand_bad":
+        return [f'        var r = await Call("GET", {B}, null, Q("expand", "kybesNonEsiste"), Me);',
+                "        Assert.Equal(400, r.Status);",
+                '        Assert.Contains("invalid expand", r.Error()["code"].ToString());']
     if k == "api_get":
         return [f"        var e = await Build{n}(db);", f'        var r = await Call("GET", {B} + "/" + {ktext}, null, Q(), Me);',
                 "        Assert.True(r.Status == 200, r.Text);",

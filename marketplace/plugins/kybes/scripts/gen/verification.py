@@ -658,6 +658,13 @@ def add_api_cases(cat: Catalog, tables: Dict[str, Table], ops: list, default_asi
                 tc("LIST", r, "req", "api_list", f"GET {path} con limit", "200, il record è nella pagina, limit rispettato")
                 tc("LIST-PARAMS", r, "bv", "api_list_params", f"GET {path} con limit=0 e con un parametro sconosciuto",
                    "400 con limit: valore minimo 1; 400 con il parametro: parametro sconosciuto")
+                has_expand = t.api and t.api.expandable and not t.mongo and not t.neo4j
+                if has_expand:
+                    first_exp = api_plan.prop(t.api.expandable[0])
+                    tc("LIST-EXPAND", r, "req", "api_list_expand", f"GET {path}?expand={first_exp}",
+                       "200, ogni item ha la relazione espansa", expand=first_exp, relation=t.api.expandable[0])
+                    tc("LIST-EXPAND-BAD", r, "bv", "api_list_expand_bad", f"GET {path}?expand=kybesNonEsiste",
+                       "400 invalid expand")
             if "get" in kinds:
                 tc("GET", r, "req", "api_get", f"GET {path}/{{id}} di un record esistente", "200, corpo uguale al record nel formato del contratto")
                 tc("GET-MISSING", r, "eg", "api_get_missing", f"GET {path}/{{id}} di un record inesistente", "404 RECORD_NOT_FOUND")
