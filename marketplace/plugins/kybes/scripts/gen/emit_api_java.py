@@ -85,7 +85,7 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_pk
                 exp_allowed = ", ".join(f'"{prop(r.name)}"' for r in expandable)
                 exp_map_entries = ", ".join(f'Map.entry("{prop(r.name)}", "{r.name}")' for r in expandable)
                 b += [f'        String expandRaw = (String) call.query().getOrDefault("expand", "");',
-                      f"        List<String> expand = expandRaw.isEmpty() ? List.of() : java.util.Arrays.stream(expandRaw.split(\",\")).map(String::trim).filter(s -> !s.isEmpty()).toList();",
+                      f"        List<String> expand = expandRaw.isEmpty() ? List.of() : java.util.Arrays.stream(expandRaw.split(\",\")).map(String::trim).toList();",
                       f"        java.util.Set<String> allowedExpand = java.util.Set.of({exp_allowed});",
                       f"        List<String> bad = expand.stream().filter(x -> !allowedExpand.contains(x)).toList();",
                       f'        if (!bad.isEmpty()) throw new ApiError("VALIDATION", "invalid expand: " + bad);',
@@ -95,18 +95,28 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_pk
                       f"            {repo} repo = new {repo}(em);",
                       f"            var p = modelExpand.isEmpty() ? repo.listPage(Convert.request(call.query())) : repo.listPageExpand(modelExpand, Convert.request(call.query()));",
                       f"            return Convert.page(p, e -> {{",
-                      f"                Map<String, Object> d = {n}Api.toJson(e);",
-                      f"                for (String rel : expand) {{"]
-                for r in expandable:
+                      f"                Map<String, Object> d = {n}Api.toJson(e);"]
+                if len(expandable) == 1:
+                    r = expandable[0]
                     target_conv = f"{n}Api.toJson" if r.target == n else f"{r.target}Api.toJson"
                     getter = f"e.get{_cap(member(L, r.name))}()"
                     fk_nullable = t.col(r.foreign_key).nullable
                     if fk_nullable:
-                        b.append(f'                    if (rel.equals("{prop(r.name)}")) {{ var v = {getter}; d.put("{prop(r.name)}", v != null ? {target_conv}(v) : null); }}')
+                        b.append(f'                if (!expand.isEmpty()) {{ var v = {getter}; d.put("{prop(r.name)}", v != null ? {target_conv}(v) : null); }}')
                     else:
-                        b.append(f'                    if (rel.equals("{prop(r.name)}")) d.put("{prop(r.name)}", {target_conv}({getter}));')
-                b += ["                }",
-                      "                return d;",
+                        b.append(f'                if (!expand.isEmpty()) d.put("{prop(r.name)}", {target_conv}({getter}));')
+                else:
+                    b.append(f"                for (String rel : expand) {{")
+                    for r in expandable:
+                        target_conv = f"{n}Api.toJson" if r.target == n else f"{r.target}Api.toJson"
+                        getter = f"e.get{_cap(member(L, r.name))}()"
+                        fk_nullable = t.col(r.foreign_key).nullable
+                        if fk_nullable:
+                            b.append(f'                    if (rel.equals("{prop(r.name)}")) {{ var v = {getter}; d.put("{prop(r.name)}", v != null ? {target_conv}(v) : null); }}')
+                        else:
+                            b.append(f'                    if (rel.equals("{prop(r.name)}")) d.put("{prop(r.name)}", {target_conv}({getter}));')
+                    b.append("                }")
+                b += ["                return d;",
                       "            });",
                       "        });"]
             else:

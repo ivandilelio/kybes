@@ -90,7 +90,7 @@ def _table_file(t: Table, ops: List[Operation], ns: str, model_ns: str, api_ns: 
                 exp_allowed = ", ".join(f'"{prop(r.name)}"' for r in expandable)
                 exp_map_entries = ", ".join(f'{{ "{prop(r.name)}", "{r.name}" }}' for r in expandable)
                 b += [f'        var expandRaw = call.Query.TryGetValue("expand", out var ev) ? (string?)ev ?? "" : "";',
-                      f"        var expand = string.IsNullOrWhiteSpace(expandRaw) ? Array.Empty<string>() : expandRaw.Split(',').Select(s => s.Trim()).Where(s => s.Length > 0).ToArray();",
+                      f"        var expand = string.IsNullOrWhiteSpace(expandRaw) ? Array.Empty<string>() : expandRaw.Split(',').Select(s => s.Trim()).ToArray();",
                       f"        var allowedExpand = new HashSet<string> {{ {exp_allowed} }};",
                       f"        var bad = expand.Where(x => !allowedExpand.Contains(x)).ToArray();",
                       f'        if (bad.Length > 0) throw new ApiError("VALIDATION", $"invalid expand: {{string.Join(", ", bad)}}");',
@@ -103,17 +103,26 @@ def _table_file(t: Table, ops: List[Operation], ns: str, model_ns: str, api_ns: 
                 b.append(f"            return ApiConvert.PageJson(p, e =>")
                 b.append(f"            {{")
                 b.append(f"                var d = ToJson(e);")
-                b.append(f"                foreach (var rel in expand)")
-                b.append(f"                {{")
-                for r in expandable:
+                if len(expandable) == 1:
+                    r = expandable[0]
                     target_conv = "ToJson" if r.target == n else f"{r.target}Api.ToJson"
                     fk_nullable = t.col(r.foreign_key).nullable
                     if fk_nullable:
-                        b.append(f'                    if (rel == "{prop(r.name)}") {{ var v = e.{member(L, r.name)}; d["{prop(r.name)}"] = v != null ? {target_conv}(v) : null; }}')
+                        b.append(f'                if (expand.Length > 0) {{ var v = e.{member(L, r.name)}; d["{prop(r.name)}"] = v != null ? {target_conv}(v) : null; }}')
                     else:
-                        b.append(f'                    if (rel == "{prop(r.name)}") d["{prop(r.name)}"] = {target_conv}(e.{member(L, r.name)});')
-                b += ["                }",
-                      "                return d;",
+                        b.append(f'                if (expand.Length > 0) d["{prop(r.name)}"] = {target_conv}(e.{member(L, r.name)});')
+                else:
+                    b.append(f"                foreach (var rel in expand)")
+                    b.append(f"                {{")
+                    for r in expandable:
+                        target_conv = "ToJson" if r.target == n else f"{r.target}Api.ToJson"
+                        fk_nullable = t.col(r.foreign_key).nullable
+                        if fk_nullable:
+                            b.append(f'                    if (rel == "{prop(r.name)}") {{ var v = e.{member(L, r.name)}; d["{prop(r.name)}"] = v != null ? {target_conv}(v) : null; }}')
+                        else:
+                            b.append(f'                    if (rel == "{prop(r.name)}") d["{prop(r.name)}"] = {target_conv}(e.{member(L, r.name)});')
+                    b.append("                }")
+                b += ["                return d;",
                       "            });",
                       "        });"]
             else:
