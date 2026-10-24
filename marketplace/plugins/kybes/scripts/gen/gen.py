@@ -26,6 +26,11 @@ import emit_api_python  # noqa: E402
 import emit_api_typescript  # noqa: E402
 import emit_api_java  # noqa: E402
 import emit_api_csharp  # noqa: E402
+import graphql_plan  # noqa: E402
+import emit_graphql_python  # noqa: E402
+import emit_graphql_typescript  # noqa: E402
+import emit_graphql_java  # noqa: E402
+import emit_graphql_csharp  # noqa: E402
 import test_api_python  # noqa: E402
 import test_api_typescript  # noqa: E402
 import test_api_java  # noqa: E402
@@ -70,6 +75,10 @@ DEFAULT_VERIFICATION = {
                    "C": {"statement": 100, "branch": 95}, "D": {"statement": 100, "branch": 100}},
 }
 
+DEFAULT_GRAPHQL = {
+    "sdl_file": "schemas/generated/schema.graphql",
+}
+
 DEFAULT_API = {
     "contract": "schemas/openapi.yaml",
     "generated_contract": "schemas/generated/openapi.yaml",
@@ -80,6 +89,7 @@ DEFAULT_API = {
 }
 API_EMITTERS = {"python": emit_api_python, "typescript": emit_api_typescript, "java": emit_api_java, "csharp": emit_api_csharp}
 API_TEST_EMITTERS = {"python": test_api_python, "typescript": test_api_typescript, "java": test_api_java, "csharp": test_api_csharp}
+GRAPHQL_EMITTERS = {"python": emit_graphql_python, "typescript": emit_graphql_typescript, "java": emit_graphql_java, "csharp": emit_graphql_csharp}
 
 
 def api_config(cfg: dict) -> dict:
@@ -102,6 +112,18 @@ def controller_dir(tg: dict) -> str:
     if tg.get("controller_dir"):
         return tg["controller_dir"].rstrip("/")
     return "controllers"
+
+
+def graphql_dir(tg: dict) -> Optional[str]:
+    """Cartella del codice GraphQL generato: None se non configurato."""
+    d = tg.get("graphql_dir")
+    return d.rstrip("/") if d else None
+
+
+def graphql_config(cfg: dict) -> dict:
+    out = dict(DEFAULT_GRAPHQL)
+    out.update(cfg.get("graphql") or {})
+    return out
 
 
 def load_contract(proj: Path, ac: dict) -> Optional[dict]:
@@ -459,6 +481,28 @@ def run(proj: Path, cfg: dict, check: bool = False, index_only: bool = False) ->
                     # tenancy/: policy e DDL per tenant in db/generated/tenancy, il resto in db/generated/ddl/postgres
                     target = f"{mc['db_dir']}/{rel}" if rel.startswith("tenancy/") else f"{mc['db_dir']}/ddl/postgres/{rel}"
                     desired[target] = text
+
+        # GraphQL
+        gqlc = graphql_config(cfg)
+        has_graphql = any(graphql_dir(tg) for tg in mc["targets"])
+        if has_graphql and any(t.api for t in tables.values()):
+            gql_schema = graphql_plan.build(tables)
+            sdl = gqlc["sdl_file"]
+            managed_dirs.append((proj / sdl).parent)
+            desired[sdl] = graphql_plan.render_sdl(gql_schema)
+            for tg in mc["targets"]:
+                gd = graphql_dir(tg)
+                if not gd:
+                    continue
+                gem = GRAPHQL_EMITTERS.get(tg["lang"])
+                if not gem:
+                    continue
+                managed_dirs.append(proj / gd / GEN_DIR)
+                opts = gen_options(tg)
+                opts["model_dir"] = tg["dir"].rstrip("/")
+                gql_files = gem.emit(tables, gql_schema, opts)
+                for rel, text in gql_files.items():
+                    desired[f"{gd}/{rel}"] = text
 
     # file custom: si creano una volta sola, poi sono del progetto
     for rel, text in customs_to_create.items():
