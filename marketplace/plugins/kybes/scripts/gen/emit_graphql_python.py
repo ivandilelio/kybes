@@ -179,6 +179,17 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
         'from .types import *',
         'from .dataloaders import Loaders',
         '',
+        '',
+        'def _check_auth(info, secured: bool = False, scopes: list = None, roles: list = None):',
+        '    identity = info.context.get("identity")',
+        '    if secured and (identity is None or not getattr(identity, "subject", None)):',
+        '        raise PermissionError("IDENTITY_REQUIRED")',
+        '    if scopes and (identity is None or not set(scopes).issubset(getattr(identity, "scopes", set()))):',
+        '        raise PermissionError("SCOPE_REQUIRED")',
+        '    if roles and (identity is None or not (set(roles) & getattr(identity, "scopes", set()))):',
+        '        raise PermissionError("ROLE_REQUIRED")',
+        '',
+        '',
     ]
 
     resolve_fns = []
@@ -234,10 +245,14 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
         if args_def:
             args_def = ', ' + args_def
 
+        secured = tables[q.table].api.secured
+        auth_call = f'        _check_auth(info, secured={secured}, scopes={q.scopes!r}, roles={q.roles!r})'
+
         if q.kind == "get":
             lines += [
                 f'    @strawberry.field(description={q.description!r})',
                 f'    def {snake(q.name)}(self, info{args_def}) -> Optional[{n}Type]:',
+                auth_call,
                 f'        session = info.context["session_factory"]()',
                 f'        from {snake(n)} import {repo_class(L, n)}',
                 f'        repo = {repo_class(L, n)}(session)',
@@ -252,6 +267,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
             lines += [
                 f'    @strawberry.field(description={q.description!r})',
                 f'    def {snake(q.name)}(self, info{args_def}) -> {n}Connection:',
+                auth_call,
                 f'        session = info.context["session_factory"]()',
                 f'        from {snake(n)} import {repo_class(L, n)}',
                 f'        repo = {repo_class(L, n)}(session)',
@@ -275,6 +291,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
                 lines += [
                     f'    @strawberry.field(description={q.description!r})',
                     f'    def {snake(q.name)}(self, info{args_def}) -> {n}Connection:',
+                    auth_call,
                     f'        session = info.context["session_factory"]()',
                     f'        from {snake(n)} import {repo_class(L, n)}',
                     f'        repo = {repo_class(L, n)}(session)',
@@ -288,6 +305,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
                 lines += [
                     f'    @strawberry.field(description={q.description!r})',
                     f'    def {snake(q.name)}(self, info{args_def}) -> List[{n}Type]:',
+                    auth_call,
                     f'        session = info.context["session_factory"]()',
                     f'        from {snake(n)} import {repo_class(L, n)}',
                     f'        repo = {repo_class(L, n)}(session)',
@@ -298,6 +316,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
                 lines += [
                     f'    @strawberry.field(description={q.description!r})',
                     f'    def {snake(q.name)}(self, info{args_def}) -> Optional[{n}Type]:',
+                    auth_call,
                     f'        session = info.context["session_factory"]()',
                     f'        from {snake(n)} import {repo_class(L, n)}',
                     f'        repo = {repo_class(L, n)}(session)',
@@ -317,6 +336,8 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
         for m in schema.mutations:
             t = tables[m.table]
             n = m.table
+            secured = tables[m.table].api.secured
+            m_auth = f'        _check_auth(info, secured={secured}, scopes={m.scopes!r}, roles={m.roles!r})'
             args_def = ', '.join(
                 f'{snake(a.name)}: {a.gql_type}' if a.gql_type.startswith('Create') or a.gql_type.startswith('Update')
                 else f'{snake(a.name)}: {_py_type(a.gql_type, not a.required)}'
@@ -335,6 +356,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
                 lines += [
                     f'    @strawberry.mutation(description={m.description!r})',
                     f'    def {snake(m.name)}(self, info{args_def}) -> {n}Type:',
+                    m_auth,
                     f'        session = info.context["session_factory"]()',
                     f'        from {snake(n)} import {repo_class(L, n)}',
                     f'        repo = {repo_class(L, n)}(session)',
@@ -346,6 +368,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
                 lines += [
                     f'    @strawberry.mutation(description={m.description!r})',
                     f'    def {snake(m.name)}(self, info{args_def}) -> {n}Type:',
+                    m_auth,
                     f'        session = info.context["session_factory"]()',
                     f'        from {snake(n)} import {repo_class(L, n)}',
                     f'        repo = {repo_class(L, n)}(session)',
@@ -358,6 +381,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
                 lines += [
                     f'    @strawberry.mutation(description={m.description!r})',
                     f'    def {snake(m.name)}(self, info{args_def}) -> bool:',
+                    m_auth,
                     f'        session = info.context["session_factory"]()',
                     f'        from {snake(n)} import {repo_class(L, n)}',
                     f'        repo = {repo_class(L, n)}(session)',

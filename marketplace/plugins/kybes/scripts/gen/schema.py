@@ -179,6 +179,7 @@ class Api:
     expandable: List[str] = field(default_factory=list)  # relazioni many_to_one espandibili con ?expand=
     read_scopes: List[str] = field(default_factory=list)
     write_scopes: List[str] = field(default_factory=list)
+    rbac: Dict[str, List[str]] = field(default_factory=dict)  # ruolo -> lista operazioni permesse
     context: str = ""                    # contesto (function o microservizio) che espone le operazioni
 
 
@@ -537,12 +538,13 @@ def _parse_api(f: str, t: Table, raw: Any, errs: List[str]) -> Optional[Api]:
     if raw is True:
         raw = {}
     if not isinstance(raw, dict):
-        errs.append(f"{f}: api deve essere true o una mappa (path, operations, queries, relations, scopes, context)")
+        errs.append(f"{f}: api deve essere true o una mappa (path, operations, queries, relations, scopes, rbac, context)")
         return None
     w = f"{f}: api"
+    _API_KEYS = {"path", "operations", "queries", "relations", "expand", "scopes", "rbac", "context"}
     for k in raw:
-        if k not in ("path", "operations", "queries", "relations", "expand", "scopes", "context"):
-            errs.append(f"{w}: chiave sconosciuta '{k}' (ammesse: context, expand, operations, path, queries, relations, scopes)")
+        if k not in _API_KEYS:
+            errs.append(f"{w}: chiave sconosciuta '{k}' (ammesse: {', '.join(sorted(_API_KEYS))})")
     path = raw.get("path", kebab(t.name))
     if not isinstance(path, str) or not API_PATH.match(path):
         errs.append(f"{w}.path: segmenti in minuscolo separati da / (es. ordini o vendite/ordini), senza / iniziale")
@@ -577,12 +579,30 @@ def _parse_api(f: str, t: Table, raw: Any, errs: List[str]) -> Optional[Api]:
     else:
         read = _scopes(f"{w}.scopes.read", sc["read"], errs) if "read" in sc else []
         write = _scopes(f"{w}.scopes.write", sc["write"], errs) if "write" in sc else []
+    rbac_raw = raw.get("rbac") or {}
+    rbac: Dict[str, List[str]] = {}
+    if rbac_raw:
+        if not isinstance(rbac_raw, dict):
+            errs.append(f"{w}.rbac: mappa ruolo -> lista di operazioni")
+        else:
+            valid_ops = set(ops) | set(qs)
+            for role, role_ops in rbac_raw.items():
+                if not isinstance(role, str) or not API_SCOPE.match(role):
+                    errs.append(f"{w}.rbac: nome ruolo '{role}' non valido (lettere, cifre, . _ : / -)")
+                    continue
+                if not isinstance(role_ops, list) or not all(isinstance(o, str) for o in role_ops):
+                    errs.append(f"{w}.rbac.{role}: lista di operazioni")
+                    continue
+                unknown = [o for o in role_ops if o not in valid_ops]
+                if unknown:
+                    errs.append(f"{w}.rbac.{role}: operazioni sconosciute {unknown} (ammesse: {sorted(valid_ops)})")
+                rbac[role] = [o for o in role_ops if o in valid_ops]
     ctx = raw.get("context", path.split("/")[0])
     if not isinstance(ctx, str) or not API_CONTEXT.match(ctx):
         errs.append(f"{w}.context: nome in minuscolo (lettere, cifre e -)")
         ctx = path.split("/")[0]
     return Api(path=path, operations=[o for o in API_OPS if o in ops], queries=list(qs), relations=list(rs),
-               expandable=list(exp), read_scopes=read, write_scopes=write, context=ctx)
+               expandable=list(exp), read_scopes=read, write_scopes=write, rbac=rbac, context=ctx)
 
 
 def _duration(where: str, v: Any, errs: List[str]) -> Optional[str]:

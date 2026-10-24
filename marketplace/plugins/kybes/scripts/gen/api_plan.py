@@ -57,6 +57,7 @@ class Operation:
     body: Optional[Dict[str, Any]] = None
     body_required: bool = False
     scopes: List[str] = field(default_factory=list)
+    roles: List[str] = field(default_factory=list)   # RBAC: ruoli ammessi (OR logic, vuoto = nessun vincolo di ruolo)
     secured: bool = True            # serve un'identità (claim verificati dal gateway)
     status: int = 200
     summary: str = ""
@@ -183,11 +184,18 @@ def _ops_of(t: Table, tables: Dict[str, Table], security: bool) -> List[Operatio
     item = f"/{{id}}"
     ops: List[Operation] = []
 
+    rbac_inv: Dict[str, List[str]] = {}
+    for role, role_ops in a.rbac.items():
+        for op_name in role_ops:
+            rbac_inv.setdefault(op_name, []).append(role)
+
     def add(**kw):
         kind = kw["kind"]
         write = kind in ("create", "update", "delete")
+        op_key = kw.get("arg") or kind
+        allowed_roles = sorted(rbac_inv.get(op_key, rbac_inv.get(kind, [])))
         ops.append(Operation(context=a.context, table=T, scopes=list(a.write_scopes if write else a.read_scopes),
-                             secured=security, **kw))
+                             roles=allowed_roles, secured=security, **kw))
     if "list" in a.operations:
         lp = page_params(t, True)
         if a.expandable:
@@ -513,7 +521,10 @@ def contract(tables: Dict[str, Table], ops: List[Operation], doc: Dict[str, Any]
         spec["responses"] = {str(o.status): ok, **{c: {**err_resp, "description": d} for c, d in ERRORS.items()}}
         if scheme:
             spec["security"] = [{scheme: o.scopes}]
-        spec["x-kybes"] = {"generated": True, "table": o.table, "kind": o.kind, **({"arg": o.arg} if o.arg else {})}
+        xk: Dict[str, Any] = {"generated": True, "table": o.table, "kind": o.kind, **({"arg": o.arg} if o.arg else {})}
+        if o.roles:
+            xk["roles"] = o.roles
+        spec["x-kybes"] = xk
         paths.setdefault(o.path, {})[o.method] = spec
         if o.context not in tags:
             doc.setdefault("tags", []).append({"name": o.context})
@@ -576,6 +587,7 @@ def op_spec(o: Operation) -> Dict[str, Any]:
     """Descrizione compatta di un'operazione, incorporata come JSON nel codice generato di ogni linguaggio."""
     return {"id": o.op_id, "method": o.method.upper(), "path": o.path, "context": o.context, "kind": o.kind,
             "table": o.table, "arg": o.arg, "status": o.status, "secured": o.secured, "scopes": o.scopes,
+            "roles": o.roles,
             "params": [{"name": p.name, "in": p.loc, "required": p.required, "schema": p.schema} for p in o.params],
             "body": o.body, "bodyRequired": o.body_required}
 

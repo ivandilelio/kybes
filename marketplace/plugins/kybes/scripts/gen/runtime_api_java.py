@@ -743,7 +743,7 @@ import java.util.Map;
 
 /** Operazione del contratto: percorso, metodo, contesto, scope, schemi di parametri e corpo. */
 public record Spec(String id, String method, String path, String context, String kind, String table, String arg, int status,
-                   boolean secured, List<String> scopes, List<Param> params, Map<String, Object> body, boolean bodyRequired) {
+                   boolean secured, List<String> scopes, List<String> roles, List<Param> params, Map<String, Object> body, boolean bodyRequired) {
 
     /** Parametro di path o query. */
     public record Param(String name, String in, boolean required, Map<String, Object> schema) {
@@ -760,9 +760,11 @@ public record Spec(String id, String method, String path, String context, String
         }
         List<String> scopes = new ArrayList<>();
         for (Object s : (List<Object>) m.get("scopes")) scopes.add((String) s);
+        List<String> roles = new ArrayList<>();
+        if (m.get("roles") instanceof List<?> rl) for (Object r : rl) roles.add((String) r);
         return new Spec((String) m.get("id"), (String) m.get("method"), (String) m.get("path"), (String) m.get("context"),
                 (String) m.get("kind"), (String) m.get("table"), (String) m.get("arg"), ((Number) m.get("status")).intValue(),
-                (Boolean) m.get("secured"), List.copyOf(scopes), List.copyOf(params), (Map<String, Object>) m.get("body"),
+                (Boolean) m.get("secured"), List.copyOf(scopes), List.copyOf(roles), List.copyOf(params), (Map<String, Object>) m.get("body"),
                 (Boolean) m.get("bodyRequired"));
     }
 }
@@ -960,6 +962,7 @@ public final class Api {
         Identity identity = req.identity() != null ? req.identity() : Identity.anonymous();
         if (spec.secured() && identity.subject() == null) throw new ApiError("AUTH", "IDENTITY_REQUIRED");
         if (!identity.scopes().containsAll(spec.scopes())) throw new ApiError("FORBIDDEN", "SCOPE_REQUIRED");
+        if (spec.roles() != null && !spec.roles().isEmpty() && Collections.disjoint(identity.scopes(), spec.roles())) throw new ApiError("FORBIDDEN", "ROLE_REQUIRED");
         Map<String, String> errors = new LinkedHashMap<>();
         Map<String, Object> pathValues = new LinkedHashMap<>();
         Map<String, Object> queryValues = new LinkedHashMap<>();

@@ -178,9 +178,21 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
     lines += [
         'import { Loaders } from "./dataloaders";',
         '',
-        'interface GqlContext { sessionFactory: () => any; loaders: Loaders; }',
+        'interface GqlIdentity { subject: string | null; scopes: Set<string>; }',
+        'interface GqlContext { sessionFactory: () => any; loaders: Loaders; identity: GqlIdentity; }',
+        '',
+        'function checkAuth(ctx: GqlContext, secured: boolean, scopes: string[], roles: string[]): void {',
+        '  if (secured && !ctx.identity.subject) throw new Error("IDENTITY_REQUIRED");',
+        '  if (scopes.length && !scopes.every((s) => ctx.identity.scopes.has(s))) throw new Error("SCOPE_REQUIRED");',
+        '  if (roles.length && !roles.some((r) => ctx.identity.scopes.has(r))) throw new Error("ROLE_REQUIRED");',
+        '}',
         '',
     ]
+
+    def _auth_line(secured: bool, scopes: list, roles: list) -> str:
+        sc = "[" + ", ".join(f'"{s}"' for s in scopes) + "]"
+        rl = "[" + ", ".join(f'"{r}"' for r in roles) + "]"
+        return f'    checkAuth(ctx, {str(secured).lower()}, {sc}, {rl});'
 
     lines.append('@Resolver()')
     lines.append('export class QueryResolver {')
@@ -191,11 +203,13 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
         mname_get = method_name(L, "get_by_id")
         mname_list = method_name(L, "list_page")
         repo = repo_class(L, n)
+        auth = _auth_line(t.api.secured, q.scopes, q.roles)
 
         if q.kind == "get":
             lines += [
                 f'  @Query(() => {n}Type, {{ nullable: true }})',
                 f'  {camel(q.name)}(@Arg("id") id: string, @Ctx() ctx: GqlContext): {n}Type | null {{',
+                auth,
                 f'    const session = ctx.sessionFactory();',
                 f'    const repo = new (require("./../{n}").{repo})(session);',
                 f'    const obj = repo.{mname_get}(id);',
@@ -213,6 +227,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
                 f'    @Arg("sort", {{ nullable: true }}) sort: string | null,',
                 f'    @Ctx() ctx: GqlContext',
                 f'  ): {n}Connection {{',
+                auth,
                 f'    const session = ctx.sessionFactory();',
                 f'    const repo = new (require("./../{n}").{repo})(session);',
                 f'    const page = repo.{mname_list}({{ limit: first ?? {t.pagination.default_limit}, cursor: after, sort }});',
@@ -248,6 +263,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
                 ] + q_args_dec + [
                     f'    @Ctx() ctx: GqlContext',
                     f'  ): {n}Connection {{',
+                    auth,
                     f'    const session = ctx.sessionFactory();',
                     f'    const repo = new (require("./../{n}").{repo})(session);',
                     f'    const page = repo.{mn}({call_args});',
@@ -264,6 +280,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
                 ] + q_args_dec + [
                     f'    @Ctx() ctx: GqlContext',
                     f'  ): {n}Type[] {{',
+                    auth,
                     f'    const session = ctx.sessionFactory();',
                     f'    const repo = new (require("./../{n}").{repo})(session);',
                     f'    return repo.{mn}({call_args}).map((r: any) => ({{ {_to_type_expr(t, "r")} }}));',
@@ -278,6 +295,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
                 ] + q_args_dec + [
                     f'    @Ctx() ctx: GqlContext',
                     f'  ): {n}Type | null {{',
+                    auth,
                     f'    const session = ctx.sessionFactory();',
                     f'    const repo = new (require("./../{n}").{repo})(session);',
                     f'    const obj = repo.{mn}({call_args});',
@@ -295,11 +313,13 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
             t = tables[m.table]
             n = m.table
             repo = repo_class(L, n)
+            m_auth = _auth_line(t.api.secured, m.scopes, m.roles)
 
             if m.kind == "create":
                 lines += [
                     f'  @Mutation(() => {n}Type)',
                     f'  {camel(m.name)}(@Arg("input") input: Create{n}Input, @Ctx() ctx: GqlContext): {n}Type {{',
+                    m_auth,
                     f'    const session = ctx.sessionFactory();',
                     f'    const repo = new (require("./../{n}").{repo})(session);',
                     f'    const obj = repo.{method_name(L, "create")}(input);',
@@ -311,6 +331,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
                 lines += [
                     f'  @Mutation(() => {n}Type)',
                     f'  {camel(m.name)}(@Arg("id") id: string, @Arg("input") input: Update{n}Input, @Ctx() ctx: GqlContext): {n}Type {{',
+                    m_auth,
                     f'    const session = ctx.sessionFactory();',
                     f'    const repo = new (require("./../{n}").{repo})(session);',
                     f'    const obj = repo.{method_name(L, "update")}(id, input);',
@@ -322,6 +343,7 @@ def _resolvers_file(tables: Dict[str, Table], schema: gql.GqlSchema) -> str:
                 lines += [
                     f'  @Mutation(() => Boolean)',
                     f'  {camel(m.name)}(@Arg("id") id: string, @Ctx() ctx: GqlContext): boolean {{',
+                    m_auth,
                     f'    const session = ctx.sessionFactory();',
                     f'    const repo = new (require("./../{n}").{repo})(session);',
                     f'    repo.{method_name(L, "delete")}(id);',
@@ -358,10 +380,12 @@ def _app_file(schema: gql.GqlSchema) -> str:
         '  const schema = await createGraphQLSchema();',
         '  return createYoga({',
         '    schema,',
-        '    context: () => ({',
-        '      sessionFactory,',
-        '      loaders: new Loaders({ sessionFactory }),',
-        '    }),',
+        '    context: ({ request }: { request: Request }) => {',
+        '      const sub = request.headers.get("x-identity-subject") ?? null;',
+        '      const sc = request.headers.get("x-identity-scopes") ?? "";',
+        '      const identity = { subject: sub, scopes: new Set(sc.split(",").filter(Boolean)) };',
+        '      return { sessionFactory, loaders: new Loaders({ sessionFactory }), identity };',
+        '    },',
         '  });',
         '}',
         '',

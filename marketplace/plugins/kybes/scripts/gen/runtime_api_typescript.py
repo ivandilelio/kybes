@@ -414,6 +414,7 @@ export class Api {
     const identity = req.identity ?? anonymous();
     if (spec.secured && !identity.subject) throw new ApiError("AUTH", "IDENTITY_REQUIRED");
     if (!spec.scopes.every((s) => identity.scopes.has(s))) throw new ApiError("FORBIDDEN", "SCOPE_REQUIRED");
+    if (spec.roles?.length && !spec.roles.some((r) => identity.scopes.has(r))) throw new ApiError("FORBIDDEN", "ROLE_REQUIRED");
     const errors: Record<string, string> = Object.create(null);
     const pathVals: Record<string, unknown> = {};
     const queryVals: Record<string, unknown> = {};

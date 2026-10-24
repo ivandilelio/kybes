@@ -96,10 +96,29 @@ def _input_file(inp: gql.GqlInput, ns: str) -> str:
     return "\n".join(lines)
 
 
+def _auth_lines(secured: bool, scopes: List[str], roles: List[str]) -> List[str]:
+    if not secured and not scopes and not roles:
+        return []
+    out: List[str] = []
+    if secured:
+        out.append('        var identity = context.GetGlobalState<Identity>("identity");')
+        out.append('        if (identity?.Subject == null) throw new GraphQLException("IDENTITY_REQUIRED");')
+    if scopes:
+        sc = ", ".join(f'"{s}"' for s in scopes)
+        out.append(f'        var _reqScopes = new HashSet<string>(new[] {{ {sc} }});')
+        out.append('        if (!_reqScopes.IsSubsetOf(identity!.Scopes)) throw new GraphQLException("SCOPE_REQUIRED");')
+    if roles:
+        rl = ", ".join(f'"{r}"' for r in roles)
+        out.append(f'        var _reqRoles = new HashSet<string>(new[] {{ {rl} }});')
+        out.append('        if (!_reqRoles.Overlaps(identity!.Scopes)) throw new GraphQLException("ROLE_REQUIRED");')
+    return out
+
+
 def _resolver_file(t: Table, n: str, schema: gql.GqlSchema, ns: str) -> str:
     repo = repo_class(L, n)
     queries = [q for q in schema.queries if q.table == n]
     mutations = [m for m in schema.mutations if m.table == n]
+    secured = t.api.secured if t.api else False
     lines = [
         f"namespace {ns}.Resolvers;",
         "",
@@ -120,8 +139,11 @@ def _resolver_file(t: Table, n: str, schema: gql.GqlSchema, ns: str) -> str:
             args_sig = _cs_args(q.args)
             if args_sig:
                 args_sig = ", " + args_sig
-            lines.append(f"    public async Task<{ret}> {q.name[0].upper() + q.name[1:]}([Service] {repo} repo{args_sig})")
+            auth = _auth_lines(secured, q.scopes, q.roles)
+            ctx_param = ", IResolverContext context" if auth else ""
+            lines.append(f"    public async Task<{ret}> {q.name[0].upper() + q.name[1:]}([Service] {repo} repo{args_sig}{ctx_param})")
             lines.append("    {")
+            lines += auth
             if q.kind == "get":
                 lines += [
                     f"        var obj = await repo.{method_name(L, 'get_by_id')}(id);",
@@ -206,10 +228,13 @@ def _resolver_file(t: Table, n: str, schema: gql.GqlSchema, ns: str) -> str:
             args_sig = _cs_args(m.args)
             if args_sig:
                 args_sig = ", " + args_sig
+            m_auth = _auth_lines(secured, m.scopes, m.roles)
+            m_ctx = ", IResolverContext context" if m_auth else ""
             if m.kind == "create":
                 lines += [
-                    f"    public async Task<{n}Type> {m.name[0].upper() + m.name[1:]}([Service] {repo} repo{args_sig})",
+                    f"    public async Task<{n}Type> {m.name[0].upper() + m.name[1:]}([Service] {repo} repo{args_sig}{m_ctx})",
                     "    {",
+                ] + m_auth + [
                     f"        var obj = await repo.{method_name(L, 'create')}(input);",
                     f"        return new {n}Type",
                     "        {",
@@ -220,8 +245,9 @@ def _resolver_file(t: Table, n: str, schema: gql.GqlSchema, ns: str) -> str:
                 ]
             elif m.kind == "update":
                 lines += [
-                    f"    public async Task<{n}Type> {m.name[0].upper() + m.name[1:]}([Service] {repo} repo{args_sig})",
+                    f"    public async Task<{n}Type> {m.name[0].upper() + m.name[1:]}([Service] {repo} repo{args_sig}{m_ctx})",
                     "    {",
+                ] + m_auth + [
                     f"        var obj = await repo.{method_name(L, 'update')}(id, input);",
                     f"        return new {n}Type",
                     "        {",
@@ -232,8 +258,9 @@ def _resolver_file(t: Table, n: str, schema: gql.GqlSchema, ns: str) -> str:
                 ]
             elif m.kind == "delete":
                 lines += [
-                    f"    public async Task<bool> {m.name[0].upper() + m.name[1:]}([Service] {repo} repo{args_sig})",
+                    f"    public async Task<bool> {m.name[0].upper() + m.name[1:]}([Service] {repo} repo{args_sig}{m_ctx})",
                     "    {",
+                ] + m_auth + [
                     f"        await repo.{method_name(L, 'delete')}(id);",
                     "        return true;",
                     "    }",

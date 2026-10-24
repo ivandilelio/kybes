@@ -437,6 +437,8 @@ class Api:
             raise ApiError("AUTH", "IDENTITY_REQUIRED")
         if not set(spec["scopes"]) <= identity.scopes:
             raise ApiError("FORBIDDEN", "SCOPE_REQUIRED")
+        if spec.get("roles") and not (set(spec["roles"]) & identity.scopes):
+            raise ApiError("FORBIDDEN", "ROLE_REQUIRED")
         errors: Dict[str, str] = {}
         path_vals: Dict[str, Any] = {}
         query_vals: Dict[str, Any] = {}

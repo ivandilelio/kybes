@@ -673,7 +673,7 @@ public sealed record Param(string Name, string In, bool Required, IReadOnlyDicti
 
 /// <summary>Operazione del contratto: percorso, metodo, contesto, scope, schemi di parametri e corpo.</summary>
 public sealed record Spec(string Id, string Method, string Path, string Context, string Kind, string? Table, string? Arg, int Status,
-    bool Secured, IReadOnlyList<string> Scopes, IReadOnlyList<Param> Params, IReadOnlyDictionary<string, object?>? Body, bool BodyRequired)
+    bool Secured, IReadOnlyList<string> Scopes, IReadOnlyList<string> Roles, IReadOnlyList<Param> Params, IReadOnlyDictionary<string, object?>? Body, bool BodyRequired)
 {
     /// <summary>Spec dalla sua forma JSON (incorporata nel codice generato).</summary>
     public static Spec Of(string json)
@@ -681,9 +681,10 @@ public sealed record Spec(string Id, string Method, string Path, string Context,
         var m = (IReadOnlyDictionary<string, object?>)Json.Parse(json)!;
         var ps = ((IList)m["params"]!).Cast<IReadOnlyDictionary<string, object?>>()
             .Select(p => new Param((string)p["name"]!, (string)p["in"]!, (bool)p["required"]!, (IReadOnlyDictionary<string, object?>)p["schema"]!)).ToList();
+        var roles = m.ContainsKey("roles") && m["roles"] is IList rl ? rl.Cast<string>().ToList() : new List<string>();
         return new Spec((string)m["id"]!, (string)m["method"]!, (string)m["path"]!, (string)m["context"]!, (string)m["kind"]!,
             m["table"] as string, m["arg"] as string, (int)(long)m["status"]!, (bool)m["secured"]!,
-            ((IList)m["scopes"]!).Cast<string>().ToList(), ps, m["body"] as IReadOnlyDictionary<string, object?>, (bool)m["bodyRequired"]!);
+            ((IList)m["scopes"]!).Cast<string>().ToList(), roles, ps, m["body"] as IReadOnlyDictionary<string, object?>, (bool)m["bodyRequired"]!);
     }
 }
 
@@ -821,6 +822,7 @@ public sealed class ApiRouter
         var identity = req.Identity ?? Identity.Anonymous();
         if (spec.Secured && identity.Subject is null) throw new ApiError("AUTH", "IDENTITY_REQUIRED");
         if (!spec.Scopes.All(identity.Scopes.Contains)) throw new ApiError("FORBIDDEN", "SCOPE_REQUIRED");
+        if (spec.Roles is { Count: > 0 } && !spec.Roles.Any(identity.Scopes.Contains)) throw new ApiError("FORBIDDEN", "ROLE_REQUIRED");
         var errors = new Dictionary<string, string>();
         var pathValues = new Dictionary<string, object?>();
         var queryValues = new Dictionary<string, object?>();

@@ -76,6 +76,8 @@ class GqlQuery:
     arg: str = ""
     description: str = ""
     is_connection: bool = False
+    scopes: List[str] = field(default_factory=list)
+    roles: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -86,6 +88,8 @@ class GqlMutation:
     table: str
     kind: str
     description: str = ""
+    scopes: List[str] = field(default_factory=list)
+    roles: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -200,6 +204,14 @@ def build(tables: Dict[str, Table]) -> GqlSchema:
             continue
         a = t.api
 
+        rbac_inv: Dict[str, List[str]] = {}
+        for role, role_ops in a.rbac.items():
+            for op_name in role_ops:
+                rbac_inv.setdefault(op_name, []).append(role)
+
+        read_sc = sorted(a.read_scopes)
+        write_sc = sorted(a.write_scopes)
+
         flds = type_fields(t, tables)
         for f in flds:
             if f.gql_type in CUSTOM_SCALARS:
@@ -220,6 +232,8 @@ def build(tables: Dict[str, Table]) -> GqlSchema:
                 kind="list",
                 is_connection=True,
                 description=f"pagina di {n} con cursore Relay",
+                scopes=read_sc,
+                roles=sorted(rbac_inv.get("list", [])),
             ))
 
         if "get" in a.operations:
@@ -231,6 +245,8 @@ def build(tables: Dict[str, Table]) -> GqlSchema:
                 table=n,
                 kind="get",
                 description=f"un record di {n} per chiave",
+                scopes=read_sc,
+                roles=sorted(rbac_inv.get("get", [])),
             ))
 
         for qn in a.queries:
@@ -262,6 +278,8 @@ def build(tables: Dict[str, Table]) -> GqlSchema:
                 arg=q.name,
                 is_connection=is_conn,
                 description=f"query {q.name}",
+                scopes=read_sc,
+                roles=sorted(rbac_inv.get(q.name, rbac_inv.get("query", []))),
             ))
 
         if "create" in a.operations:
@@ -274,6 +292,8 @@ def build(tables: Dict[str, Table]) -> GqlSchema:
                 table=n,
                 kind="create",
                 description=f"crea un record di {n}",
+                scopes=write_sc,
+                roles=sorted(rbac_inv.get("create", [])),
             ))
 
         if "update" in a.operations:
@@ -290,6 +310,8 @@ def build(tables: Dict[str, Table]) -> GqlSchema:
                 table=n,
                 kind="update",
                 description=f"aggiorna un record di {n}",
+                scopes=write_sc,
+                roles=sorted(rbac_inv.get("update", [])),
             ))
 
         if "delete" in a.operations:
@@ -301,6 +323,8 @@ def build(tables: Dict[str, Table]) -> GqlSchema:
                 table=n,
                 kind="delete",
                 description=f"elimina un record di {n}",
+                scopes=write_sc,
+                roles=sorted(rbac_inv.get("delete", [])),
             ))
 
     return GqlSchema(

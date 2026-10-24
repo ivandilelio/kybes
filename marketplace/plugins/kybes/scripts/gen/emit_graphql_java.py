@@ -116,6 +116,15 @@ def _to_type_expr(t: Table, var: str) -> str:
     return ", ".join(args)
 
 
+def _auth_check_call(secured: bool, scopes: List[str], roles: List[str]) -> List[str]:
+    """Return Java lines that call checkAuth with the right literals."""
+    if not secured and not scopes and not roles:
+        return []
+    sc = "java.util.List.of(" + ", ".join(f'"{s}"' for s in scopes) + ")" if scopes else "java.util.List.of()"
+    rl = "java.util.List.of(" + ", ".join(f'"{r}"' for r in roles) + ")" if roles else "java.util.List.of()"
+    return [f"        checkAuth(env, {str(secured).lower()}, {sc}, {rl});"]
+
+
 def _controller_file(gt: gql.GqlType, t: Table, tables: Dict[str, Table],
                       schema: gql.GqlSchema, pkg: str) -> str:
     n = gt.name
@@ -135,6 +144,7 @@ def _controller_file(gt: gql.GqlType, t: Table, tables: Dict[str, Table],
         "import org.springframework.graphql.data.method.annotation.QueryMapping;",
         "import org.springframework.graphql.data.method.annotation.SchemaMapping;",
         "import org.springframework.stereotype.Controller;",
+        "import graphql.schema.DataFetchingEnvironment;",
         "",
         f"import {pkg}.{repo};",
         f"import {gql_pkg}.types.{n}Type;",
@@ -160,6 +170,8 @@ def _controller_file(gt: gql.GqlType, t: Table, tables: Dict[str, Table],
     for rt in sorted(rel_targets):
         lines.append(f"import {gql_pkg}.types.{rt}Type;")
 
+    needs_auth = t.api.secured or any(q.scopes or q.roles for q in queries_for_table) or any(m.scopes or m.roles for m in mutations_for_table)
+
     lines += [
         "",
         "@Controller",
@@ -173,11 +185,31 @@ def _controller_file(gt: gql.GqlType, t: Table, tables: Dict[str, Table],
         "",
     ]
 
+    if needs_auth:
+        lines += [
+            "    @SuppressWarnings(\"unchecked\")",
+            "    private static void checkAuth(DataFetchingEnvironment env, boolean secured, java.util.List<String> scopes, java.util.List<String> roles) {",
+            "        var ctx = env.getGraphQlContext();",
+            "        var identity = ctx.getOrDefault(\"identity\", null);",
+            "        if (identity == null) {",
+            "            if (secured || !scopes.isEmpty() || !roles.isEmpty()) throw new graphql.GraphqlErrorException.Builder().message(\"IDENTITY_REQUIRED\").build();",
+            "            return;",
+            "        }",
+            "        var idScopes = ((java.util.Set<String>) ((java.util.Map<String, Object>) identity).getOrDefault(\"scopes\", java.util.Set.of()));",
+            "        if (!scopes.isEmpty() && !idScopes.containsAll(scopes)) throw new graphql.GraphqlErrorException.Builder().message(\"SCOPE_REQUIRED\").build();",
+            "        if (!roles.isEmpty() && java.util.Collections.disjoint(idScopes, roles)) throw new graphql.GraphqlErrorException.Builder().message(\"ROLE_REQUIRED\").build();",
+            "    }",
+            "",
+        ]
+
     for q in queries_for_table:
+        auth = _auth_check_call(t.api.secured, q.scopes, q.roles)
+        env_param = ", DataFetchingEnvironment env" if auth else ""
         if q.kind == "get":
             lines += [
                 "    @QueryMapping",
-                f"    public {n}Type {q.name}(@Argument String id) {{",
+                f"    public {n}Type {q.name}(@Argument String id{env_param}) {{",
+            ] + auth + [
                 f"        var obj = repo.{method_name(L, 'get_by_id')}(id);",
                 f"        return obj == null ? null : new {n}Type({_to_type_expr(t, 'obj')});",
                 "    }",
@@ -186,7 +218,8 @@ def _controller_file(gt: gql.GqlType, t: Table, tables: Dict[str, Table],
         elif q.kind == "list":
             lines += [
                 "    @QueryMapping",
-                f"    public {n}Connection {q.name}(@Argument Integer first, @Argument String after, @Argument String sort) {{",
+                f"    public {n}Connection {q.name}(@Argument Integer first, @Argument String after, @Argument String sort{env_param}) {{",
+            ] + auth + [
                 f"        int limit = first != null ? first : {t.pagination.default_limit};",
                 f"        var page = repo.{method_name(L, 'list_page')}(limit, after, sort);",
                 f"        var edges = page.items().stream()",
@@ -214,7 +247,8 @@ def _controller_file(gt: gql.GqlType, t: Table, tables: Dict[str, Table],
                 call_args = f"{repo_args}, limit, after" if repo_args else "limit, after"
                 lines += [
                     "    @QueryMapping",
-                    f"    public {n}Connection {q.name}({all_args}) {{",
+                    f"    public {n}Connection {q.name}({all_args}{env_param}) {{",
+                ] + auth + [
                     f"        int limit = first != null ? first : {t.pagination.default_limit};",
                     f"        var page = repo.{mname}({call_args});",
                     f"        var edges = page.items().stream()",
@@ -228,7 +262,8 @@ def _controller_file(gt: gql.GqlType, t: Table, tables: Dict[str, Table],
             elif qobj.returns == "list":
                 lines += [
                     "    @QueryMapping",
-                    f"    public List<{n}Type> {q.name}({arg_defs}) {{",
+                    f"    public List<{n}Type> {q.name}({arg_defs}{env_param}) {{",
+                ] + auth + [
                     f"        return repo.{mname}({repo_args}).stream()",
                     f"            .map(r -> new {n}Type({_to_type_expr(t, 'r')}))",
                     f"            .collect(Collectors.toList());",
@@ -238,7 +273,8 @@ def _controller_file(gt: gql.GqlType, t: Table, tables: Dict[str, Table],
             else:
                 lines += [
                     "    @QueryMapping",
-                    f"    public {n}Type {q.name}({arg_defs}) {{",
+                    f"    public {n}Type {q.name}({arg_defs}{env_param}) {{",
+                ] + auth + [
                     f"        var obj = repo.{mname}({repo_args});",
                     f"        return obj == null ? null : new {n}Type({_to_type_expr(t, 'obj')});",
                     "    }",
@@ -246,6 +282,8 @@ def _controller_file(gt: gql.GqlType, t: Table, tables: Dict[str, Table],
                 ]
 
     for m in mutations_for_table:
+        auth = _auth_check_call(t.api.secured, m.scopes, m.roles)
+        env_param = ", DataFetchingEnvironment env" if auth else ""
         if m.kind == "create":
             assign_args = []
             for c in t.columns:
@@ -254,7 +292,8 @@ def _controller_file(gt: gql.GqlType, t: Table, tables: Dict[str, Table],
                 assign_args.append(f"input.get{c.name}()")
             lines += [
                 "    @MutationMapping",
-                f"    public {n}Type {m.name}(@Argument Create{n}Input input) {{",
+                f"    public {n}Type {m.name}(@Argument Create{n}Input input{env_param}) {{",
+            ] + auth + [
                 f"        var obj = repo.{method_name(L, 'create')}({', '.join(assign_args)});",
                 f"        return new {n}Type({_to_type_expr(t, 'obj')});",
                 "    }",
@@ -263,7 +302,8 @@ def _controller_file(gt: gql.GqlType, t: Table, tables: Dict[str, Table],
         elif m.kind == "update":
             lines += [
                 "    @MutationMapping",
-                f"    public {n}Type {m.name}(@Argument String id, @Argument Update{n}Input input) {{",
+                f"    public {n}Type {m.name}(@Argument String id, @Argument Update{n}Input input{env_param}) {{",
+            ] + auth + [
                 f"        var obj = repo.{method_name(L, 'update')}(id, input);",
                 f"        return new {n}Type({_to_type_expr(t, 'obj')});",
                 "    }",
@@ -272,7 +312,8 @@ def _controller_file(gt: gql.GqlType, t: Table, tables: Dict[str, Table],
         elif m.kind == "delete":
             lines += [
                 "    @MutationMapping",
-                f"    public Boolean {m.name}(@Argument String id) {{",
+                f"    public Boolean {m.name}(@Argument String id{env_param}) {{",
+            ] + auth + [
                 f"        repo.{method_name(L, 'delete')}(id);",
                 f"        return true;",
                 "    }",
