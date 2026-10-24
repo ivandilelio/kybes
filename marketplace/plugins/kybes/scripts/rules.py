@@ -29,6 +29,7 @@ DEFAULT_CONFIG = {
             "**/build/**", "**/.git/**", "**/__pycache__/**", "**/*.lock",
             "**/package-lock.json", "tools/kybes/**", "**/bin/**", "**/obj/**", "**/target/**", "coverage/**",
         ],
+        "generated_ignore": [],
         "protected": [".claude/kybes.config.json", "tools/kybes/**"],
     },
     "rules": {
@@ -47,6 +48,7 @@ DEFAULT_CONFIG = {
         "docker_insecure": "block",
     },
     "duplicates": {"min_lines": 8, "include_tests": False, "ignore": []},
+    "platform": {"name": "", "downgrade": []},
     "extra_forbidden_modules": [],
     "post_edit_commands": {},
     "stop_gate": {"enabled": True, "commands": [], "max_blocks": 3, "only_if_changes": True},
@@ -59,7 +61,7 @@ TEXT_EXT = CODE_EXT | {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".env"
 PY_ORM = r"sqlalchemy|sqlmodel|psycopg2?|psycopg_pool|pymysql|mysql\.connector|asyncpg|aiomysql|peewee|tortoise|pony|django\.db|pymongo|motor|databases|pynamodb"
 JS_ORM = r"typeorm|prisma|@prisma/client|sequelize|sequelize-typescript|knex|pg|pg-promise|postgres|mysql|mysql2|mysql2/promise|mongoose|mongodb|@mikro-orm/[\w-]+|drizzle-orm(?:/[\w-]+)?|kysely|objection|better-sqlite3|sqlite3"
 CS_ORM = re.compile(r"^\s*using\s+(?:static\s+)?(?:Microsoft\.EntityFrameworkCore|Dapper|Npgsql|MySqlConnector|MySql\.Data|Microsoft\.Data\.SqlClient|System\.Data\.SqlClient|Microsoft\.Data\.Sqlite|MongoDB\.Driver|NHibernate|LinqToDB)\b", re.M)
-JAVA_ORM = re.compile(r"^\s*import\s+(?:static\s+)?(?:jakarta\.persistence|javax\.persistence|java\.sql|javax\.sql|org\.hibernate|org\.springframework\.jdbc|org\.springframework\.data\.jpa|org\.jooq|org\.mybatis|com\.mongodb)\b", re.M)
+JAVA_ORM = re.compile(r"^\s*import\s+(?:static\s+)?(?:jakarta\.persistence|javax\.persistence|java\.sql|javax\.sql|org\.hibernate|org\.springframework\.jdbc|org\.springframework\.data\.jpa|org\.springframework\.data\.mongodb|org\.jooq|org\.mybatis|com\.mongodb|software\.amazon\.awssdk\.services\.dynamodb|software\.amazon\.awssdk\.enhanced\.dynamodb)\b", re.M)
 
 
 @dataclass
@@ -213,6 +215,10 @@ PY_LEAK = re.compile(r"""(?:return|jsonify|JSONResponse|HTTPException|Response|b
 PY_SWALLOW = re.compile(r"except(?:\s+[\w.]+(?:\s+as\s+\w+)?)?\s*:\s*pass\b")
 JS_LEAK = re.compile(r"""(?:res\.\w+\(|ctx\.body|body\s*:|JSON\.stringify\(|reply\.send\(|return\s*\{).*\b(?:e|err|error|ex|exception)\.(?:stack|message)\b""")
 JS_SWALLOW = re.compile(r"catch\s*(?:\(\s*\w*\s*\))?\s*\{\s*\}")
+JAVA_LEAK = re.compile(r"""(?:ResponseEntity|return\s|body\s*\(|put\s*\(|\"message\"|\"error\").*\b(?:e|err|ex|exc|exception)\.(?:getMessage|getLocalizedMessage|toString)\s*\(\s*\)""")
+JAVA_SWALLOW = re.compile(r"catch\s*\(\s*\w[\w.]*\s+\w+\s*\)\s*\{\s*\}")
+CS_LEAK = re.compile(r"""(?:return\s|Ok\(|BadRequest\(|StatusCode\(|Content\(|\"message\"|\"error\").*\b(?:e|err|ex|exc|exception)\.(?:Message|ToString|StackTrace)\b""")
+CS_SWALLOW = re.compile(r"catch\s*(?:\(\s*\w[\w.]*(?:\s+\w+)?\s*\))?\s*\{\s*\}")
 
 UTILS_IMPURE_PY = re.compile(r"^\s*(?:from|import)\s+(?:requests|httpx|urllib3|boto3|botocore|aiohttp|db_models|redis)\b|os\.environ", re.M)
 UTILS_IMPURE_JS = re.compile(r"""(?:from\s+|require\(\s*)['"](?:axios|node-fetch|got|undici|@aws-sdk/[\w-]+|aws-sdk|redis|ioredis|@[\w-]+/db-models|db-models)['"]|process\.env|\bfetch\(""")
@@ -231,7 +237,11 @@ def _line_of(text: str, idx: int) -> int:
 
 def _sev(cfg: dict, rule: str) -> Optional[str]:
     s = cfg["rules"].get(rule, "off")
-    return s if s in ("block", "warn") else None
+    if s not in ("block", "warn"):
+        return None
+    if s == "block" and rule in (cfg.get("platform") or {}).get("downgrade", []):
+        return "warn"
+    return s
 
 
 # ---------------------------------------------------------------- check
@@ -240,6 +250,8 @@ def check_content(rel: str, content: str, cfg: dict) -> List[Finding]:
     """Controlla un frammento o un file intero che verrà scritto in `rel`."""
     out: List[Finding] = []
     if matches(rel, cfg["paths"].get("ignore", [])):
+        return out
+    if matches(rel, cfg["paths"].get("generated_ignore", [])):
         return out
     ext = Path(rel).suffix.lower()
     name = Path(rel).name.lower()
@@ -251,7 +263,7 @@ def check_content(rel: str, content: str, cfg: dict) -> List[Finding]:
 
     # 1. ORM / driver DB fuori da DB-Models
     sev = _sev(cfg, "orm_outside_db_models")
-    if sev and is_code and not in_models:
+    if sev and is_code and not in_models and not is_test:
         py_rx, js_rx = _orm_regexes(cfg)
         rx = {".py": py_rx, ".cs": CS_ORM, ".java": JAVA_ORM}.get(ext, js_rx)
         for m in rx.finditer(content):
@@ -280,7 +292,8 @@ def check_content(rel: str, content: str, cfg: dict) -> List[Finding]:
     # 4. fuoriuscita di dettagli interni negli errori
     sev = _sev(cfg, "error_leak")
     if sev and is_code and area in ("functions", "microservices", "jobs") and not is_test:
-        leak, swallow = (PY_LEAK, PY_SWALLOW) if is_py else (JS_LEAK, JS_SWALLOW)
+        _leak_map = {".py": (PY_LEAK, PY_SWALLOW), ".java": (JAVA_LEAK, JAVA_SWALLOW), ".cs": (CS_LEAK, CS_SWALLOW)}
+        leak, swallow = _leak_map.get(ext, (JS_LEAK, JS_SWALLOW))
         for m in leak.finditer(content):
             out.append(Finding("error_leak", sev, rel, _line_of(content, m.start()),
                                "possibile esposizione di dettagli interni (messaggio di eccezione o stack) nella risposta: "
@@ -369,7 +382,7 @@ def find_duplicates(files: dict, cfg: dict) -> List[Finding]:
         return []
     dcfg = cfg.get("duplicates") or {}
     n = max(3, int(dcfg.get("min_lines", 8)))
-    ignore = list(dcfg.get("ignore") or [])
+    ignore = list(dcfg.get("ignore") or []) + list(cfg["paths"].get("generated_ignore", []))
     include_tests = bool(dcfg.get("include_tests", False))
     import hashlib
     index = {}

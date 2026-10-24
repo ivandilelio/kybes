@@ -25,8 +25,10 @@ def main(argv) -> int:
     proj = Path(args[0]).resolve() if args else rules.find_project_dir()
     cfg = rules.load_config(proj)
     if cfg is None:
-        print(f"arch_check: nessun {rules.CONFIG_REL} in {proj}, niente da controllare.")
-        return 0
+        print(f"arch_check: ATTENZIONE — nessun {rules.CONFIG_REL} in {proj}. "
+              "Crea il file di configurazione con 'kybes:kybes-init' oppure manualmente. "
+              "Senza configurazione il controllo non può verificare nulla.")
+        return 1 if strict else 0
 
     findings = []
     texts = {}

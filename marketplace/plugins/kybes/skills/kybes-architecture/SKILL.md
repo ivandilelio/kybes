@@ -257,3 +257,8 @@ seguita da: modifiche agli schemi `schemas/db/<Tabella>.yaml` (colonne, relazion
 - [ ] Se credenziali proprie: Argon2id o PBKDF2 ≥ 600k, hash fittizio su utente inesistente
 - [ ] Docker: USER non-root, porte su 127.0.0.1, .dockerignore presente
 - [ ] IaC, segreti, log con correlationId inclusi
+- [ ] Paginazione multi-sorgente: cursore composto per sorgente, merge troncato a `limit`, nessun merge a offset con `total` sommato
+- [ ] Header propagati: `Idempotency-Key`, `correlationId`, `traceId` inoltrati da BFF/BO verso i servizi a valle; `correlationId` nel MDC di ogni servizio
+- [ ] Codice scaffold/template rimosso: nessun CRUD di esempio ("users", "echo"), nessun controller di default del template rimasto nel progetto
+- [ ] HPA coerente: `minReplicas` > 0 per servizi sincroni, `maxReplicas` > `replicas`, profili KEDA allineati al carico reale
+- [ ] Variabili di configurazione: le variabili d'ambiente nei sorgenti corrispondono ai nomi nella ConfigMap/values (nessun `${USER_MS_ENDPOINT}` vs `ENTITY_MS_ENDPOINT`)
