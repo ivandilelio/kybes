@@ -89,7 +89,8 @@ def _table_file(t: Table, ops: List[Operation], ns: str, model_ns: str, api_ns: 
             if expandable:
                 exp_allowed = ", ".join(f'"{prop(r.name)}"' for r in expandable)
                 exp_map_entries = ", ".join(f'{{ "{prop(r.name)}", "{r.name}" }}' for r in expandable)
-                b += [f'        var expandRaw = call.Query.TryGetValue("expand", out var ev) ? (string?)ev ?? "" : "";',
+                b += [f'        call.Query.TryGetValue("expand", out var ev);',
+                      f'        var expandRaw = ev as string ?? "";',
                       f"        var expand = string.IsNullOrWhiteSpace(expandRaw) ? Array.Empty<string>() : expandRaw.Split(',').Select(s => s.Trim()).ToArray();",
                       f"        var allowedExpand = new HashSet<string> {{ {exp_allowed} }};",
                       f"        var bad = expand.Where(x => !allowedExpand.Contains(x)).ToArray();",
