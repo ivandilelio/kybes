@@ -1321,9 +1321,10 @@ public final class HttpServerAdapter {
         for (Map.Entry<String, List<String>> e : exchange.getRequestHeaders().entrySet()) {
             headers.put(e.getKey().toLowerCase(Locale.ROOT), String.join(", ", e.getValue()));
         }
+        var identity = IdentityReader.fromHeaders(headers);
         URI uri = exchange.getRequestURI();
         return new ApiRequest(exchange.getRequestMethod(), uri.getRawPath(), ApiRequest.parseQuery(uri.getRawQuery()), headers,
-                body.length > 0 ? body : null, IdentityReader.fromHeaders(headers));
+                body.length > 0 ? body : null, identity);
     }
 
     public static void writeResponse(HttpExchange exchange, ApiResponse resp) throws IOException {
@@ -1382,10 +1383,11 @@ public final class SpringAdapter {
         for (String name : Collections.list(http.getHeaderNames())) {
             headers.put(name.toLowerCase(Locale.ROOT), String.join(", ", Collections.list(http.getHeaders(name))));
         }
+        var identity = IdentityReader.fromHeaders(headers);
         byte[] body = http.getInputStream().readAllBytes();
         URI uri = request.uri();
         return new ApiRequest(request.method().name(), uri.getRawPath(), ApiRequest.parseQuery(uri.getRawQuery()), headers,
-                body.length > 0 ? body : null, IdentityReader.fromHeaders(headers));
+                body.length > 0 ? body : null, identity);
     }
 
     public static ServerResponse toResponse(ApiResponse resp) {

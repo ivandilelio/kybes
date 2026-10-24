@@ -99,10 +99,11 @@ def _to_model(c, expr: str) -> str:
 def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_import: str) -> str:
     n = t.name
     repo = repo_class(L, n)
-    exposed = [c for c in t.columns if not c.tenant]
+    exposed = [c for c in t.columns if not c.tenant and c.api_visible]
     writable = [c for c in exposed if not (c.primary_key and c.auto) and not c.generated]
-    read, write = ("data.mongo_read", "data.mongo_write") if t.mongo else ("data.read", None)
-    targets = sorted({next(r for r in t.relations if r.name == o.arg).target for o in ops if o.kind == "rel"} - {n})
+    read, write = ("data.mongo_read", "data.mongo_write") if t.mongo else ("data.neo4j_read", "data.neo4j_write") if t.neo4j else ("data.read", None)
+    expand_targets = {r.target for r in t.relations if r.kind == "many_to_one" and t.api and r.name in t.api.expandable} if t.api and t.api.expandable else set()
+    targets = sorted(({next(r for r in t.relations if r.name == o.arg).target for o in ops if o.kind == "rel"} | expand_targets) - {n})
     o = [header(L, f"schemas/db/{n}.yaml").rstrip("\n") + "\n# ruff: noqa",
          f'"""Controller di {n}: logica CRUD e query; riceve le chiamate dall\'API layer e accede al model."""',
          "from __future__ import annotations", "", "from typing import Any, Dict", "",
@@ -123,10 +124,12 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_im
           "    return {\"items\": [(conv or to_json)(x) for x in p.items], \"nextCursor\": p.next_cursor, \"limit\": p.limit}", "", "",
           "def _request(q: Dict[str, Any]) -> PageRequest:",
           '    return PageRequest(limit=q.get("limit"), cursor=q.get("cursor"), sort=q.get("sort"))', ""]
-    if not t.mongo:
-        o += ["", f"def _write(data: ApiData, call: Call, work: Any) -> Any:", f'    return data.write(["{n}"], call.tenant, work)', ""]
-    else:
+    if t.mongo:
         o += ["", f"def _write(data: ApiData, call: Call, work: Any) -> Any:", "    return data.mongo_write(call.tenant, work)", ""]
+    elif t.neo4j:
+        o += ["", f"def _write(data: ApiData, call: Call, work: Any) -> Any:", "    return data.neo4j_write(call.tenant, work)", ""]
+    else:
+        o += ["", f"def _write(data: ApiData, call: Call, work: Any) -> Any:", f'    return data.write(["{n}"], call.tenant, work)', ""]
     key = _to_model(t.pk, 'call.path["id"]')
     handlers = []
     for op in ops:
@@ -134,7 +137,33 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_im
         handlers.append((op.op_id, fn))
         o += ["", f"def {fn}(data: ApiData, call: Call) -> Any:", f'    """{op.method.upper()} {op.path}: {op.summary}."""']
         if op.kind == "list":
-            o += [f"    with {read}(call.tenant) as s:", f"        return _page({repo}(s).list_page(_request(call.query)))"]
+            expandable = [r for r in t.relations if r.kind == "many_to_one" and t.api and r.name in t.api.expandable] if (t.api and t.api.expandable and not t.mongo and not t.neo4j) else []
+            if expandable:
+                exp_allowed_sorted = sorted(prop(r.name) for r in expandable)
+                exp_map_items = ", ".join(f"{prop(r.name)!r}: {r.name!r}" for r in expandable)
+                o += [f'    expand_raw = call.query.get("expand", "")',
+                      f"    expand = [x.strip() for x in expand_raw.split(\",\") if x.strip()] if expand_raw else []",
+                      f"    _exp_allowed = {{{', '.join(repr(x) for x in exp_allowed_sorted)}}}",
+                      f"    _bad = [x for x in expand if x not in _exp_allowed]",
+                      f"    if _bad:",
+                      f'        raise ApiError("VALIDATION", f"invalid expand: {{_bad}}")',
+                      f"    _exp_map = {{{exp_map_items}}}",
+                      f"    _model_expand = [_exp_map[x] for x in expand]",
+                      f"    with {read}(call.tenant) as s:",
+                      f"        repo = {repo}(s)",
+                      f"        p = repo.list_page_expand(_model_expand, _request(call.query)) if _model_expand else repo.list_page(_request(call.query))"]
+                o.append(f"        def _conv(e: Any) -> Dict[str, Any]:")
+                o.append(f"            d = to_json(e)")
+                o.append(f"            for _rn in expand:")
+                for r in expandable:
+                    target_conv = "to_json" if r.target == n else f"{snake(r.target)}_api.to_json"
+                    o.append(f"                if _rn == {prop(r.name)!r}:")
+                    o.append(f"                    _v = e.{member(L, r.name)}")
+                    o.append(f"                    d[{prop(r.name)!r}] = {target_conv}(_v) if _v is not None else None")
+                o.append(f"            return d")
+                o.append(f"        return _page(p, _conv if expand else None)")
+            else:
+                o += [f"    with {read}(call.tenant) as s:", f"        return _page({repo}(s).list_page(_request(call.query)))"]
         elif op.kind == "get":
             o += [f"    with {read}(call.tenant) as s:", f"        e = {repo}(s).get_by_id({key})",
                   "        if e is None:", '            raise ApiError("NOT_FOUND", "RECORD_NOT_FOUND")', "        return to_json(e)"]
@@ -241,10 +270,10 @@ def _init_file(tables: Dict[str, Table], ops: List[Operation], ac: Dict, ctrl_im
 
 def emit(tables: Dict[str, Table], ops: List[Operation], ac: Dict, opts: Dict):
     """Restituisce (api_files, controller_files): file separati per il layer HTTP e per i controller."""
-    sql, mongo = has_sql(tables), any(t.mongo for t in tables.values())
+    sql, mongo, neo4j = has_sql(tables), any(t.mongo for t in tables.values()), any(t.neo4j for t in tables.values())
     api_import = opts.get("api_dir", "api").replace("/", ".")
     ctrl_import = opts.get("controller_dir", "controllers").replace("/", ".")
-    rt_files = rt.files(sql, mongo, ac["claims"], ac["headers"])
+    rt_files = rt.files(sql, mongo, ac["claims"], ac["headers"], neo4j=neo4j)
     api_rt_keys = {"_schema.py", "_http.py", "_identity.py", "_router.py", "lambda_adapter.py", "asgi_adapter.py", "fastapi_adapter.py"}
     ctrl_rt_keys = {"_data.py"}
     api_files = {f"generated/{k}": v for k, v in rt_files.items() if k in api_rt_keys}

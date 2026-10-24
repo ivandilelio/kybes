@@ -53,11 +53,13 @@ def _conv_fn(c) -> str:
 def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_pkg: str, ctrl_pkg: str, model_pkg: str) -> str:
     n = t.name
     repo = repo_class(L, n)
-    exposed = [c for c in t.columns if not c.tenant]
+    exposed = [c for c in t.columns if not c.tenant and c.api_visible]
     writable = [c for c in exposed if not (c.primary_key and c.auto) and not c.generated]
     read, write = ("data.mongoRead(call.tenant(), ", "data.mongoWrite(call.tenant(), ") if t.mongo else \
+        ("data.neo4jRead(call.tenant(), ", "data.neo4jWrite(call.tenant(), ") if t.neo4j else \
         ("data.read(call.tenant(), ", f'data.write(List.of("{n}"), call.tenant(), ')
-    targets = sorted({next(r for r in t.relations if r.name == o.arg).target for o in ops if o.kind == "rel"} - {n})
+    expand_targets = {r.target for r in t.relations if r.kind == "many_to_one" and t.api and r.name in t.api.expandable} if t.api and t.api.expandable else set()
+    targets = sorted(({next(r for r in t.relations if r.name == o.arg).target for o in ops if o.kind == "rel"} | expand_targets) - {n})
     key = to_model(t.pk, 'call.path().get("id")')
     b = [f"/** API REST di {n}: JSON &lt;-&gt; modello e controller delle operazioni generate (blocco api dello schema). */",
          f"public final class {n}Api {{", "", f"    private {n}Api() {{", "    }", "",
@@ -78,7 +80,33 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_pk
         reg.append(fn)
         b += ["", f"    /** {op.method.upper()} {op.path}: {op.summary}. */", f"    public static Object {fn}(ApiData data, Call call) {{"]
         if op.kind == "list":
-            b.append(f"        return {read}em -> Convert.page(new {repo}(em).listPage(Convert.request(call.query())), {n}Api::toJson));")
+            expandable = [r for r in t.relations if r.kind == "many_to_one" and t.api and r.name in t.api.expandable] if (t.api and t.api.expandable and not t.mongo and not t.neo4j) else []
+            if expandable:
+                exp_allowed = ", ".join(f'"{prop(r.name)}"' for r in expandable)
+                exp_map_entries = ", ".join(f'Map.entry("{prop(r.name)}", "{r.name}")' for r in expandable)
+                b += [f'        String expandRaw = (String) call.query().getOrDefault("expand", "");',
+                      f"        List<String> expand = expandRaw.isEmpty() ? List.of() : java.util.Arrays.stream(expandRaw.split(\",\")).map(String::trim).filter(s -> !s.isEmpty()).toList();",
+                      f"        java.util.Set<String> allowedExpand = java.util.Set.of({exp_allowed});",
+                      f"        List<String> bad = expand.stream().filter(x -> !allowedExpand.contains(x)).toList();",
+                      f'        if (!bad.isEmpty()) throw new ApiError("VALIDATION", "invalid expand: " + bad);',
+                      f"        Map<String, String> expMap = Map.ofEntries({exp_map_entries});",
+                      f"        List<String> modelExpand = expand.stream().map(expMap::get).toList();",
+                      f"        return {read}em -> {{",
+                      f"            {repo} repo = new {repo}(em);",
+                      f"            var p = modelExpand.isEmpty() ? repo.listPage(Convert.request(call.query())) : repo.listPageExpand(modelExpand, Convert.request(call.query()));",
+                      f"            return Convert.page(p, e -> {{",
+                      f"                Map<String, Object> d = {n}Api.toJson(e);",
+                      f"                for (String rel : expand) {{"]
+                for r in expandable:
+                    target_conv = f"{n}Api.toJson" if r.target == n else f"{r.target}Api.toJson"
+                    getter = f"e.get{_cap(member(L, r.name))}()"
+                    b.append(f'                    if (rel.equals("{prop(r.name)}")) {{ var v = {getter}; d.put("{prop(r.name)}", v != null ? {target_conv}(v) : null); }}')
+                b += ["                }",
+                      "                return d;",
+                      "            });",
+                      "        });"]
+            else:
+                b.append(f"        return {read}em -> Convert.page(new {repo}(em).listPage(Convert.request(call.query())), {n}Api::toJson));")
         elif op.kind == "get":
             b += [f"        return {read}em -> toJson(new {repo}(em).getById({key})",
                   '                .orElseThrow(() -> new ApiError("NOT_FOUND", "RECORD_NOT_FOUND"))));']

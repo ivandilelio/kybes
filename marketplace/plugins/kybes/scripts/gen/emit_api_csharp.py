@@ -57,10 +57,12 @@ def to_model(c, expr: str, nullable: bool) -> str:
 def _table_file(t: Table, ops: List[Operation], ns: str, model_ns: str, api_ns: str) -> str:
     n = t.name
     repo = repo_class(L, n)
-    exposed = [c for c in t.columns if not c.tenant]
+    exposed = [c for c in t.columns if not c.tenant and c.api_visible]
     writable = [c for c in exposed if not (c.primary_key and c.auto) and not c.generated]
     if t.mongo:
         read, write = "data.MongoReadAsync(call.Tenant, async db =>", "data.MongoWriteAsync(call.Tenant, async db =>"
+    elif t.neo4j:
+        read, write = "data.Neo4jReadAsync(call.Tenant, async db =>", "data.Neo4jWriteAsync(call.Tenant, async db =>"
     else:
         read, write = "data.ReadAsync(call.Tenant, async db =>", f'data.WriteAsync(new[] {{ "{n}" }}, call.Tenant, async db =>'
     key = to_model(t.pk, 'call.Path["id"]', False)
@@ -83,7 +85,35 @@ def _table_file(t: Table, ops: List[Operation], ns: str, model_ns: str, api_ns: 
         reg.append((op.op_id, fn))
         b += ["", f"    /// <summary>{op.method.upper()} {op.path}: {op.summary}.</summary>", f"    public static async Task<object?> {fn}(ApiData data, Call call)", "    {"]
         if op.kind == "list":
-            b.append(f"        return await {read} ApiConvert.PageJson(await new {repo}(db).ListPageAsync(ApiConvert.Request(call.Query)), ToJson));")
+            expandable = [r for r in t.relations if r.kind == "many_to_one" and t.api and r.name in t.api.expandable] if (t.api and t.api.expandable and not t.mongo and not t.neo4j) else []
+            if expandable:
+                exp_allowed = ", ".join(f'"{prop(r.name)}"' for r in expandable)
+                exp_map_entries = ", ".join(f'{{ "{prop(r.name)}", "{r.name}" }}' for r in expandable)
+                b += [f'        var expandRaw = call.Query.TryGetValue("expand", out var ev) ? (string?)ev ?? "" : "";',
+                      f"        var expand = string.IsNullOrWhiteSpace(expandRaw) ? Array.Empty<string>() : expandRaw.Split(',').Select(s => s.Trim()).Where(s => s.Length > 0).ToArray();",
+                      f"        var allowedExpand = new HashSet<string> {{ {exp_allowed} }};",
+                      f"        var bad = expand.Where(x => !allowedExpand.Contains(x)).ToArray();",
+                      f'        if (bad.Length > 0) throw new ApiError("VALIDATION", $"invalid expand: {{string.Join(", ", bad)}}");',
+                      f"        var expMap = new Dictionary<string, string> {{ {exp_map_entries} }};",
+                      f"        var modelExpand = expand.Select(x => expMap[x]).ToList();",
+                      f"        return await {read}",
+                      f"        {{",
+                      f"            var repo = new {repo}(db);",
+                      f"            var p = modelExpand.Count > 0 ? await repo.ListPageExpandAsync(modelExpand, ApiConvert.Request(call.Query)) : await repo.ListPageAsync(ApiConvert.Request(call.Query));"]
+                b.append(f"            return ApiConvert.PageJson(p, e =>")
+                b.append(f"            {{")
+                b.append(f"                var d = ToJson(e);")
+                b.append(f"                foreach (var rel in expand)")
+                b.append(f"                {{")
+                for r in expandable:
+                    target_conv = "ToJson" if r.target == n else f"{r.target}Api.ToJson"
+                    b.append(f'                    if (rel == "{prop(r.name)}") {{ var v = e.{member(L, r.name)}; d["{prop(r.name)}"] = v != null ? {target_conv}(v) : null; }}')
+                b += ["                }",
+                      "                return d;",
+                      "            });",
+                      "        });"]
+            else:
+                b.append(f"        return await {read} ApiConvert.PageJson(await new {repo}(db).ListPageAsync(ApiConvert.Request(call.Query)), ToJson));")
         elif op.kind == "get":
             b.append(f"        return await {read} ToJson(await new {repo}(db).GetByIdAsync({key}) ?? {nf}));")
         elif op.kind == "create":

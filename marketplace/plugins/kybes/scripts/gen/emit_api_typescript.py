@@ -52,10 +52,11 @@ def _ts_relpath(from_dir: str, to_dir: str) -> str:
 def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_rel: str, model_base: str, model_gen: str) -> str:
     n = t.name
     repo = repo_class(L, n)
-    exposed = [c for c in t.columns if not c.tenant]
+    exposed = [c for c in t.columns if not c.tenant and c.api_visible]
     writable = [c for c in exposed if not (c.primary_key and c.auto) and not c.generated]
-    read, write = ("data.mongoRead", "data.mongoWrite") if t.mongo else ("data.read", "data.write")
-    targets = sorted({next(r for r in t.relations if r.name == o.arg).target for o in ops if o.kind == "rel"} - {n})
+    read, write = ("data.mongoRead", "data.mongoWrite") if t.mongo else ("data.neo4jRead", "data.neo4jWrite") if t.neo4j else ("data.read", "data.write")
+    expand_targets = {r.target for r in t.relations if r.kind == "many_to_one" and t.api and r.name in t.api.expandable} if t.api and t.api.expandable else set()
+    targets = sorted(({next(r for r in t.relations if r.name == o.arg).target for o in ops if o.kind == "rel"} | expand_targets) - {n})
     paged = any(o.kind == "list" or (o.kind == "query" and next(q for q in t.queries if q.name == o.arg).returns == "page")
                 or (o.kind == "rel" and next(r for r in t.relations if r.name == o.arg).kind == "one_to_many") for o in ops)
     b = ["", f"/** {n} nel formato del contratto (senza tenant). */", f"export function toJson(e: {n}): Record<string, unknown> {{", "  return {"]
@@ -80,7 +81,31 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_re
         handlers.append((op.op_id, fn))
         b += [f"/** {op.method.upper()} {op.path}: {op.summary}. */", f"export async function {fn}(data: ApiData, call: Call): Promise<unknown> {{"]
         if op.kind == "list":
-            b.append(f"  return {read}(call.tenant, async (em) => page(await new {repo}(em).listPage(request(call.query)), toJson));")
+            expandable = [r for r in t.relations if r.kind == "many_to_one" and t.api and r.name in t.api.expandable] if (t.api and t.api.expandable and not t.mongo and not t.neo4j) else []
+            if expandable:
+                exp_allowed_ts = ", ".join(f'"{prop(r.name)}"' for r in expandable)
+                exp_map_ts = ", ".join(f'{prop(r.name)}: "{r.name}"' for r in expandable)
+                b += [f'  const expandRaw = (call.query.expand as string) || "";',
+                      f"  const expand = expandRaw ? expandRaw.split(\",\").map(s => s.trim()).filter(Boolean) : [];",
+                      f"  const allowedExpand = new Set([{exp_allowed_ts}]);",
+                      f"  const bad = expand.filter(x => !allowedExpand.has(x));",
+                      f'  if (bad.length) throw new ApiError("VALIDATION", "invalid expand: " + bad.join(", "));',
+                      f"  const expMap: Record<string, string> = {{ {exp_map_ts} }};",
+                      f"  const modelExpand = expand.map(x => expMap[x]);",
+                      f"  return {read}(call.tenant, async (em) => {{",
+                      f"    const repo = new {repo}(em);",
+                      f"    const p = modelExpand.length ? await repo.listPageExpand(modelExpand, request(call.query)) : await repo.listPage(request(call.query));"]
+                b.append(f"    const conv = (e: {n}): Record<string, unknown> => {{")
+                b.append(f"      const d = toJson(e);")
+                b.append(f"      for (const rel of expand) {{")
+                for r in expandable:
+                    target_conv = "toJson" if r.target == n else f"{camel(r.target)}Json"
+                    b.append(f'        if (rel === "{prop(r.name)}") {{ const v = (e as any).{member(L, r.name)}; (d as any)["{prop(r.name)}"] = v != null ? {target_conv}(v) : null; }}')
+                b += ["      }", "      return d;", "    };",
+                      f"    return page(p, expand.length ? conv : toJson);",
+                      "  });"]
+            else:
+                b.append(f"  return {read}(call.tenant, async (em) => page(await new {repo}(em).listPage(request(call.query)), toJson));")
         elif op.kind == "get":
             b += [f"  return {read}(call.tenant, async (em) => {{", f"    const e = await new {repo}(em).getById({key});",
                   '    if (e === null) throw new ApiError("NOT_FOUND", "RECORD_NOT_FOUND");', "    return toJson(e);", "  });"]

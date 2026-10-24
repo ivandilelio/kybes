@@ -544,6 +544,17 @@ class ApiData:
         from model.generated import run_in_mongo_transaction
         return run_in_mongo_transaction(self.mongo_client, self._mongo(tenant), work, tenant=tenant)
     # kybes:mongo-end
+
+    # kybes:neo4j-begin
+    @contextmanager
+    def neo4j_read(self, tenant: Any) -> Iterator[Any]:
+        from model.generated import neo4j_session
+        yield neo4j_session(self.neo4j_driver, tenant)
+
+    def neo4j_write(self, tenant: Any, work: Callable[[Any], T]) -> T:
+        from model.generated import run_in_neo4j_transaction
+        return run_in_neo4j_transaction(self.neo4j_driver, work, tenant=tenant)
+    # kybes:neo4j-end
 '''
 
 LAMBDA = '''"""Adattatore AWS Lambda (API Gateway HTTP API v2 e REST API v1): evento -> ApiRequest -> risposta proxy."""
@@ -623,6 +634,7 @@ def raw_path(scope: Dict[str, Any]) -> str:
 
 def request_of(scope: Dict[str, Any], body: bytes) -> ApiRequest:
     headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+    headers = {k: v for k, v in headers.items() if not k.startswith("x-kybes-")}
     query = parse_qs(scope.get("query_string", b"").decode("utf-8"), keep_blank_values=True)
     return ApiRequest(method=scope["method"], path=raw_path(scope), query=query, headers=headers, body=body or None,
                       identity=from_headers(headers))
@@ -673,7 +685,7 @@ METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 def include_api(app: Any, api: Api) -> Any:
     """Registra le operazioni sull'app FastAPI (con i loro operationId) e una route finale per 404 e 405 uniformi."""
     async def endpoint(request: Request) -> Response:
-        headers = {k.lower(): v for k, v in request.headers.items()}
+        headers = {k.lower(): v for k, v in request.headers.items() if not k.lower().startswith("x-kybes-")}
         query = {k: request.query_params.getlist(k) for k in request.query_params.keys()}
         body = await request.body()
         req = ApiRequest(method=request.method, path=raw_path(request.scope), query=query, headers=headers, body=body or None,
@@ -690,9 +702,10 @@ def include_api(app: Any, api: Api) -> Any:
 '''
 
 
-def files(sql: bool, mongo: bool, claims: Dict, headers: Dict) -> Dict[str, str]:
+def files(sql: bool, mongo: bool, claims: Dict, headers: Dict, neo4j: bool = False) -> Dict[str, str]:
     data = strip_sql(DATA, sql)
     data = _strip_block(data, "mongo", mongo)
+    data = _strip_block(data, "neo4j", neo4j)
     return {
         "_schema.py": HEAD + SCHEMA,
         "_http.py": HEAD + HTTP,

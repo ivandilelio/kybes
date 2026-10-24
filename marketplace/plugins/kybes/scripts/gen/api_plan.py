@@ -189,7 +189,10 @@ def _ops_of(t: Table, tables: Dict[str, Table], security: bool) -> List[Operatio
         ops.append(Operation(context=a.context, table=T, scopes=list(a.write_scopes if write else a.read_scopes),
                              secured=security, **kw))
     if "list" in a.operations:
-        add(op_id=f"list{T}", method="get", path=base, kind="list", params=page_params(t, True),
+        lp = page_params(t, True)
+        if a.expandable:
+            lp.append(Param("expand", "query", {"type": "string", "maxLength": 512}, False))
+        add(op_id=f"list{T}", method="get", path=base, kind="list", params=lp,
             summary=f"pagina di {T} con cursore e ordinamento")
     if "get" in a.operations:
         add(op_id=f"get{T}", method="get", path=base + item, kind="get", params=[idp], summary=f"un record di {T} per chiave")

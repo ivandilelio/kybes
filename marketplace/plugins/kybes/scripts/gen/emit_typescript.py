@@ -6,6 +6,7 @@ from typing import Dict, List, Tuple
 
 import runtime_archive
 import runtime_mongo
+import runtime_neo4j
 import runtime_tenant
 import runtime_typescript
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
@@ -197,6 +198,20 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str, dialect: st
                 w(f'    return runPage(qb, "e", {paging}, page);')
             else:
                 w(f'    return runPage(this.repo.createQueryBuilder("e"), "e", {paging}, page);')
+        elif k == "list_page_expand":
+            expandable = [r for r in t.relations if r.kind == "many_to_one" and t.api and r.name in t.api.expandable]
+            if expandable:
+                w(f"  async {name}(expand: string[], page: PageRequest = {{}}): Promise<Page<{t.name}>> {{")
+                if tc:
+                    w(f'    const qb = this.repo.createQueryBuilder("e").where("e.{tm} = :tenant", {{ tenant: tenantOf(this.em) }});')
+                else:
+                    w(f'    const qb = this.repo.createQueryBuilder("e");')
+                w("    for (const rel of expand) {")
+                for r in expandable:
+                    alias = member(L, r.name)
+                    w(f'      if (rel === {r.name!r}) qb.leftJoinAndSelect("e.{alias}", "{alias}");')
+                w("    }")
+                w(f'    return runPage(qb, "e", {paging}, page);')
         elif k == "count":
             w(f"  async {name}(): Promise<number> {{")
             w(f"    return this.repo.countBy({{ {tm}: tenantOf(this.em) }});" if tc else "    return this.repo.count();")
@@ -378,18 +393,22 @@ def _index_file(tables: Dict[str, Table]) -> str:
              *(['export { FileArchiveReader, archiveOf, archivePath, bindArchive } from "./_archive";',
                 'export type { ArchiveReader } from "./_archive";',
                 'export type { Isolation, TransactionOptions } from "./_uow";'] if has else [])]
-    sql = [n for n, t in tables.items() if not t.mongo]
+    sql = [n for n, t in tables.items() if t.sql_compatible]
     mongo = [n for n, t in tables.items() if t.mongo]
+    neo4j = [n for n, t in tables.items() if t.neo4j]
     for n in tables:
         if n in sql:
             lines.append(f'import {{ {n} }} from "./{n}";')
         lines.append(f'export {{ {n}, {base_class(L, n)}, validate{n}, PAGING_{snake(n).upper()} }} from "./{n}";')
-        lines.append(f'export type {{ {n}Changes }} from "./{n}";')
+        if not tables[n].neo4j:
+            lines.append(f'export type {{ {n}Changes }} from "./{n}";')
     if mongo:
         lines.append('export { MongoSession, mongoSession, runInMongoTransaction } from "./_mongo";')
         lines.append('import type { Db } from "mongodb";')
         for n in mongo:
             lines.append(f'import {{ ensureIndexes{n} }} from "./{n}";')
+    if neo4j:
+        lines.append('export { Neo4jSession, neo4jSession, runInNeo4jTransaction } from "./_neo4j";')
     if has:
         lines.append("\n/** Entità TypeORM (tabelle SQL) per la configurazione del DataSource. */")
         lines.append(f"export const ENTITIES = [{', '.join(sql)}];")
@@ -422,9 +441,16 @@ def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tu
         gen[f"{GEN_DIR}/_uow.ts"] = runtime_typescript.uow_file(tables)
         gen[f"{GEN_DIR}/_archive.ts"] = runtime_archive.typescript_file()
     for n, t in tables.items():
-        gen[f"{GEN_DIR}/{n}.ts"] = _mongo_table_file(t, tables, schema_rel[n]) if t.mongo else _table_file(t, tables, schema_rel[n], dialect)
+        if t.mongo:
+            gen[f"{GEN_DIR}/{n}.ts"] = _mongo_table_file(t, tables, schema_rel[n])
+        elif t.neo4j:
+            gen[f"{GEN_DIR}/{n}.ts"] = _neo4j_table_file(t, tables, schema_rel[n])
+        else:
+            gen[f"{GEN_DIR}/{n}.ts"] = _table_file(t, tables, schema_rel[n], dialect)
     if any(t.mongo for t in tables.values()):
         gen[f"{GEN_DIR}/_mongo.ts"] = runtime_mongo.typescript_file()
+    if any(t.neo4j for t in tables.values()):
+        gen[f"{GEN_DIR}/_neo4j.ts"] = runtime_neo4j.typescript_file()
     custom = {custom_file(L, n): custom_stub(t) for n, t in tables.items()}
     return gen, custom
 
@@ -714,3 +740,146 @@ def _prune_mongo_imports(text: str) -> str:
             x = f'import {mt.group(1) or ""}{{ {", ".join(used)} }} from "{mt.group(3)}";'
         out.append(x)
     return "\n".join(out)
+
+
+# ------------------------------------------------------------------------------------------- Neo4j
+
+def _neo4j_table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
+    m = {c.name: member(L, c.name) for c in t.columns}
+    pk = t.pk
+    pkm, pkt = m[pk.name], TS_TYPE[pk.type]
+    T = t.name
+    tc = tenant_column(t)
+    labels = t.neo4j_config.labels if t.neo4j_config else [T]
+    label_str = ":".join(labels)
+    out: List[str] = []
+    w = out.append
+    w(header(L, schema_rel) + "/* eslint-disable */")
+    w(f"// {T}: entità e repository Neo4j (storage: neo4j, nodo :{label_str}).{(' ' + t.description) if t.description else ''}")
+    w('import { ModelValidationError } from "./_base";')
+    w('import { Neo4jSession, toNeo4j, runNeo4jPage } from "./_neo4j";')
+    w('import type { OrderItem, Page, PageRequest, PagingSpec } from "./_paging";')
+    if tc:
+        w('import { tenantOf } from "./_tenant";')
+    w("")
+
+    # --- class
+    w(f"export class {T} {{")
+    for c in t.columns:
+        w(f"  {m[c.name]}!: {_ts_type(c)};")
+    w("}\n")
+
+    # --- validation + paging
+    out += _validation_paging_lines(t, m)
+
+    # --- fromRecord
+    w(f"function fromRecord(record: {{ get(key: string): {{ properties: Record<string, unknown> }} }}): {T} {{")
+    w('  const n = record.get("n").properties;')
+    w(f"  return Object.assign(new {T}(), {{")
+    for c in t.columns:
+        w(f'    {m[c.name]}: n["{c.db_name}"] as {TS_TYPE[c.type]}{" | null" if c.nullable else ""},')
+    w(f"  }});")
+    w("}\n")
+
+    # --- toJson
+    w(f"function toJson(e: {T}): Record<string, unknown> {{")
+    w("  return {")
+    for c in t.columns:
+        w(f'    {m[c.name]}: e.{m[c.name]},')
+    w("  };")
+    w("}\n")
+
+    # --- repository
+    tenant_filter = f" AND n.{tc.db_name} = $tenant" if tc else ""
+
+    def _params(extra: str = "") -> str:
+        parts = [extra] if extra else []
+        if tc:
+            parts.append('"tenant": tenantOf(this.session)')
+        return "{ " + ", ".join(parts) + " }" if parts else "{}"
+
+    w(f"export class {base_class(L, T)} {{")
+    w(f"  private static readonly PAGING = PAGING_{snake(T).upper()};")
+    w(f'  private static readonly LABELS = "{label_str}";\n')
+    if tc:
+        w(f"  constructor(private readonly session: Neo4jSession) {{")
+        w(f"    tenantOf(session);")
+        w("  }\n")
+    else:
+        w(f"  constructor(private readonly session: Neo4jSession) {{}}\n")
+
+    # get_by_id
+    w(f"  async getById(id: {pkt}): Promise<{T} | null> {{")
+    w(f"    const result = await this.session.session.run(")
+    w(f'      "MATCH (n:{label_str}) WHERE n.{pk.db_name} = $id{tenant_filter} RETURN n LIMIT 1",')
+    w(f"      {_params(f'\"id\": toNeo4j(id)')},")
+    w("    );")
+    w("    const record = result.records[0];")
+    w("    return record ? fromRecord(record) : null;")
+    w("  }\n")
+
+    # list_page
+    match_clause = f"MATCH (n:{label_str})"
+    if tc:
+        match_clause += f" WHERE n.{tc.db_name} = $tenant"
+    w(f"  async listPage(page?: PageRequest): Promise<Page<{T}>> {{")
+    w(f"    return runNeo4jPage(this.session, \"{match_clause} RETURN n\",")
+    w(f"      {_params()}, {base_class(L, T)}.PAGING, page, fromRecord);")
+    w("  }\n")
+
+    # count
+    where = f" WHERE n.{tc.db_name} = $tenant" if tc else ""
+    w(f"  async count(): Promise<number> {{")
+    w(f"    const result = await this.session.session.run(")
+    w(f'      "MATCH (n:{label_str}){where} RETURN count(n) AS c",')
+    w(f"      {_params()},")
+    w("    );")
+    w("    return result.records[0].get('c').toNumber();")
+    w("  }\n")
+
+    # exists
+    w(f"  async exists(id: {pkt}): Promise<boolean> {{")
+    w(f"    const result = await this.session.session.run(")
+    w(f'      "MATCH (n:{label_str}) WHERE n.{pk.db_name} = $id{tenant_filter} RETURN count(n) > 0 AS e",')
+    w(f"      {_params(f'\"id\": toNeo4j(id)')},")
+    w("    );")
+    w("    return result.records[0].get('e');")
+    w("  }\n")
+
+    # create
+    props_cypher = ", ".join(f"{c.db_name}: ${m[c.name]}" for c in t.columns)
+    params_create = ", ".join(f'"{m[c.name]}": toNeo4j(e.{m[c.name]})' for c in t.columns)
+    w(f"  async create(e: {T}): Promise<{T}> {{")
+    w(f"    validate{T}(e);")
+    w(f"    const result = await this.session.session.run(")
+    w(f'      "CREATE (n:{label_str} {{{props_cypher}}}) RETURN n",')
+    w(f"      {{ {params_create} }},")
+    w("    );")
+    w("    return fromRecord(result.records[0]);")
+    w("  }\n")
+
+    # update
+    set_parts = ", ".join(f"n.{c.db_name} = ${m[c.name]}" for c in t.columns if not c.primary_key)
+    params_update = ", ".join(f'"{m[c.name]}": toNeo4j(e.{m[c.name]})' for c in t.columns)
+    w(f"  async update(e: {T}): Promise<{T}> {{")
+    w(f"    validate{T}(e);")
+    w(f"    const result = await this.session.session.run(")
+    w(f'      "MATCH (n:{label_str}) WHERE n.{pk.db_name} = $id{tenant_filter} SET {set_parts} RETURN n",')
+    w(f'      {{ "id": toNeo4j(e.{pkm}), {params_update} }},')
+    w("    );")
+    w("    if (result.records.length === 0) {")
+    w(f'      throw new ModelValidationError("{T}", {{ id: "non trovato" }});')
+    w("    }")
+    w("    return fromRecord(result.records[0]);")
+    w("  }\n")
+
+    # delete
+    w(f"  async delete(id: {pkt}): Promise<void> {{")
+    w(f"    await this.session.session.run(")
+    w(f'      "MATCH (n:{label_str}) WHERE n.{pk.db_name} = $id{tenant_filter} DETACH DELETE n",')
+    w(f"      {_params(f'\"id\": toNeo4j(id)')},")
+    w("    );")
+    w("  }")
+    w("}")
+
+    return "\n".join(out) + "\n"

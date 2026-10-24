@@ -5,6 +5,7 @@ from typing import Dict, List, Tuple
 
 import runtime_archive
 import runtime_mongo
+import runtime_neo4j
 import runtime_python
 import runtime_tenant
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
@@ -44,7 +45,9 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
     w("from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence\n")
     w("from sqlalchemy import (JSON, BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric,")
     w("                        String, Text, UniqueConstraint, Uuid, func, select)")
-    w("from sqlalchemy.orm import Mapped, Session, mapped_column, relationship\n")
+    has_expand = t.api is not None and bool(t.api.expandable) and not t.mongo
+    w("from sqlalchemy.orm import Mapped, Session, mapped_column, relationship" +
+      (", selectinload" if has_expand else "") + "\n")
     w("from ._base import Base, ModelValidationError")
     w("from ._paging import Page, PageRequest, PagingSpec, like_prefix, order_rows, run_page")
     tc = tenant_column(t)
@@ -187,6 +190,16 @@ def _table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
         elif k == "list_page":
             w(f"    def {name}(self, page: PageRequest = PageRequest()) -> Page[{t.name}]:")
             w(f"        return run_page(self.session, {scoped(f'select({T})')}, self.PAGING, page)\n")
+        elif k == "list_page_expand":
+            expandable = [r for r in t.relations if r.kind == "many_to_one" and t.api and r.name in t.api.expandable]
+            if expandable:
+                w(f"    def {name}(self, expand: List[str], page: PageRequest = PageRequest()) -> Page[{t.name}]:")
+                w(f"        stmt = {scoped(f'select({T})')}")
+                w("        for rel in expand:")
+                for r in expandable:
+                    w(f"            if rel == {r.name!r}:")
+                    w(f"                stmt = stmt.options(selectinload({T}.{member(L, r.name)}))")
+                w(f"        return run_page(self.session, stmt, self.PAGING, page)\n")
         elif k == "count":
             w(f"    def {name}(self) -> int:")
             w(f"        return int(self.session.scalar({scoped(f'select(func.count()).select_from({T})')}) or 0)\n")
@@ -402,6 +415,10 @@ def _init_file(tables: Dict[str, Table]) -> str:
         lines += ["", "", "def ensure_mongo_indexes(db) -> None:",
                   '    """Crea gli indici di tutte le collection MongoDB del modello (idempotente)."""']
         lines += [f"    ensure_indexes_{snake(n)}(db)" for n in mongo]
+    neo4j = [n for n, t in tables.items() if t.neo4j]
+    if neo4j:
+        lines.append("from ._neo4j import Neo4jSession, neo4j_session, run_in_neo4j_transaction")
+        names += ["Neo4jSession", "neo4j_session", "run_in_neo4j_transaction"]
     lines.append("\n__all__ = [" + ", ".join(repr(x) for x in names) + "]")
     return "\n".join(lines) + "\n"
 
@@ -428,9 +445,16 @@ def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tu
         gen[f"{GEN_DIR}/_uow.py"] = runtime_python.uow_file(tables)
         gen[f"{GEN_DIR}/_archive.py"] = runtime_archive.python_file()
     for n, t in tables.items():
-        gen[f"{GEN_DIR}/{n}.py"] = (_mongo_table_file if t.mongo else _table_file)(t, tables, schema_rel[n])
+        if t.mongo:
+            gen[f"{GEN_DIR}/{n}.py"] = _mongo_table_file(t, tables, schema_rel[n])
+        elif t.neo4j:
+            gen[f"{GEN_DIR}/{n}.py"] = _neo4j_table_file(t, tables, schema_rel[n])
+        else:
+            gen[f"{GEN_DIR}/{n}.py"] = _table_file(t, tables, schema_rel[n])
     if any(t.mongo for t in tables.values()):
         gen[f"{GEN_DIR}/_mongo.py"] = runtime_mongo.python_file()
+    if any(t.neo4j for t in tables.values()):
+        gen[f"{GEN_DIR}/_neo4j.py"] = runtime_neo4j.python_file()
     custom = {custom_file(L, n): custom_stub(t) for n, t in tables.items()}
     custom["__init__.py"] = '"""Modelli e repository: un file per tabella (vedi MODEL_INDEX.md)."""\n'
     return gen, custom
@@ -683,4 +707,169 @@ def _mongo_table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> st
                 w(f"    def {name}({sig}) -> Optional[{T}]:")
                 w(f"        docs = find_sorted(self.session, self.COLLECTION, {flt}, self.FIELDS, {order_lit}, 1)")
                 w("        return from_document(docs[0]) if docs else None\n")
+    return "\n".join(L_).rstrip() + "\n"
+
+
+# ------------------------------------------------------------------------------------------- Neo4j
+
+def _neo4j_table_file(t: Table, tables: Dict[str, Table], schema_rel: str) -> str:
+    from naming import member, method_name, repo_class, base_class
+    from api_plan import prop
+    L = "python"
+    T = t.name
+    pk = t.pk
+    labels = t.neo4j_config.labels if t.neo4j_config else [T]
+    label_str = ":".join(labels)
+    tc = tenant_column(t)
+    L_: List[str] = []
+
+    def w(s: str = "") -> None:
+        L_.append(s)
+
+    w(header(L, schema_rel))
+    w("# ruff: noqa: N999")
+    w(f'"""{T}: repository Neo4j generato dallo schema (storage: neo4j)."""')
+    w("from __future__ import annotations\n")
+    w("from dataclasses import dataclass")
+    w("from typing import Any, Dict, List, Optional\n")
+    w("from ._paging import OrderItem, Page, PageRequest, PagingSpec")
+    w("from ._neo4j import Neo4jSession, from_neo4j, to_neo4j, run_neo4j_page")
+    w("from ._validation import ModelValidationError")
+    if tc:
+        w("from ._tenant import bind_tenant")
+    w("")
+
+    # PAGING constant
+    pag = t.pagination
+    default_sort = t.order(None)
+    ds = "[" + ", ".join(f'OrderItem("{member(L, c)}", {d})' for c, d in default_sort) + "]"
+    w(f"PAGING_{snake(T).upper()} = PagingSpec({pag.default_limit}, {pag.max_limit}, {ds})\n")
+
+    # dataclass
+    w("@dataclass")
+    w(f"class {T}:")
+    w(f'    """{t.description or T}"""')
+    for c in t.columns:
+        py_type = {"uuid": "str", "string": "str", "text": "str", "int": "int", "bigint": "int",
+                   "decimal": "float", "bool": "bool", "date": "str", "datetime": "str", "json": "Any"}[c.type]
+        if c.nullable:
+            py_type = f"Optional[{py_type}]"
+        w(f"    {member(L, c.name)}: {py_type}")
+    w("")
+
+    # to_json / from_record
+    w(f"    def to_json(self) -> Dict[str, Any]:")
+    w(f"        return {{")
+    for c in t.columns:
+        w(f'            "{prop(c.name)}": self.{member(L, c.name)},')
+    w(f"        }}")
+    w("")
+
+    w(f"def from_record(record) -> {T}:")
+    w(f'    n = record["n"]')
+    w(f"    return {T}(")
+    for c in t.columns:
+        w(f'        {member(L, c.name)}=from_neo4j(n.get("{c.db_name}"), "{c.type}"),')
+    w("    )\n")
+
+    # validation
+    w(f"def validate_{snake(T)}(entity: {T}) -> None:")
+    w(f'    errors: Dict[str, str] = {{}}')
+    for c in t.columns:
+        if not c.nullable and not c.primary_key and c.default is None and c.generated is None:
+            w(f'    if entity.{member(L, c.name)} is None:')
+            w(f'        errors["{prop(c.name)}"] = "obbligatorio"')
+        if c.type == "string" and c.length:
+            w(f'    if entity.{member(L, c.name)} is not None and len(entity.{member(L, c.name)}) > {c.length}:')
+            w(f'        errors["{prop(c.name)}"] = "lunghezza massima {c.length}"')
+    w("    if errors:")
+    w(f'        raise ModelValidationError("{T}", errors)')
+    w("")
+
+    # repository
+    repo = base_class(L, T)
+    w(f"class {repo}:")
+    w(f'    """CRUD e query di {T} su Neo4j."""\n')
+    w(f"    PAGING = PAGING_{snake(T).upper()}")
+    w(f'    LABELS = "{label_str}"')
+    w("")
+    w(f"    def __init__(self, session: Neo4jSession):")
+    w(f"        self.session = session")
+    w("")
+
+    tenant_filter = ""
+    if tc:
+        tenant_filter = f" AND n.{tc.db_name} = $tenant"
+
+    def _params(extra: str = "") -> str:
+        parts = [extra] if extra else []
+        if tc:
+            parts.append('"tenant": self.session.tenant')
+        return "{" + ", ".join(parts) + "}" if parts else "{}"
+
+    # get_by_id
+    w(f"    def get_by_id(self, id) -> Optional[{T}]:")
+    w(f'        result = self.session.session.run(')
+    w(f'            "MATCH (n:{label_str}) WHERE n.{pk.db_name} = $id{tenant_filter} RETURN n LIMIT 1",')
+    w(f"            {_params(f'\"id\": to_neo4j(id)')})")
+    w(f"        record = result.single()")
+    w(f"        return from_record(record) if record else None")
+    w("")
+
+    # list_page
+    w(f"    def list_page(self, page: PageRequest = PageRequest()) -> Page[{T}]:")
+    match_clause = f"MATCH (n:{label_str})"
+    if tc:
+        match_clause += f" WHERE n.{tc.db_name} = $tenant"
+    w(f'        return run_neo4j_page(self.session, "{match_clause} RETURN n",')
+    w(f"            {_params()}, self.PAGING, page, from_record)")
+    w("")
+
+    # count
+    w(f"    def count(self) -> int:")
+    where = f" WHERE n.{tc.db_name} = $tenant" if tc else ""
+    w(f'        result = self.session.session.run("MATCH (n:{label_str}){where} RETURN count(n) AS c", {_params()})')
+    w(f"        return result.single()['c']")
+    w("")
+
+    # exists
+    w(f"    def exists(self, id) -> bool:")
+    w(f'        result = self.session.session.run(')
+    w(f'            "MATCH (n:{label_str}) WHERE n.{pk.db_name} = $id{tenant_filter} RETURN count(n) > 0 AS e",')
+    w(f"            {_params(f'\"id\": to_neo4j(id)')})")
+    w(f"        return result.single()['e']")
+    w("")
+
+    # create
+    w(f"    def create(self, entity: {T}) -> {T}:")
+    w(f"        validate_{snake(T)}(entity)")
+    props = ", ".join(f"{c.db_name}: ${member(L, c.name)}" for c in t.columns)
+    params_create = ", ".join(f'"{member(L, c.name)}": to_neo4j(entity.{member(L, c.name)})' for c in t.columns)
+    w(f'        result = self.session.session.run(')
+    w(f'            "CREATE (n:{label_str} {{{props}}}) RETURN n",')
+    w(f"            {{{params_create}}})")
+    w(f"        return from_record(result.single())")
+    w("")
+
+    # update
+    w(f"    def update(self, entity: {T}) -> {T}:")
+    w(f"        validate_{snake(T)}(entity)")
+    set_parts = ", ".join(f"n.{c.db_name} = ${member(L, c.name)}" for c in t.columns if not c.primary_key)
+    params_update = ", ".join(f'"{member(L, c.name)}": to_neo4j(entity.{member(L, c.name)})' for c in t.columns)
+    w(f'        result = self.session.session.run(')
+    w(f'            "MATCH (n:{label_str}) WHERE n.{pk.db_name} = $id{tenant_filter} SET {set_parts} RETURN n",')
+    w(f"            {{\"id\": to_neo4j(entity.{member(L, pk.name)}), {params_update}}})")
+    w(f"        record = result.single()")
+    w(f"        if not record:")
+    w(f'            raise ModelValidationError("{T}", {{"id": "non trovato"}})')
+    w(f"        return from_record(record)")
+    w("")
+
+    # delete
+    w(f"    def delete(self, id) -> None:")
+    w(f'        self.session.session.run(')
+    w(f'            "MATCH (n:{label_str}) WHERE n.{pk.db_name} = $id{tenant_filter} DETACH DELETE n",')
+    w(f"            {_params(f'\"id\": to_neo4j(id)')})")
+    w("")
+
     return "\n".join(L_).rstrip() + "\n"

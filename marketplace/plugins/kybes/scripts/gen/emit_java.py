@@ -5,11 +5,12 @@ from typing import Dict, List, Tuple
 
 import runtime_archive
 import runtime_mongo
+import runtime_neo4j
 import runtime_java
 import runtime_tenant
 from naming import GEN_DIR, base_class, custom_file, header, member, method_name, repo_class
 from sqlonly import has_sql
-from schema import SORTABLE_TYPES, Table, index_specs, methods_of, snake, tenant_column
+from schema import SORTABLE_TYPES, Table, camel, index_specs, methods_of, snake, tenant_column
 
 L = "java"
 
@@ -301,6 +302,19 @@ def _repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) ->
             wq, ent = scoped(None)
             mp = f"Map.ofEntries({ent})" if ent else "Map.of()"
             w(f"        return Paging.runPage(em, {t.name}.class, PAGING, {wh(wq)}, {mp}, page, null, {t.name}::kybesValue);")
+        elif k == "list_page_expand":
+            expandable = [r for r in t.relations if r.kind == "many_to_one" and t.api and r.name in t.api.expandable]
+            if not expandable:
+                continue
+            w(f"    public Paging.Page<{t.name}> {name}(List<String> expand, Paging.PageRequest page) {{")
+            w(f"        StringBuilder joins = new StringBuilder();")
+            w(f"        for (String rel : expand) {{")
+            for r in expandable:
+                w(f'            if (rel.equals("{camel(r.name)}")) joins.append(" LEFT JOIN FETCH e.{member(L, r.name)}");')
+            w(f"        }}")
+            wq, ent = scoped(None)
+            mp = f"Map.ofEntries({ent})" if ent else "Map.of()"
+            w(f"        return Paging.runPage(em, {t.name}.class, PAGING, {wh(wq)}, {mp}, page, null, {t.name}::kybesValue, joins.toString());")
         elif k == "count":
             w(f"    public long {name}() {{")
             if tc:
@@ -480,12 +494,17 @@ def emit(tables: Dict[str, Table], schema_rel: Dict[str, str], opts: Dict) -> Tu
         if t.mongo:
             gen[f"{GEN_DIR}/{n}.java"] = _mongo_entity_file(t, tables, schema_rel[n], pkg)
             gen[f"{GEN_DIR}/{base_class(L, n)}.java"] = _mongo_repo_file(t, tables, schema_rel[n], pkg)
+        elif t.neo4j:
+            gen[f"{GEN_DIR}/{n}.java"] = _neo4j_entity_file(t, tables, schema_rel[n], pkg)
+            gen[f"{GEN_DIR}/{base_class(L, n)}.java"] = _neo4j_repo_file(t, tables, schema_rel[n], pkg)
         else:
             gen[f"{GEN_DIR}/{n}.java"] = _entity_file(t, tables, schema_rel[n], pkg, dialect)
             gen[f"{GEN_DIR}/{base_class(L, n)}.java"] = _repo_file(t, tables, schema_rel[n], pkg)
     if any(t.mongo for t in tables.values()):
         gen[f"{GEN_DIR}/MongoSession.java"] = runtime_mongo.java_file(pkg, opts.get("tenant_id_type", "uuid"))
         gen[f"{GEN_DIR}/MongoIndexes.java"] = _mongo_indexes_file(tables, pkg)
+    if any(t.neo4j for t in tables.values()):
+        gen[f"{GEN_DIR}/Neo4jSupport.java"] = runtime_neo4j.java_file()
     custom = {custom_file(L, n): custom_stub(t, pkg) for n, t in tables.items()}
     return gen, custom
 
@@ -842,3 +861,212 @@ def _mongo_indexes_file(tables: Dict[str, Table], pkg: str) -> str:
             "    /** Crea gli indici (idempotente): all'avvio dell'applicazione o nel deploy. */\n"
             "    public static void ensure(MongoDatabase db) {\n" + "".join(f"        {base_class(L, n)}.ensureIndexes(db);\n" for n in mongo) +
             "    }\n}\n")
+
+
+# ------------------------------------------------------------------------------------------- Neo4j
+
+def _neo4j_entity_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) -> str:
+    from api_plan import prop
+    gpkg = f"{pkg}.{GEN_DIR}"
+    m = {c.name: member(L, c.name) for c in t.columns}
+    out = []
+    w = out.append
+    w(header(L, schema_rel).rstrip("\n"))
+    w(f"package {gpkg};\n")
+    w("import java.math.BigDecimal;")
+    w("import java.time.LocalDate;")
+    w("import java.time.OffsetDateTime;")
+    w("import java.util.LinkedHashMap;")
+    w("import java.util.Map;")
+    w("import java.util.UUID;")
+    w("import org.neo4j.driver.types.Node;\n")
+    w(f"/** {t.name}: entità Neo4j (storage: neo4j).{(' ' + t.description) if t.description else ''} */")
+    w(f"public class {t.name} {{\n")
+    for c in t.columns:
+        init = f" = {_lit(c)}" if c.default is not None else ""
+        w(f"    private {J_TYPE[c.type]} {m[c.name]}{init};\n")
+    for c in t.columns:
+        jt, mm = J_TYPE[c.type], m[c.name]
+        w(f"    public {jt} get{_cap(mm)}() {{ return {mm}; }}")
+        if not (c.primary_key and c.auto) and not c.generated:
+            w(f"    public void set{_cap(mm)}({jt} value) {{ this.{mm} = value; }}")
+    w("")
+    w("    /** Converte l'entità in mappa JSON per l'API. */")
+    w("    public Map<String, Object> toJson() {")
+    w("        Map<String, Object> map = new LinkedHashMap<>();")
+    for c in t.columns:
+        w(f'        map.put("{prop(c.name)}", {m[c.name]});')
+    w("        return map;")
+    w("    }\n")
+    w(f"    /** Crea un'{t.name} dai dati di un nodo Neo4j. */")
+    w(f"    public static {t.name} fromNode(Node node) {{")
+    w(f"        {t.name} e = new {t.name}();")
+    for c in t.columns:
+        mm = m[c.name]
+        if c.type == "uuid":
+            w(f'        if (node.containsKey("{c.db_name}")) e.{mm} = UUID.fromString(node.get("{c.db_name}").asString());')
+        elif c.type == "decimal":
+            w(f'        if (node.containsKey("{c.db_name}")) e.{mm} = BigDecimal.valueOf(node.get("{c.db_name}").asDouble());')
+        elif c.type == "bigint":
+            w(f'        if (node.containsKey("{c.db_name}")) e.{mm} = node.get("{c.db_name}").asLong();')
+        elif c.type == "int":
+            w(f'        if (node.containsKey("{c.db_name}")) e.{mm} = node.get("{c.db_name}").asInt();')
+        elif c.type == "bool":
+            w(f'        if (node.containsKey("{c.db_name}")) e.{mm} = node.get("{c.db_name}").asBoolean();')
+        elif c.type == "date":
+            w(f'        if (node.containsKey("{c.db_name}")) e.{mm} = LocalDate.parse(node.get("{c.db_name}").asString());')
+        elif c.type == "datetime":
+            w(f'        if (node.containsKey("{c.db_name}")) e.{mm} = OffsetDateTime.parse(node.get("{c.db_name}").asString());')
+        else:
+            w(f'        if (node.containsKey("{c.db_name}")) e.{mm} = node.get("{c.db_name}").asString();')
+    w("        return e;")
+    w("    }")
+    w("}")
+    return "\n".join(out) + "\n"
+
+
+def _neo4j_repo_file(t: Table, tables: Dict[str, Table], schema_rel: str, pkg: str) -> str:
+    from api_plan import prop
+    gpkg = f"{pkg}.{GEN_DIR}"
+    T = t.name
+    pk = t.pk
+    m = {c.name: member(L, c.name) for c in t.columns}
+    pkm = m[pk.name]
+    labels = t.neo4j_config.labels if t.neo4j_config else [T]
+    label_str = ":".join(labels)
+    tc = tenant_column(t)
+    pag = t.pagination
+    default_sort = t.order(None)
+    repo = base_class(L, T)
+    out = []
+    w = out.append
+    w(header(L, schema_rel).rstrip("\n"))
+    w(f"package {gpkg};\n")
+    w("import java.util.*;")
+    w("import java.util.stream.Collectors;")
+    w("import org.neo4j.driver.*;")
+    w("import org.neo4j.driver.types.Node;\n")
+    w(f"/** {T}: repository Neo4j generato dallo schema (storage: neo4j). */")
+    w(f"public class {repo} {{\n")
+    w("    protected final Session session;")
+    if tc:
+        w("    protected final String tenant;")
+    w("")
+    if tc:
+        w(f"    public {repo}(Session session, String tenant) {{")
+        w("        this.session = session;")
+        w("        this.tenant = tenant;")
+    else:
+        w(f"    public {repo}(Session session) {{")
+        w("        this.session = session;")
+    w("    }\n")
+
+    ds = "List.of(" + ", ".join(f'new Paging.OrderItem("{member(L, c)}", {str(d).lower()})' for c, d in default_sort) + ")"
+    w(f"    static final Paging.PagingSpec PAGING = new Paging.PagingSpec({pag.default_limit}, {pag.max_limit}, {ds});")
+    w(f'    static final String LABELS = "{label_str}";\n')
+
+    tenant_filter = ""
+    if tc:
+        tenant_filter = f" AND n.{tc.db_name} = $tenant"
+
+    def _params(extra: str = "") -> str:
+        parts = [extra] if extra else []
+        if tc:
+            parts.append('"tenant", tenant')
+        if not parts:
+            return "Map.of()"
+        return "Map.of(" + ", ".join(parts) + ")"
+
+    def _to_neo4j(col_name: str, expr: str) -> str:
+        c = t.col(col_name)
+        if c.type == "uuid":
+            return f"{expr} != null ? {expr}.toString() : null"
+        if c.type == "decimal":
+            return f"{expr} != null ? {expr}.doubleValue() : null"
+        return expr
+
+    # get_by_id
+    id_conv = _to_neo4j(pk.name, "id")
+    id_param = _params(f'"id", {id_conv}')
+    w(f"    public Optional<{T}> {method_name(L, 'get_by_id')}({J_TYPE[pk.type]} id) {{")
+    w(f'        var result = session.run("MATCH (n:{label_str}) WHERE n.{pk.db_name} = $id{tenant_filter} RETURN n LIMIT 1",')
+    w(f"            {id_param});")
+    w(f"        var records = result.list();")
+    w(f'        return records.isEmpty() ? Optional.empty() : Optional.of({T}.fromNode(records.get(0).get("n").asNode()));')
+    w("    }\n")
+
+    # list_page
+    match_clause = f"MATCH (n:{label_str})"
+    if tc:
+        match_clause += f" WHERE n.{tc.db_name} = $tenant"
+    w(f"    public Paging.Page<{T}> {method_name(L, 'list_page')}() {{")
+    w(f"        return {method_name(L, 'list_page')}(Paging.PageRequest.first());")
+    w("    }\n")
+    w(f"    public Paging.Page<{T}> {method_name(L, 'list_page')}(Paging.PageRequest page) {{")
+    w(f"        int limit = Math.min(page.limit() > 0 ? page.limit() : PAGING.defaultLimit(), PAGING.maxLimit());")
+    w(f"        int offset = page.cursor() != null ? Integer.parseInt(page.cursor()) : 0;")
+    w(f"        StringBuilder order = new StringBuilder();")
+    w(f"        if (!PAGING.defaultSort().isEmpty()) {{")
+    w(f'            order.append(" ORDER BY ");')
+    w(f"            order.append(PAGING.defaultSort().stream().map(o -> \"n.\" + o.column() + (o.desc() ? \" DESC\" : \" ASC\")).collect(Collectors.joining(\", \")));")
+    w(f"        }}")
+    w(f'        String full = "{match_clause} RETURN n" + order + " SKIP $offset LIMIT $fetch";')
+    w(f"        var allParams = new HashMap<String, Object>({_params()});")
+    w(f'        allParams.put("offset", offset);')
+    w(f'        allParams.put("fetch", limit + 1);')
+    w(f"        var result = session.run(full, allParams);")
+    w(f"        var rows = result.list(r -> {T}.fromNode(r.get(\"n\").asNode()));")
+    w(f"        boolean hasMore = rows.size() > limit;")
+    w(f"        return new Paging.Page<>(rows.subList(0, Math.min(rows.size(), limit)),")
+    w(f"            hasMore ? String.valueOf(offset + limit) : null, limit);")
+    w("    }\n")
+
+    # count
+    where = f" WHERE n.{tc.db_name} = $tenant" if tc else ""
+    w(f"    public long {method_name(L, 'count')}() {{")
+    w(f'        var result = session.run("MATCH (n:{label_str}){where} RETURN count(n) AS c", {_params()});')
+    w(f"        return result.single().get(\"c\").asLong();")
+    w("    }\n")
+
+    # exists
+    w(f"    public boolean {method_name(L, 'exists')}({J_TYPE[pk.type]} id) {{")
+    w(f'        var result = session.run("MATCH (n:{label_str}) WHERE n.{pk.db_name} = $id{tenant_filter} RETURN count(n) > 0 AS e",')
+    w(f"            {id_param});")
+    w(f'        return result.single().get("e").asBoolean();')
+    w("    }\n")
+
+    # create
+    props = ", ".join(f"{c.db_name}: ${m[c.name]}" for c in t.columns)
+    w(f"    public {T} {method_name(L, 'create')}({T} entity) {{")
+    w(f"        {T}Validation.validate(entity);")
+    w(f"        Map<String, Object> params = new LinkedHashMap<>();")
+    for c in t.columns:
+        w(f'        params.put("{m[c.name]}", {_to_neo4j(c.name, f"entity.get{_cap(m[c.name])}()")});')
+    w(f'        var result = session.run("CREATE (n:{label_str} {{{props}}}) RETURN n", params);')
+    w(f'        return {T}.fromNode(result.single().get("n").asNode());')
+    w("    }\n")
+
+    # update
+    set_parts = ", ".join(f"n.{c.db_name} = ${m[c.name]}" for c in t.columns if not c.primary_key)
+    w(f"    public {T} {method_name(L, 'update')}({T} entity) {{")
+    w(f"        {T}Validation.validate(entity);")
+    w(f'        if (entity.get{_cap(pkm)}() == null) throw new IllegalArgumentException("{T}: update senza chiave");')
+    w(f"        Map<String, Object> params = new LinkedHashMap<>();")
+    w(f'        params.put("id", {_to_neo4j(pk.name, f"entity.get{_cap(pkm)}()")});')
+    for c in t.columns:
+        w(f'        params.put("{m[c.name]}", {_to_neo4j(c.name, f"entity.get{_cap(m[c.name])}()")});')
+    if tc:
+        w(f'        params.put("tenant", tenant);')
+    w(f'        var result = session.run("MATCH (n:{label_str}) WHERE n.{pk.db_name} = $id{tenant_filter} SET {set_parts} RETURN n", params);')
+    w(f"        var records = result.list();")
+    w(f'        if (records.isEmpty()) throw new jakarta.persistence.EntityNotFoundException("{T}: record inesistente");')
+    w(f'        return {T}.fromNode(records.get(0).get("n").asNode());')
+    w("    }\n")
+
+    # delete
+    w(f"    public void {method_name(L, 'delete')}({J_TYPE[pk.type]} id) {{")
+    w(f'        session.run("MATCH (n:{label_str}) WHERE n.{pk.db_name} = $id{tenant_filter} DETACH DELETE n",')
+    w(f"            {id_param});")
+    w("    }")
+    w("}")
+    return "\n".join(out) + "\n"

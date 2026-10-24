@@ -19,7 +19,7 @@ ISOLATION = {"read_committed", "repeatable_read", "serializable"}
 ISOLATION_RANK = {"read_committed": 0, "repeatable_read": 1, "serializable": 2}
 SORTABLE_TYPES = {"uuid", "string", "int", "bigint", "decimal", "date", "datetime"}
 RESERVED_KEYS: Dict[str, int] = {}
-STORAGES = ("sql", "mongo")
+STORAGES = ("sql", "mongo", "timescale", "neo4j")
 TENANCY = ("none", "column", "schema", "database")
 TENANT_COL = "TenantId"
 TENANT_ID_TYPES = ("uuid", "string")
@@ -40,6 +40,7 @@ CRON = re.compile(r"^\S+(\s+\S+){4}$")
 DEFAULT_LIMIT = 50
 DEFAULT_MAX_LIMIT = 100
 IDENT = re.compile(r"^[A-Z][A-Za-z0-9]*$")
+_SENSITIVE_COL = re.compile(r"(?i)password|hash|salt|secret|token")
 RESERVED = {"Id"}  # usabile solo come nome colonna, non come relazione
 
 
@@ -75,6 +76,7 @@ class Column:
     auto: bool = False                   # PK generata dal sistema
     description: str = ""
     tenant: bool = False                 # colonna TenantId aggiunta dal generatore (tenancy: column)
+    api_visible: bool = True             # false esclude la colonna dalle risposte API
 
     @property
     def nullable(self) -> bool:
@@ -146,6 +148,22 @@ class Retention:
     on: Optional[str] = None             # solo senza archivio: cancellazione dalla tabella hot
 
 
+@dataclass
+class TimescaleConfig:
+    """Configurazione specifica per storage: timescale (hypertable PostgreSQL con TimescaleDB)."""
+    time_column: str                     # colonna date/datetime usata come dimensione temporale
+    chunk_time_interval: str = "7d"      # intervallo dei chunk (es. 1d, 7d, 1m)
+    continuous_aggregates: List[dict] = field(default_factory=list)  # [{name, interval, columns}]
+    retention_policy: Optional[str] = None  # durata dopo cui i chunk vengono eliminati (es. 90d, 12m)
+
+
+@dataclass
+class Neo4jConfig:
+    """Configurazione specifica per storage: neo4j (grafo di relazioni)."""
+    labels: List[str] = field(default_factory=list)  # etichette del nodo (default: [nome tabella])
+    relationship_type: Optional[str] = None  # tipo della relazione nel grafo (per le relazioni)
+
+
 def duration_days(d: str) -> int:
     n, u = DURATION.match(d).groups()
     return int(n) * {"d": 1, "m": 30, "y": 365}[u]
@@ -158,6 +176,7 @@ class Api:
     operations: List[str] = field(default_factory=lambda: list(API_OPS))
     queries: List[str] = field(default_factory=list)
     relations: List[str] = field(default_factory=list)
+    expandable: List[str] = field(default_factory=list)  # relazioni many_to_one espandibili con ?expand=
     read_scopes: List[str] = field(default_factory=list)
     write_scopes: List[str] = field(default_factory=list)
     context: str = ""                    # contesto (function o microservizio) che espone le operazioni
@@ -184,12 +203,27 @@ class Table:
     archive: Optional[Archive] = None
     retention: Optional[Retention] = None
     job: Optional[Job] = None
-    storage: str = "sql"                 # sql | mongo
+    storage: str = "sql"                 # sql | mongo | timescale | neo4j
+    timescale_config: Optional[TimescaleConfig] = None
+    neo4j_config: Optional[Neo4jConfig] = None
     api: Optional[Api] = None            # None = tabella non esposta come API
 
     @property
     def mongo(self) -> bool:
         return self.storage == "mongo"
+
+    @property
+    def timescale(self) -> bool:
+        return self.storage == "timescale"
+
+    @property
+    def neo4j(self) -> bool:
+        return self.storage == "neo4j"
+
+    @property
+    def sql_compatible(self) -> bool:
+        """True per storage che usano SQL (sql e timescale)."""
+        return self.storage in ("sql", "timescale")
 
     @property
     def job_name(self) -> str:
@@ -229,7 +263,7 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
     if not isinstance(data, dict):
         return None, [f"{f}: il file deve contenere una mappa con 'table' e 'columns'"]
     allowed = {"table", "db_name", "description", "columns", "relations", "indexes", "queries", "pagination", "transactions",
-               "verification", "tenancy", "archive", "retention", "storage", "api"}
+               "verification", "tenancy", "archive", "retention", "storage", "timescale", "neo4j", "api"}
     for k in data:
         if k in RESERVED_KEYS:
             errs.append(f"{f}: la chiave '{k}' è prevista nella fase {RESERVED_KEYS[k]} della roadmap e non è ancora supportata")
@@ -248,7 +282,7 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
         errs.append(f"{f}: 'columns' deve essere una lista non vuota")
         raw_cols = []
     col_keys = {"name", "type", "db_name", "primary_key", "required", "unique", "length", "precision",
-                "scale", "default", "generated", "auto", "description"}
+                "scale", "default", "generated", "auto", "description", "api_visible"}
     for i, c in enumerate(raw_cols):
         w = f"{f}: colonna #{i + 1}"
         if not isinstance(c, dict):
@@ -303,6 +337,11 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
                 errs.append(f"{w}: 'default' non supportato per type {ct} (usa generated per le date)")
             else:
                 col.default = d
+        av = c.get("api_visible")
+        if av is not None:
+            col.api_visible = _bool(av, w, errs)
+        elif _SENSITIVE_COL.search(cn):
+            col.api_visible = False
         cols.append(col)
 
     names = [c.name for c in cols]
@@ -400,12 +439,87 @@ def _parse_table(path: Path, data: Any) -> (Optional[Table], List[str]):
             errs.append(f"{f}: retention.job non vale per storage mongo: la cancellazione la fa MongoDB con un indice TTL")
         if tx is not None:
             errs.append(f"{f}: transactions non vale per storage mongo: le transazioni MongoDB sono snapshot")
+    timescale_cfg = _parse_timescale(f, data.get("timescale"), storage, cols, errs)
+    neo4j_cfg = _parse_neo4j(f, data.get("neo4j"), storage, name, errs)
+    if storage == "timescale" and timescale_cfg is None:
+        errs.append(f"{f}: storage timescale richiede il blocco timescale con almeno time_column")
+    if storage == "neo4j":
+        if archive is not None:
+            errs.append(f"{f}: archive non è disponibile per storage neo4j")
+        if tx is not None:
+            errs.append(f"{f}: transactions non vale per storage neo4j: le transazioni Neo4j sono gestite dal driver")
     t = Table(name=name, db_name=data.get("db_name") or snake(name), description=str(data.get("description") or ""),
               columns=cols, relations=rels, indexes=idx, source=str(path), queries=queries,
               pagination=pagination, isolation=isolation, asil=asil, tenancy=tenancy,
-              archive=archive, retention=retention, job=job, storage=storage)
+              archive=archive, retention=retention, job=job, storage=storage,
+              timescale_config=timescale_cfg, neo4j_config=neo4j_cfg)
     t.api = _parse_api(f, t, data.get("api"), errs)
     return t, errs
+
+
+def _parse_timescale(f: str, raw: Any, storage: str, cols: list, errs: List[str]) -> Optional[TimescaleConfig]:
+    if raw is None:
+        return None
+    if storage != "timescale":
+        errs.append(f"{f}: il blocco timescale vale solo con storage: timescale")
+        return None
+    if not isinstance(raw, dict):
+        errs.append(f"{f}: timescale deve essere una mappa (time_column, chunk_time_interval, continuous_aggregates, retention_policy)")
+        return None
+    w = f"{f}: timescale"
+    for k in raw:
+        if k not in ("time_column", "chunk_time_interval", "continuous_aggregates", "retention_policy"):
+            errs.append(f"{w}: chiave sconosciuta '{k}'")
+    tc = raw.get("time_column")
+    if not isinstance(tc, str) or not any(c.name == tc for c in cols):
+        errs.append(f"{w}.time_column: nome di una colonna date o datetime della tabella")
+        return None
+    tc_col = next(c for c in cols if c.name == tc)
+    if tc_col.type not in ("date", "datetime"):
+        errs.append(f"{w}.time_column: la colonna {tc} deve essere di tipo date o datetime")
+        return None
+    ci = raw.get("chunk_time_interval", "7d")
+    if not isinstance(ci, str) or not DURATION.match(ci):
+        errs.append(f"{w}.chunk_time_interval: durata (es. 1d, 7d, 1m)")
+        ci = "7d"
+    aggs = raw.get("continuous_aggregates", [])
+    if not isinstance(aggs, list):
+        errs.append(f"{w}.continuous_aggregates: lista di aggregati [{{'name', 'interval', 'columns'}}]")
+        aggs = []
+    for i, agg in enumerate(aggs):
+        if not isinstance(agg, dict) or "name" not in agg or "interval" not in agg:
+            errs.append(f"{w}.continuous_aggregates[{i}]: mappa con name e interval")
+    rp = raw.get("retention_policy")
+    if rp is not None and (not isinstance(rp, str) or not DURATION.match(rp)):
+        errs.append(f"{w}.retention_policy: durata (es. 90d, 12m)")
+        rp = None
+    return TimescaleConfig(time_column=tc, chunk_time_interval=ci, continuous_aggregates=list(aggs), retention_policy=rp)
+
+
+def _parse_neo4j(f: str, raw: Any, storage: str, name: str, errs: List[str]) -> Optional[Neo4jConfig]:
+    if raw is None:
+        if storage == "neo4j":
+            return Neo4jConfig(labels=[name])
+        return None
+    if storage != "neo4j":
+        errs.append(f"{f}: il blocco neo4j vale solo con storage: neo4j")
+        return None
+    if not isinstance(raw, dict):
+        errs.append(f"{f}: neo4j deve essere una mappa (labels, relationship_type)")
+        return None
+    w = f"{f}: neo4j"
+    for k in raw:
+        if k not in ("labels", "relationship_type"):
+            errs.append(f"{w}: chiave sconosciuta '{k}'")
+    labels = raw.get("labels", [name])
+    if not isinstance(labels, list) or not all(isinstance(x, str) for x in labels):
+        errs.append(f"{w}.labels: lista di stringhe")
+        labels = [name]
+    rt = raw.get("relationship_type")
+    if rt is not None and not isinstance(rt, str):
+        errs.append(f"{w}.relationship_type: stringa")
+        rt = None
+    return Neo4jConfig(labels=list(labels), relationship_type=rt)
 
 
 def _scopes(where: str, v: Any, errs: List[str]) -> List[str]:
@@ -427,8 +541,8 @@ def _parse_api(f: str, t: Table, raw: Any, errs: List[str]) -> Optional[Api]:
         return None
     w = f"{f}: api"
     for k in raw:
-        if k not in ("path", "operations", "queries", "relations", "scopes", "context"):
-            errs.append(f"{w}: chiave sconosciuta '{k}' (ammesse: context, operations, path, queries, relations, scopes)")
+        if k not in ("path", "operations", "queries", "relations", "expand", "scopes", "context"):
+            errs.append(f"{w}: chiave sconosciuta '{k}' (ammesse: context, expand, operations, path, queries, relations, scopes)")
     path = raw.get("path", kebab(t.name))
     if not isinstance(path, str) or not API_PATH.match(path):
         errs.append(f"{w}.path: segmenti in minuscolo separati da / (es. ordini o vendite/ordini), senza / iniziale")
@@ -447,6 +561,15 @@ def _parse_api(f: str, t: Table, raw: Any, errs: List[str]) -> Optional[Api]:
     if not isinstance(rs, list) or any(r not in rnames for r in rs):
         errs.append(f"{w}.relations: nomi di relazioni della tabella ({', '.join(rnames) or 'nessuna'})")
         rs = []
+    m2o_names = [r.name for r in t.relations if r.kind == "many_to_one"]
+    exp = raw.get("expand", m2o_names)
+    if exp is False:
+        exp = []
+    elif exp is True:
+        exp = list(m2o_names)
+    elif not isinstance(exp, list) or any(e not in m2o_names for e in exp):
+        errs.append(f"{w}.expand: nomi di relazioni many_to_one della tabella ({', '.join(m2o_names) or 'nessuna'})")
+        exp = []
     sc = raw.get("scopes") or {}
     read, write = [], []
     if not isinstance(sc, dict) or any(k not in ("read", "write") for k in sc):
@@ -459,7 +582,7 @@ def _parse_api(f: str, t: Table, raw: Any, errs: List[str]) -> Optional[Api]:
         errs.append(f"{w}.context: nome in minuscolo (lettere, cifre e -)")
         ctx = path.split("/")[0]
     return Api(path=path, operations=[o for o in API_OPS if o in ops], queries=list(qs), relations=list(rs),
-               read_scopes=read, write_scopes=write, context=ctx)
+               expandable=list(exp), read_scopes=read, write_scopes=write, context=ctx)
 
 
 def _duration(where: str, v: Any, errs: List[str]) -> Optional[str]:
@@ -860,11 +983,16 @@ def apply_tenancy(tables: Dict[str, Table], default: str = "none", id_type: str 
             errs.append(f"{t.name}: retention con storage mongo usa un indice TTL, che non controlla i record collegati: "
                         f"{', '.join(c.name for c, _ in lifecycle_children(t, tables))} si riferisce a {t.name}")
         for r in t.relations:
-            if r.target in tables and tables[r.target].storage != t.storage:
+            tg_storage = tables[r.target].storage if r.target in tables else t.storage
+            compatible = (t.storage == tg_storage or
+                          {t.storage, tg_storage} <= {"sql", "timescale"})  # sql e timescale condividono PostgreSQL
+            if r.target in tables and not compatible:
                 errs.append(f"{t.name}.relations.{r.name}: {t.name} ({t.storage}) e {r.target} ({tables[r.target].storage}) "
-                            "hanno storage diversi: le relazioni valgono tra tabelle dello stesso storage")
+                            "hanno storage incompatibili: le relazioni valgono tra tabelle dello stesso storage")
             elif t.mongo and r.kind == "many_to_one" and r.on_delete == "cascade":
                 errs.append(f"{t.name}.relations.{r.name}: on_delete cascade non è supportato con storage mongo (usa restrict o set_null)")
+            elif t.neo4j and r.kind == "many_to_one" and r.on_delete == "cascade":
+                errs.append(f"{t.name}.relations.{r.name}: on_delete cascade non è supportato con storage neo4j (usa restrict o set_null)")
         if (t.archive or t.retention) and t.tenancy == "none":
             for c, r in lifecycle_children(t, tables):
                 if c.tenancy in ("schema", "database"):
@@ -913,9 +1041,11 @@ class Method:
 
 def methods_of(t: Table, dedupe: bool = True) -> List[Method]:
     """Elenco ordinato dei metodi generati per una tabella, identico in tutti i linguaggi."""
+    has_expand = t.api is not None and bool(t.api.expandable) and not t.mongo and not t.neo4j
     ms = [
         Method("get_by_id", f"legge un record di {t.name} per chiave"),
         Method("list_page", "pagina di record con cursore e ordinamento ammesso"),
+    ] + ([Method("list_page_expand", "pagina con relazioni espanse (LEFT JOIN / selectinload)")] if has_expand else []) + [
         Method("count", "numero di record"),
         Method("exists", "verifica l'esistenza per chiave"),
         Method("create", "valida e inserisce"),

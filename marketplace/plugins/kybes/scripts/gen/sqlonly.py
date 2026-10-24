@@ -24,4 +24,4 @@ def strip_sql(text: str, sql: bool) -> str:
 
 
 def has_sql(tables) -> bool:
-    return any(not t.mongo for t in tables.values())
+    return any(t.sql_compatible for t in tables.values())

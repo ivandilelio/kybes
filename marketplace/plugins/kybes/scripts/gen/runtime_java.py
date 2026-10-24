@@ -250,7 +250,13 @@ public final class Paging {
 
     private static <T> TypedQuery<T> query(EntityManager em, Class<T> cls, Spec spec, String where, Map<String, Object> params,
                                            List<OrderItem> order, List<Object> after) {
+        return query(em, cls, spec, where, params, order, after, null);
+    }
+
+    private static <T> TypedQuery<T> query(EntityManager em, Class<T> cls, Spec spec, String where, Map<String, Object> params,
+                                           List<OrderItem> order, List<Object> after, String joins) {
         StringBuilder jpql = new StringBuilder("SELECT e FROM ").append(spec.entity()).append(" e");
+        if (joins != null) jpql.append(joins);
         List<String> conds = new ArrayList<>();
         if (where != null) conds.add("(" + where + ")");
         Map<String, Object> all = new LinkedHashMap<>(params);
@@ -275,10 +281,15 @@ public final class Paging {
 
     public static <T> Page<T> runPage(EntityManager em, Class<T> cls, Spec spec, String where, Map<String, Object> params,
                                       PageRequest page, List<OrderItem> fixedOrder, BiFunction<T, String, Object> value) {
+        return runPage(em, cls, spec, where, params, page, fixedOrder, value, null);
+    }
+
+    public static <T> Page<T> runPage(EntityManager em, Class<T> cls, Spec spec, String where, Map<String, Object> params,
+                                      PageRequest page, List<OrderItem> fixedOrder, BiFunction<T, String, Object> value, String joins) {
         Prepared prep = prepare(spec, page, fixedOrder);
         List<OrderItem> order = prep.order();
         int limit = prep.limit();
-        List<T> rows = query(em, cls, spec, where, params, order, prep.after()).setMaxResults(limit + 1).getResultList();
+        List<T> rows = query(em, cls, spec, where, params, order, prep.after(), joins).setMaxResults(limit + 1).getResultList();
         boolean more = rows.size() > limit;
         List<T> items = more ? new ArrayList<>(rows.subList(0, limit)) : rows;
         String next = more ? encodeCursor(order, items.get(items.size() - 1), value) : null;

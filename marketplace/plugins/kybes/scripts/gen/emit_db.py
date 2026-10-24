@@ -5,7 +5,7 @@ import json
 from typing import Dict, List
 
 from naming import MARKER
-from schema import Table, index_plan, snake, tenant_column
+from schema import Table, TimescaleConfig, index_plan, snake, tenant_column
 
 PG_TYPE = {"uuid": "uuid", "text": "text", "int": "integer", "bigint": "bigint", "bool": "boolean",
            "date": "date", "datetime": "timestamptz", "json": "jsonb"}
@@ -96,6 +96,9 @@ def ddl_rls(t: Table) -> List[str]:
 
 def _group(tables: Dict[str, Table], prefix: str = "", shared_prefix: str = "") -> List[str]:
     out: List[str] = []
+    has_ts = any(t.timescale for t in tables.values())
+    if has_ts:
+        out += ["CREATE EXTENSION IF NOT EXISTS timescaledb;", ""]
     for t in tables.values():
         out += ddl_table(t, prefix) + [""]
     for t in tables.values():
@@ -103,6 +106,11 @@ def _group(tables: Dict[str, Table], prefix: str = "", shared_prefix: str = "") 
     out.append("")
     for t in tables.values():
         out += ddl_indexes(t, prefix)
+    if has_ts:
+        out.append("")
+        for t in tables.values():
+            if t.timescale:
+                out += ddl_timescale(t, prefix)
     return out
 
 
@@ -136,17 +144,43 @@ def ddl_archive_runs() -> List[str]:
             ");"]
 
 
+def ddl_timescale(t: Table, prefix: str = "") -> List[str]:
+    """Istruzioni TimescaleDB dopo CREATE TABLE: hypertable, continuous aggregates, retention policy."""
+    tc = t.timescale_config
+    if tc is None:
+        return []
+    out: List[str] = []
+    tname = f"{prefix}{_q(t.db_name)}"
+    out.append(f"SELECT create_hypertable({tname!r}, {_q(tc.time_column)!r}, if_not_exists => TRUE, "
+               f"chunk_time_interval => INTERVAL '{tc.chunk_time_interval}');")
+    for agg in tc.continuous_aggregates:
+        agg_name = _q(agg["name"])
+        cols = ", ".join(agg.get("columns", []))
+        interval = agg.get("interval", "1 hour")
+        out.append(f"CREATE MATERIALIZED VIEW {agg_name}")
+        out.append(f"WITH (timescaledb.continuous) AS")
+        out.append(f"SELECT time_bucket(INTERVAL '{interval}', {_q(tc.time_column)}) AS bucket,")
+        out.append(f"       {cols}")
+        out.append(f"FROM {tname}")
+        out.append(f"GROUP BY bucket;")
+    if tc.retention_policy:
+        out.append(f"SELECT add_retention_policy({tname!r}, INTERVAL '{tc.retention_policy}', if_not_exists => TRUE);")
+    return out
+
+
 def _head(src: str) -> str:
     return f"-- {MARKER}. NON MODIFICARE: rigenerato da {src}.\n"
 
 
 def ddl_files(tables: Dict[str, Table], schema_dir: str) -> Dict[str, str]:
     files = {}
-    tables = {n: t for n, t in tables.items() if not t.mongo}  # le collection MongoDB hanno gli indici nel model (ensure_indexes)
+    tables = {n: t for n, t in tables.items() if not t.mongo and not t.neo4j}  # MongoDB e Neo4j non usano DDL PostgreSQL
     if not tables:
         return files
     for n, t in tables.items():
         body = ddl_table(t) + [""] + ddl_foreign_keys(t, tables) + [""] + ddl_indexes(t)
+        if t.timescale:
+            body += [""] + ddl_timescale(t)
         files[f"{n}.sql"] = _head(f"{schema_dir}/{n}.yaml") + "-- Per creare lo schema completo usa _all.sql (ordine corretto delle tabelle).\n\n" + \
             "\n".join(body).strip() + "\n"
     _ALL.clear()
