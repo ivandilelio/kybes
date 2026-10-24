@@ -271,8 +271,8 @@ def _init_file(tables: Dict[str, Table], ops: List[Operation], ac: Dict, ctrl_im
 def emit(tables: Dict[str, Table], ops: List[Operation], ac: Dict, opts: Dict):
     """Restituisce (api_files, controller_files): file separati per il layer HTTP e per i controller."""
     sql, mongo, neo4j = has_sql(tables), any(t.mongo for t in tables.values()), any(t.neo4j for t in tables.values())
-    api_import = opts.get("api_dir", "api").replace("/", ".")
-    ctrl_import = opts.get("controller_dir", "controllers").replace("/", ".")
+    api_import = opts.get("api_dir", "api").rsplit("/", 1)[-1]
+    ctrl_import = opts.get("controller_dir", "controllers").rsplit("/", 1)[-1]
     rt_files = rt.files(sql, mongo, ac["claims"], ac["headers"], neo4j=neo4j)
     api_rt_keys = {"_schema.py", "_http.py", "_identity.py", "_router.py", "lambda_adapter.py", "asgi_adapter.py", "fastapi_adapter.py"}
     ctrl_rt_keys = {"_data.py"}

@@ -231,8 +231,8 @@ def _head(asil: str, what: str) -> List[str]:
 
 def table_file(t: Table, cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str, opts: Dict) -> str:
     n = t.name
-    api_import = opts.get("api_dir", "api").replace("/", ".")
-    ctrl_import = opts.get("controller_dir", "controllers").replace("/", ".")
+    api_import = opts.get("api_dir", "api").rsplit("/", 1)[-1]
+    ctrl_import = opts.get("controller_dir", "controllers").rsplit("/", 1)[-1]
     others = sorted({r.target for r in t.relations} | {n})
     o = _head(table_asil(t, asil), f"Test di unità generati per le API di {n}")
     mixed_mongo = t.mongo and has_sql(tables)
@@ -283,8 +283,8 @@ def _qstr(v) -> str:
 
 
 def api_module(tables: Dict[str, Table], ops: List[Operation], opts: Dict) -> str:
-    api_import = opts.get("api_dir", "api").replace("/", ".")
-    ctrl_import = opts.get("controller_dir", "controllers").replace("/", ".")
+    api_import = opts.get("api_dir", "api").rsplit("/", 1)[-1]
+    ctrl_import = opts.get("controller_dir", "controllers").rsplit("/", 1)[-1]
     sql, mongo = has_sql(tables), any(t.mongo for t in tables.values())
     scopes = sorted({s for o in ops for s in o.scopes})
     fx = (["session_factory", "isolation_levels"] if sql else []) + (["mongo_client", "mongo_db"] if mongo else [])

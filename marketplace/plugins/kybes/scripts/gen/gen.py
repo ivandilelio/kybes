@@ -101,29 +101,27 @@ def api_config(cfg: dict) -> dict:
 
 
 def api_dir(tg: dict) -> str:
-    """Cartella del codice API generato: default 'api' alla root del progetto.
+    """Cartella del codice API generato, derivata dalla dir del modello.
 
-    Java e C# hanno il vincolo che la struttura delle directory deve contenere i
-    sorgenti dove il build system li trova (Maven src/main/java, SDK-style csproj):
-    per questi linguaggi la cartella viene derivata dalla dir del modello.
+    Per tutti i linguaggi il codice API viene collocato accanto al modello,
+    all'interno del pacchetto del linguaggio (Maven src/main/java, setuptools src/,
+    tsconfig include, SDK-style csproj).  Fallback: 'api' alla root del progetto.
     """
     if tg.get("api_dir"):
         return tg["api_dir"].rstrip("/")
-    if tg["lang"] in ("java", "csharp"):
-        model = tg["dir"].rstrip("/")
-        if model.endswith("/model"):
-            return model[:-len("model")] + "api"
+    model = tg["dir"].rstrip("/")
+    if model.endswith("/model"):
+        return model[:-len("model")] + "api"
     return "api"
 
 
 def controller_dir(tg: dict) -> str:
-    """Cartella dei controller generati: default 'controllers' alla root del progetto."""
+    """Cartella dei controller generati, derivata dalla dir del modello."""
     if tg.get("controller_dir"):
         return tg["controller_dir"].rstrip("/")
-    if tg["lang"] in ("java", "csharp"):
-        model = tg["dir"].rstrip("/")
-        if model.endswith("/model"):
-            return model[:-len("model")] + "controllers"
+    model = tg["dir"].rstrip("/")
+    if model.endswith("/model"):
+        return model[:-len("model")] + "controllers"
     return "controllers"
 
 

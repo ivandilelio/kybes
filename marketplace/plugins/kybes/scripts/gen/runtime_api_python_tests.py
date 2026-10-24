@@ -378,8 +378,8 @@ def _data_body(tables: Dict[str, Table]) -> List[str]:
 
 
 def render(cat: Catalog, tables: Dict[str, Table], ops: List[Operation], asil: str, opts: Dict) -> str:
-    api_import = opts.get("api_dir", "api").replace("/", ".")
-    ctrl_import = opts.get("controller_dir", "controllers").replace("/", ".")
+    api_import = opts.get("api_dir", "api").rsplit("/", 1)[-1]
+    ctrl_import = opts.get("controller_dir", "controllers").rsplit("/", 1)[-1]
     sql, mongo = has_sql(tables), any(t.mongo for t in tables.values())
     fx = (["session_factory", "isolation_levels"] if sql else []) + (["mongo_client", "mongo_db"] if mongo else [])
     bodies = dict(BODIES)
