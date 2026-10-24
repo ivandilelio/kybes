@@ -687,11 +687,13 @@ METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
 def include_api(app: Any, api: Api) -> Any:
     """Registra le operazioni sull'app FastAPI (con i loro operationId) e una route finale per 404 e 405 uniformi."""
     async def endpoint(request: Request) -> Response:
-        headers = {k.lower(): v for k, v in request.headers.items() if not k.lower().startswith("x-kybes-")}
+        all_headers = {k.lower(): v for k, v in request.headers.items()}
+        identity = from_headers(all_headers)
+        headers = {k: v for k, v in all_headers.items() if not k.startswith("x-kybes-")}
         query = {k: request.query_params.getlist(k) for k in request.query_params.keys()}
         body = await request.body()
         req = ApiRequest(method=request.method, path=raw_path(request.scope), query=query, headers=headers, body=body or None,
-                         identity=from_headers(headers))
+                         identity=identity)
         resp: ApiResponse = await asyncio.to_thread(api.handle, req)
         content = b"" if resp.body is None else json.dumps(resp.body, ensure_ascii=False).encode("utf-8")
         return Response(content=content, status_code=resp.status, headers=resp.headers)

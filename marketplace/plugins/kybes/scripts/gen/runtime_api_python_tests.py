@@ -42,7 +42,7 @@ from kybes_builders import TENANT_A
 ID = {"name": "id", "in": "path", "required": True, "schema": {"type": "integer"}}
 SPECS = [
     {"id": "getItem", "method": "GET", "path": "/items/{id}", "context": "uno", "kind": "custom", "table": None, "arg": None, "status": 200,
-     "secured": True, "scopes": ["s.read"], "body": None, "bodyRequired": False,
+     "secured": True, "scopes": ["s.read"], "roles": ["admin"], "body": None, "bodyRequired": False,
      "params": [ID, {"name": "tag", "in": "query", "required": False, "schema": {"type": "array", "items": {"type": "string"}}},
                 {"name": "n", "in": "query", "required": True, "schema": {"type": "integer", "minimum": 1}}]},
     {"id": "special", "method": "GET", "path": "/items/special", "context": "uno", "kind": "custom", "table": None, "arg": None,
@@ -55,7 +55,7 @@ SPECS = [
     {"id": "boom", "method": "POST", "path": "/boom", "context": "due", "kind": "custom", "table": None, "arg": None, "status": 200,
      "secured": False, "scopes": [], "params": [], "body": None, "bodyRequired": False},
 ]
-ME = Identity(subject="kybes-test", tenant="t1", scopes=frozenset({"s.read"}))
+ME = Identity(subject="kybes-test", tenant="t1", scopes=frozenset({"s.read", "admin"}))
 
 
 def echo(call: Call):
@@ -171,6 +171,10 @@ BODIES: Dict[str, List[str]] = {
         "    assert r.status == 401 and r.body['error']['code'] == 'IDENTITY_REQUIRED'",
         "    r = api.handle(req('GET', '/items/7', {'n': ['1']}, identity=Identity(subject='x')))",
         "    assert r.status == 403 and r.body['error']['code'] == 'SCOPE_REQUIRED'",
+        "    r = api.handle(req('GET', '/items/7', {'n': ['1']}, identity=Identity(subject='x', scopes=frozenset({'s.read'}))))",
+        "    assert r.status == 403 and r.body['error']['code'] == 'ROLE_REQUIRED'",
+        "    r = api.handle(req('GET', '/items/7', {'n': ['1']}, identity=Identity(subject='x', scopes=frozenset({'s.read', 'admin'}))))",
+        "    assert r.status == 200, 'identity con scope e ruolo giusto passa'",
         "    based = synthetic('/v1/')",
         "    assert based.handle(req('GET', '/v1/items/special')).headers['location'] == '/v1/items/special'",
         "    assert based.handle(req('GET', '/v1')).status == 404",
@@ -309,7 +313,7 @@ BODIES: Dict[str, List[str]] = {
         "    app = include_api(FastAPI(), synthetic())",
         "    assert {r.operation_id for r in app.routes if getattr(r, 'operation_id', None)} == {'getItem', 'special', 'putItem', 'postOpt', 'boom'}",
         "    client = TestClient(app)",
-        "    r = client.get('/items/7?n=1&tag=a&tag=b', headers={HEADERS['subject']: 'u', HEADERS['scopes']: 's.read'})",
+        "    r = client.get('/items/7?n=1&tag=a&tag=b', headers={HEADERS['subject']: 'u', HEADERS['scopes']: 's.read admin'})",
         "    assert r.status_code == 200 and r.json()['query'] == {'n': 1, 'tag': ['a', 'b']}",
         "    r = client.put('/items/7', content=b'{\"nome\": \"x\"}', headers={'content-type': 'application/json'})",
         "    assert r.status_code == 200 and r.json()['body'] == {'nome': 'x'}",
