@@ -311,7 +311,7 @@ function segment(p: string): string {
 export interface Param { name: string; in: "path" | "query"; required: boolean; schema: Schema }
 export interface Spec {
   id: string; method: string; path: string; context: string; kind: string; table: string | null; arg: string | null;
-  status: number; secured: boolean; scopes: string[]; params: Param[]; body: Schema | null; bodyRequired: boolean;
+  status: number; secured: boolean; scopes: string[]; roles?: string[]; params: Param[]; body: Schema | null; bodyRequired: boolean;
 }
 export type Handler = (call: Call) => unknown | Promise<unknown>;
 

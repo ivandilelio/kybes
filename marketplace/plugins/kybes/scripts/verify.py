@@ -221,10 +221,10 @@ def run_python(proj: Path, tg: dict, report: Path, quiet: bool, out: Outcome) ->
     covs = [f"--cov={model_rel}"]
     ad = G.api_dir(tg)
     if (proj / ad / G.GEN_DIR).is_dir():
-        covs.append(f"--cov={Path(ad).relative_to(Path(td).parent).as_posix()}")
+        covs.append(f"--cov={os.path.relpath(proj / ad, pkg)}")
     cd = G.controller_dir(tg)
     if (proj / cd / G.GEN_DIR).is_dir():
-        covs.append(f"--cov={Path(cd).relative_to(Path(td).parent).as_posix()}")
+        covs.append(f"--cov={os.path.relpath(proj / cd, pkg)}")
     rc = _run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *covs, "--cov-branch",
                f"--cov-report=xml:{report}", Path(td).name], pkg, quiet)
     if rc != 0:
