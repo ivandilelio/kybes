@@ -79,10 +79,10 @@ import com.mongodb.MongoException;
 /** Test di unità generati per i moduli comuni delle API. Specifica: docs/generated/verification/kybes-api-runtime.md. */
 class KybesApiRuntimeTest {
 
-    private static final Identity ME = new Identity("kybes-test", "t1", Set.of("s.read"), Map.of());
+    private static final Identity ME = new Identity("kybes-test", "t1", Set.of("s.read", "admin"), Map.of());
     private static final List<Spec> SPECS = List.of(
             spec("{'id': 'getItem', 'method': 'GET', 'path': '/items/{id}', 'context': 'uno', 'kind': 'custom', 'table': null, 'arg': null,"
-                    + " 'status': 200, 'secured': true, 'scopes': ['s.read'], 'body': null, 'bodyRequired': false, 'params': ["
+                    + " 'status': 200, 'secured': true, 'scopes': ['s.read'], 'roles': ['admin'], 'body': null, 'bodyRequired': false, 'params': ["
                     + "{'name': 'id', 'in': 'path', 'required': true, 'schema': {'type': 'integer'}},"
                     + "{'name': 'tag', 'in': 'query', 'required': false, 'schema': {'type': 'array', 'items': {'type': 'string'}}},"
                     + "{'name': 'n', 'in': 'query', 'required': true, 'schema': {'type': 'integer', 'minimum': 1}}]}"),
@@ -295,6 +295,11 @@ BODIES: Dict[str, List[str]] = {
         r = api.handle(req("get", "/items/7", q("n", "1"), null, new Identity("u", null, Set.of(), Map.of()), Map.of()));
         assertEquals(403, r.status());
         assertEquals("SCOPE_REQUIRED", error(r).get("code"));
+        r = api.handle(req("GET", "/items/7", q("n", "1"), null, new Identity("u", "t1", Set.of("s.read"), Map.of()), Map.of()));
+        assertEquals(403, r.status());
+        assertEquals("ROLE_REQUIRED", error(r).get("code"));
+        r = api.handle(req("GET", "/items/7", q("n", "1"), null, new Identity("u", "t1", Set.of("s.read", "admin"), Map.of()), Map.of()));
+        assertEquals(200, r.status(), "identity con scope e ruolo giusto passa");
         Api based = synthetic("/v1/", call -> null);
         assertEquals("/v1", based.basePath());
         assertEquals("/v1/items/special", based.handle(req("GET", "/v1/items/special")).headers().get("location"));
@@ -475,7 +480,7 @@ BODIES: Dict[str, List[str]] = {
         v2.put("rawPath", "/items/7");
         v2.put("rawQueryString", "n=2&tag=a&tag=b");
         v2.put("headers", Map.of("Content-Type", "application/json"));
-        v2.put("requestContext", Map.of("http", Map.of("method", "GET"), "authorizer", Map.of("jwt", Map.of("claims", Map.of(sub, "u", scp, "s.read")))));
+        v2.put("requestContext", Map.of("http", Map.of("method", "GET"), "authorizer", Map.of("jwt", Map.of("claims", Map.of(sub, "u", scp, "s.read admin")))));
         Map<String, Object> out = LambdaAdapter.handle(api, v2);
         assertEquals(200, out.get("statusCode"));
         assertEquals(false, out.get("isBase64Encoded"));
@@ -493,7 +498,7 @@ BODIES: Dict[str, List[str]] = {
         v1.put("path", "/items/7");
         v1.put("multiValueQueryStringParameters", Map.of("n", List.of("3")));
         v1.put("queryStringParameters", Map.of("n", "3"));
-        v1.put("requestContext", Map.of("authorizer", Map.of("claims", Map.of(sub, "u", scp, "s.read"))));
+        v1.put("requestContext", Map.of("authorizer", Map.of("claims", Map.of(sub, "u", scp, "s.read admin"))));
         assertEquals(j("{'n': 3}"), asMap(Json.parse((String) LambdaAdapter.handle(api, v1).get("body"))).get("query"));
         Map<String, Object> single = new HashMap<>();
         single.put("httpMethod", "POST");
@@ -518,7 +523,7 @@ BODIES: Dict[str, List[str]] = {
             String base = "http://127.0.0.1:" + server.getAddress().getPort();
             HttpClient client = HttpClient.newHttpClient();
             HttpResponse<String> r = client.send(HttpRequest.newBuilder(URI.create(base + "/items/4?n=1&tag=a&tag=b"))
-                    .header(IdentityReader.HEADER_SUBJECT, "u").header(IdentityReader.HEADER_SCOPES, "s.read").build(), HttpResponse.BodyHandlers.ofString());
+                    .header(IdentityReader.HEADER_SUBJECT, "u").header(IdentityReader.HEADER_SCOPES, "s.read admin").build(), HttpResponse.BodyHandlers.ofString());
             assertEquals(200, r.statusCode());
             assertEquals(j("{'n': 1, 'tag': ['a', 'b']}"), asMap(Json.parse(r.body())).get("query"));
             assertTrue(r.headers().firstValue("x-correlation-id").isPresent());
@@ -537,7 +542,7 @@ BODIES: Dict[str, List[str]] = {
         MockHttpServletRequest http = new MockHttpServletRequest("GET", "/v1/items/7");
         http.setQueryString("n=1&tag=a&tag=b");
         http.addHeader(IdentityReader.HEADER_SUBJECT, "u");
-        http.addHeader(IdentityReader.HEADER_SCOPES, "s.read");
+        http.addHeader(IdentityReader.HEADER_SCOPES, "s.read admin");
         http.addHeader("x-multi", "a");
         http.addHeader("x-multi", "b");
         ServletRequestPathUtils.parseAndCache(http);

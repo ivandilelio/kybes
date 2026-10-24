@@ -43,12 +43,12 @@ namespace __MODEL__.Tests;
 /// <summary>Test di unità generati per i moduli comuni delle API. Specifica: docs/generated/verification/kybes-api-runtime.md.</summary>
 public sealed class KybesApiRuntimeTests
 {
-    private static readonly Identity Self = new("kybes-test", "t1", new HashSet<string> { "s.read" }, new Dictionary<string, object?>());
+    private static readonly Identity Self = new("kybes-test", "t1", new HashSet<string> { "s.read", "admin" }, new Dictionary<string, object?>());
 
     private static readonly List<Spec> Synth = new()
     {
         Spec.Of(Quotes("{'id': 'getItem', 'method': 'GET', 'path': '/items/{id}', 'context': 'uno', 'kind': 'custom', 'table': null, 'arg': null,"
-            + " 'status': 200, 'secured': true, 'scopes': ['s.read'], 'body': null, 'bodyRequired': false, 'params': ["
+            + " 'status': 200, 'secured': true, 'scopes': ['s.read'], 'roles': ['admin'], 'body': null, 'bodyRequired': false, 'params': ["
             + "{'name': 'id', 'in': 'path', 'required': true, 'schema': {'type': 'integer'}},"
             + "{'name': 'tag', 'in': 'query', 'required': false, 'schema': {'type': 'array', 'items': {'type': 'string'}}},"
             + "{'name': 'n', 'in': 'query', 'required': true, 'schema': {'type': 'integer', 'minimum': 1}}]}")),
@@ -246,6 +246,11 @@ BODIES: Dict[str, str] = {
         r = await api.HandleAsync(Req("get", "/items/7", Qs("n", "1"), who: new Identity("u", null, new HashSet<string>(), new Dictionary<string, object?>())));
         Assert.Equal(403, r.Status);
         Assert.Equal("SCOPE_REQUIRED", ErrorOf(r)["code"]);
+        r = await api.HandleAsync(Req("GET", "/items/7", Qs("n", "1"), who: new Identity("u", "t1", new HashSet<string> { "s.read" }, new Dictionary<string, object?>())));
+        Assert.Equal(403, r.Status);
+        Assert.Equal("ROLE_REQUIRED", ErrorOf(r)["code"]);
+        r = await api.HandleAsync(Req("GET", "/items/7", Qs("n", "1"), who: new Identity("u", "t1", new HashSet<string> { "s.read", "admin" }, new Dictionary<string, object?>())));
+        Assert.Equal(200, r.Status);
         var based = Synthetic("/v1/", call => Task.FromResult<object?>(null));
         Assert.Equal("/v1", based.BasePath);
         Assert.Equal(202, (await based.HandleAsync(Req("GET", "/v1/items/special"))).Status);
@@ -427,7 +432,7 @@ BODIES: Dict[str, str] = {
         var scp = IdentityReader.ClaimScopes[0];
         Dictionary<string, object?> Ev(string json) => (Dictionary<string, object?>)J(json.Replace("SUB", sub).Replace("SCP", scp))!;
         var v2 = Ev("{'version': '2.0', 'rawPath': '/items/7', 'rawQueryString': 'n=2&tag=a&tag=b', 'headers': {'Content-Type': 'application/json'},"
-            + " 'requestContext': {'http': {'method': 'GET'}, 'authorizer': {'jwt': {'claims': {'SUB': 'u', 'SCP': 's.read'}}}}}");
+            + " 'requestContext': {'http': {'method': 'GET'}, 'authorizer': {'jwt': {'claims': {'SUB': 'u', 'SCP': 's.read admin'}}}}}");
         var stream = await LambdaAdapter.HandleAsync(api, new MemoryStream(Encoding.UTF8.GetBytes(Json.Write(v2))));
         var output = (Dictionary<string, object?>)Json.Parse(await new StreamReader(stream).ReadToEndAsync())!;
         Assert.Equal(200L, output["statusCode"]);
@@ -438,7 +443,7 @@ BODIES: Dict[str, str] = {
         var resp = await api.HandleAsync(LambdaAdapter.ToRequest(put));
         Same(J("{'nome': 'ab'}"), BodyOf(resp)["body"]);
         var v1 = Ev("{'httpMethod': 'GET', 'path': '/items/7', 'multiValueQueryStringParameters': {'n': ['3']}, 'queryStringParameters': {'n': '3'},"
-            + " 'requestContext': {'authorizer': {'claims': {'SUB': 'u', 'SCP': 's.read'}}}}");
+            + " 'requestContext': {'authorizer': {'claims': {'SUB': 'u', 'SCP': 's.read admin'}}}}");
         Same(J("{'n': 3}"), BodyOf(await api.HandleAsync(LambdaAdapter.ToRequest(v1)))["query"]);
         var single = LambdaAdapter.ToRequest(Ev("{'httpMethod': 'POST', 'queryStringParameters': {'a': 1}, 'body': '{}'}"));
         Same(J("{'a': ['1']}"), single.Query);
@@ -455,7 +460,7 @@ BODIES: Dict[str, str] = {
         context.Request.Path = "/items/4";
         context.Request.QueryString = new QueryString("?n=1&tag=a&tag=b");
         context.Request.Headers[IdentityReader.HeaderSubject] = "u";
-        context.Request.Headers[IdentityReader.HeaderScopes] = "s.read";
+        context.Request.Headers[IdentityReader.HeaderScopes] = "s.read admin";
         context.Request.Headers["x-multi"] = new Microsoft.Extensions.Primitives.StringValues(new[] { "a", "b" });
         var req = await AspNetAdapter.ToRequestAsync(context.Request);
         Assert.Equal("a, b", req.Headers["x-multi"]);
@@ -489,7 +494,7 @@ BODIES: Dict[str, str] = {
             using var client = new HttpClient { BaseAddress = new Uri(app.Urls.First()) };
             var request = new HttpRequestMessage(HttpMethod.Get, "/v1/items/7?n=1&tag=a&tag=b");
             request.Headers.Add(IdentityReader.HeaderSubject, "u");
-            request.Headers.Add(IdentityReader.HeaderScopes, "s.read");
+            request.Headers.Add(IdentityReader.HeaderScopes, "s.read admin");
             var r = await client.SendAsync(request);
             Assert.Equal(200, (int)r.StatusCode);
             Same(J("{'n': 1, 'tag': ['a', 'b']}"), ((Dictionary<string, object?>)Json.Parse(await r.Content.ReadAsStringAsync())!)["query"]);

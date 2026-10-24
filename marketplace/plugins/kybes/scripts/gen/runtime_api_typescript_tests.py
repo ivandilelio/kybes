@@ -34,7 +34,7 @@ __RUNNERS__
 const ID = { name: "id", in: "path" as const, required: true, schema: { type: "integer" } };
 const SPECS: Spec[] = [
   { id: "getItem", method: "GET", path: "/items/{id}", context: "uno", kind: "custom", table: null, arg: null, status: 200, secured: true,
-    scopes: ["s.read"], body: null, bodyRequired: false,
+    scopes: ["s.read"], roles: ["admin"], body: null, bodyRequired: false,
     params: [ID, { name: "tag", in: "query", required: false, schema: { type: "array", items: { type: "string" } } },
       { name: "n", in: "query", required: true, schema: { type: "integer", minimum: 1 } }] },
   { id: "special", method: "GET", path: "/items/special", context: "uno", kind: "custom", table: null, arg: null, status: 200,
@@ -47,7 +47,7 @@ const SPECS: Spec[] = [
   { id: "boom", method: "POST", path: "/boom", context: "due", kind: "custom", table: null, arg: null, status: 200, secured: false,
     scopes: [], params: [], body: null, bodyRequired: false },
 ];
-const ME: Identity = { subject: "kybes-test", tenant: "t1", scopes: new Set(["s.read"]), claims: {} };
+const ME: Identity = { subject: "kybes-test", tenant: "t1", scopes: new Set(["s.read", "admin"]), claims: {} };
 const echo = (call: Call) => ({ op: call.operation, path: call.path, query: call.query, body: call.body });
 
 function synthetic(basePath = "", boom: (call: Call) => unknown = () => { throw new Error("dettaglio interno da non mostrare"); }): Api {
@@ -153,6 +153,10 @@ BODIES: Dict[str, List[str]] = {
         '  assert.equal(r.status, 405);', '  assert.equal(r.headers.allow, "GET, PUT");', '  assert.equal((r.body as any).error.code, "METHOD_NOT_ALLOWED");',
         '  r = await api.handle(req("GET", "/items/7", { n: ["1"] }, null, { ...ME, scopes: new Set() }));',
         '  assert.equal(r.status, 403);', '  assert.equal((r.body as any).error.code, "SCOPE_REQUIRED");',
+        '  r = await api.handle(req("GET", "/items/7", { n: ["1"] }, null, { ...ME, scopes: new Set(["s.read"]) }));',
+        '  assert.equal(r.status, 403);', '  assert.equal((r.body as any).error.code, "ROLE_REQUIRED");',
+        '  r = await api.handle(req("GET", "/items/7", { n: ["1"] }, null, { ...ME, scopes: new Set(["s.read", "admin"]) }));',
+        '  assert.equal(r.status, 200, "identity con scope e ruolo giusto passa");',
         '  const based = synthetic("/v1/");',
         '  assert.equal((await based.handle(req("GET", "/v1/items/special"))).headers.location, "/v1/items/special");',
         '  assert.equal((await based.handle(req("GET", "/v1"))).status, 404);',
@@ -253,7 +257,7 @@ BODIES: Dict[str, List[str]] = {
     "rt_api_lambda": [
         "  const handler = lambdaHandler(synthetic());",
         '  const v2 = { version: "2.0", rawPath: "/items/7", rawQueryString: "n=2&tag=a&tag=b", headers: { "Content-Type": "application/json" },',
-        '    requestContext: { http: { method: "GET" }, authorizer: { jwt: { claims: { [CLAIMS.subject]: "u", [CLAIMS.scopes[0]]: "s.read" } } } } };',
+        '    requestContext: { http: { method: "GET" }, authorizer: { jwt: { claims: { [CLAIMS.subject]: "u", [CLAIMS.scopes[0]]: "s.read admin" } } } } };',
         "  let out = await handler(v2);",
         "  assert.equal(out.statusCode, 200);", "  assert.equal(out.isBase64Encoded, false);",
         '  assert.deepEqual(JSON.parse(out.body as string).query, { n: 2, tag: ["a", "b"] });',
@@ -261,7 +265,7 @@ BODIES: Dict[str, List[str]] = {
         '    body: Buffer.from(\'{"nome": "ab"}\').toString("base64"), isBase64Encoded: true, requestContext: {} };',
         '  assert.deepEqual(JSON.parse((await handler(put)).body as string).body, { nome: "ab" });',
         '  const v1 = { httpMethod: "GET", path: "/items/7", multiValueQueryStringParameters: { n: ["3"] }, queryStringParameters: { n: "3" },',
-        '    requestContext: { authorizer: { claims: { [CLAIMS.subject]: "u", [CLAIMS.scopes[0]]: "s.read" } } } };',
+        '    requestContext: { authorizer: { claims: { [CLAIMS.subject]: "u", [CLAIMS.scopes[0]]: "s.read admin" } } } };',
         '  assert.deepEqual(JSON.parse((await handler(v1)).body as string).query, { n: 3 });',
         '  const single = toRequest({ httpMethod: "POST", queryStringParameters: { a: "1" }, body: "{}" });',
         '  assert.deepEqual([single.query, single.path, Buffer.from(single.body!).toString(), single.identity], [{ a: ["1"] }, "/", "{}", null]);',
@@ -277,7 +281,7 @@ BODIES: Dict[str, List[str]] = {
         "  await new Promise<void>((resolve) => server.listen(0, resolve));",
         "  const port = (server.address() as AddressInfo).port;",
         "  try {",
-        '    let r = await fetch(`http://127.0.0.1:${port}/items/4?n=1&tag=a&tag=b`, { headers: { [HEADERS.subject]: "u", [HEADERS.scopes]: "s.read" } });',
+        '    let r = await fetch(`http://127.0.0.1:${port}/items/4?n=1&tag=a&tag=b`, { headers: { [HEADERS.subject]: "u", [HEADERS.scopes]: "s.read admin" } });',
         "    assert.equal(r.status, 200);", '    assert.deepEqual((await r.json()).query, { n: 1, tag: ["a", "b"] });',
         '    r = await fetch(`http://127.0.0.1:${port}/items/4`, { method: "PUT", body: \'{"nome": "x"}\', headers: { "content-type": "application/json", "x-multi": "a" } });',
         '    assert.deepEqual((await r.json()).body, { nome: "x" });',
@@ -292,7 +296,7 @@ BODIES: Dict[str, List[str]] = {
         '  const { default: fastify } = await import("fastify");',
         "  const app = includeApi(fastify(), synthetic());",
         "  try {",
-        '    let r = await app.inject({ method: "GET", url: "/items/7?n=1&tag=a&tag=b", headers: { [HEADERS.subject]: "u", [HEADERS.scopes]: "s.read" } });',
+        '    let r = await app.inject({ method: "GET", url: "/items/7?n=1&tag=a&tag=b", headers: { [HEADERS.subject]: "u", [HEADERS.scopes]: "s.read admin" } });',
         "    assert.equal(r.statusCode, 200);", '    assert.deepEqual(r.json().query, { n: 1, tag: ["a", "b"] });',
         '    r = await app.inject({ method: "PUT", url: "/items/7", payload: \'{"nome": "x"}\', headers: { "content-type": "application/json" } });',
         '    assert.deepEqual(r.json().body, { nome: "x" });',
