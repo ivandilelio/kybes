@@ -262,7 +262,7 @@ BODIES: Dict[str, List[str]] = {
     "rt_api_lambda": [
         "    handler = lambda_handler(synthetic())",
         "    v2 = {'version': '2.0', 'rawPath': '/items/7', 'rawQueryString': 'n=2&tag=a&tag=b', 'headers': {'Content-Type': 'application/json'},",
-        "          'requestContext': {'http': {'method': 'GET'}, 'authorizer': {'jwt': {'claims': {CLAIMS['subject']: 'u', CLAIMS['scopes'][0]: 's.read'}}}}}",
+        "          'requestContext': {'http': {'method': 'GET'}, 'authorizer': {'jwt': {'claims': {CLAIMS['subject']: 'u', CLAIMS['scopes'][0]: 's.read admin'}}}}}",
         "    out = handler(v2, None)",
         "    assert out['statusCode'] == 200 and out['isBase64Encoded'] is False",
         "    assert json.loads(out['body'])['query'] == {'n': 2, 'tag': ['a', 'b']} and out['headers']['content-type'] == 'application/json'",
@@ -270,7 +270,7 @@ BODIES: Dict[str, List[str]] = {
         "           'body': base64.b64encode(b'{\"nome\": \"ab\"}').decode(), 'isBase64Encoded': True, 'requestContext': {}}",
         "    assert json.loads(handler(put)['body'])['body'] == {'nome': 'ab'}",
         "    v1 = {'httpMethod': 'GET', 'path': '/items/7', 'multiValueQueryStringParameters': {'n': ['3']}, 'queryStringParameters': {'n': '3'},",
-        "          'requestContext': {'authorizer': {'claims': {CLAIMS['subject']: 'u', CLAIMS['scopes'][0]: 's.read'}}}}",
+        "          'requestContext': {'authorizer': {'claims': {CLAIMS['subject']: 'u', CLAIMS['scopes'][0]: 's.read admin'}}}}",
         "    assert json.loads(handler(v1)['body'])['query'] == {'n': 3}",
         "    single = to_request({'httpMethod': 'POST', 'queryStringParameters': {'a': '1'}, 'body': '{}'})",
         "    assert single.query == {'a': ['1']} and single.path == '/' and single.body == b'{}' and single.identity is None",
