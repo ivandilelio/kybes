@@ -157,9 +157,13 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_im
                 o.append(f"            for _rn in expand:")
                 for r in expandable:
                     target_conv = "to_json" if r.target == n else f"{snake(r.target)}_api.to_json"
+                    fk_nullable = t.col(r.foreign_key).nullable
                     o.append(f"                if _rn == {prop(r.name)!r}:")
                     o.append(f"                    _v = e.{member(L, r.name)}")
-                    o.append(f"                    d[{prop(r.name)!r}] = {target_conv}(_v) if _v is not None else None")
+                    if fk_nullable:
+                        o.append(f"                    d[{prop(r.name)!r}] = {target_conv}(_v) if _v is not None else None")
+                    else:
+                        o.append(f"                    d[{prop(r.name)!r}] = {target_conv}(_v)")
                 o.append(f"            return d")
                 o.append(f"        return _page(p, _conv if expand else None)")
             else:

@@ -107,7 +107,11 @@ def _table_file(t: Table, ops: List[Operation], ns: str, model_ns: str, api_ns: 
                 b.append(f"                {{")
                 for r in expandable:
                     target_conv = "ToJson" if r.target == n else f"{r.target}Api.ToJson"
-                    b.append(f'                    if (rel == "{prop(r.name)}") {{ var v = e.{member(L, r.name)}; d["{prop(r.name)}"] = v != null ? {target_conv}(v) : null; }}')
+                    fk_nullable = t.col(r.foreign_key).nullable
+                    if fk_nullable:
+                        b.append(f'                    if (rel == "{prop(r.name)}") {{ var v = e.{member(L, r.name)}; d["{prop(r.name)}"] = v != null ? {target_conv}(v) : null; }}')
+                    else:
+                        b.append(f'                    if (rel == "{prop(r.name)}") d["{prop(r.name)}"] = {target_conv}(e.{member(L, r.name)});')
                 b += ["                }",
                       "                return d;",
                       "            });",

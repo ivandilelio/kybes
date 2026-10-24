@@ -145,6 +145,18 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
             rp = json.dumps(prop(rel.name))
             o.append(f"    assert.ok({rp} in hit && hit[{rp}] != null, 'relazione espansa mancante');")
         return o
+    if k == "api_list_expand_null":
+        nullable_rels = [next(x for x in t.relations if x.name == rn) for rn in tc.args["nullable_relations"]]
+        exp_val = tc.args["expand"]
+        o = [f"    const e = await build{n}(em);"]
+        o += [f"    const r = await api(\"GET\", {B}, undefined, {{ expand: {json.dumps(exp_val)}, limit: {t.pagination.max_limit} }});",
+              "    assert.equal(r.status, 200, JSON.stringify(r.body));",
+              f"    const hit = (r.body as any).items.find((x: any) => x.{pkp} === {key});",
+              "    assert.ok(hit, 'record non trovato nella pagina');"]
+        for rel in nullable_rels:
+            rp = json.dumps(prop(rel.name))
+            o.append(f"    assert.strictEqual(hit[{rp}], null, 'relazione nullable senza padre deve tornare null');")
+        return o
     if k == "api_list_expand_bad":
         return [f"    const r = await api(\"GET\", {B}, undefined, {{ expand: \"kybesNonEsiste\" }});",
                 "    assert.equal(r.status, 400);",

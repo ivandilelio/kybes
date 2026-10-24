@@ -100,7 +100,11 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_re
                 b.append(f"      for (const rel of expand) {{")
                 for r in expandable:
                     target_conv = "toJson" if r.target == n else f"{camel(r.target)}Json"
-                    b.append(f'        if (rel === "{prop(r.name)}") {{ const v = (e as any).{member(L, r.name)}; (d as any)["{prop(r.name)}"] = v != null ? {target_conv}(v) : null; }}')
+                    fk_nullable = t.col(r.foreign_key).nullable
+                    if fk_nullable:
+                        b.append(f'        if (rel === "{prop(r.name)}") {{ const v = (e as any).{member(L, r.name)}; (d as any)["{prop(r.name)}"] = v != null ? {target_conv}(v) : null; }}')
+                    else:
+                        b.append(f'        if (rel === "{prop(r.name)}") (d as any)["{prop(r.name)}"] = {target_conv}((e as any).{member(L, r.name)});')
                 b += ["      }", "      return d;", "    };",
                       f"    return page(p, expand.length ? conv : toJson);",
                       "  });"]

@@ -100,7 +100,11 @@ def _table_file(t: Table, tables: Dict[str, Table], ops: List[Operation], api_pk
                 for r in expandable:
                     target_conv = f"{n}Api.toJson" if r.target == n else f"{r.target}Api.toJson"
                     getter = f"e.get{_cap(member(L, r.name))}()"
-                    b.append(f'                    if (rel.equals("{prop(r.name)}")) {{ var v = {getter}; d.put("{prop(r.name)}", v != null ? {target_conv}(v) : null); }}')
+                    fk_nullable = t.col(r.foreign_key).nullable
+                    if fk_nullable:
+                        b.append(f'                    if (rel.equals("{prop(r.name)}")) {{ var v = {getter}; d.put("{prop(r.name)}", v != null ? {target_conv}(v) : null); }}')
+                    else:
+                        b.append(f'                    if (rel.equals("{prop(r.name)}")) d.put("{prop(r.name)}", {target_conv}({getter}));')
                 b += ["                }",
                       "                return d;",
                       "            });",

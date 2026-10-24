@@ -664,6 +664,14 @@ def add_api_cases(cat: Catalog, tables: Dict[str, Table], ops: list, default_asi
                     all_rels = list(t.api.expandable)
                     tc("LIST-EXPAND", r, "req", "api_list_expand", f"GET {path}?expand={all_exp}",
                        "200, ogni item ha tutte le relazioni espanse", expand=all_exp, relations=all_rels)
+                    nullable_rels = [rn for rn in t.api.expandable
+                                     if t.col(next(x for x in t.relations if x.name == rn).foreign_key).nullable]
+                    if nullable_rels:
+                        null_exp = ",".join(api_plan.prop(x) for x in nullable_rels)
+                        tc("LIST-EXPAND-NULL", r, "bv", "api_list_expand_null",
+                           f"GET {path}?expand={null_exp} con FK null",
+                           "200, le relazioni nullable senza padre tornano null",
+                           expand=null_exp, nullable_relations=nullable_rels)
                     tc("LIST-EXPAND-BAD", r, "bv", "api_list_expand_bad", f"GET {path}?expand=kybesNonEsiste",
                        "400 invalid expand")
             if "get" in kinds:

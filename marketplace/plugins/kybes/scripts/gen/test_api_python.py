@@ -128,6 +128,16 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
         for rel in rels:
             o.append(f"    assert {prop(rel.name)!r} in hit and hit[{prop(rel.name)!r}] is not None")
         return o
+    if k == "api_list_expand_null":
+        nullable_rels = [next(x for x in t.relations if x.name == rn) for rn in tc.args["nullable_relations"]]
+        exp_val = tc.args["expand"]
+        o = [f"    e = {build}"]
+        o += [f"    r = api('GET', {base!r}, query={{'expand': {exp_val!r}, 'limit': {t.pagination.max_limit}}})",
+              "    assert r.status == 200, r.body",
+              f"    hit = next(x for x in r.body['items'] if x[{pkp!r}] == {_jkey(t.pk, 'e.' + member(L, t.pk.name))})"]
+        for rel in nullable_rels:
+            o.append(f"    assert hit[{prop(rel.name)!r}] is None, 'relazione nullable senza padre deve tornare null'")
+        return o
     if k == "api_list_expand_bad":
         return [f"    r = api('GET', {base!r}, query={{'expand': 'kybesNonEsiste'}})",
                 "    assert r.status == 400 and 'invalid expand' in r.body['error']['code']"]

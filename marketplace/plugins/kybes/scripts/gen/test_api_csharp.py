@@ -153,6 +153,16 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
         for rel in rels:
             o.append(f"        Assert.True(hit.ContainsKey({_cs(prop(rel.name))}) && hit[{_cs(prop(rel.name))}] != null, \"relazione espansa mancante\");")
         return o
+    if k == "api_list_expand_null":
+        nullable_rels = [next(x for x in t.relations if x.name == rn) for rn in tc.args["nullable_relations"]]
+        exp_val = tc.args["expand"]
+        o = [f"        var e = await Build{n}(db);"]
+        o += [f'        var r = await Call("GET", {B}, null, Q("expand", {_cs(exp_val)}, "limit", {t.pagination.max_limit}), Me);',
+              "        Assert.True(r.Status == 200, r.Text);",
+              f"        var hit = r.Items().First(x => Canon(x[{pkp}]) == Canon({key}));"]
+        for rel in nullable_rels:
+            o.append(f"        Assert.True(hit[{_cs(prop(rel.name))}] == null || hit[{_cs(prop(rel.name))}].Type == JTokenType.Null, \"relazione nullable senza padre deve tornare null\");")
+        return o
     if k == "api_list_expand_bad":
         return [f'        var r = await Call("GET", {B}, null, Q("expand", "kybesNonEsiste"), Me);',
                 "        Assert.Equal(400, r.Status);",

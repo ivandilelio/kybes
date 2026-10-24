@@ -152,6 +152,16 @@ def _case(t: Table, tc: TestCase, tables: Dict[str, Table], ops: List[Operation]
         for rel in rels:
             o.append(f"        assertNotNull(hit.get({_js(prop(rel.name))}), \"relazione espansa mancante\");")
         return o
+    if k == "api_list_expand_null":
+        nullable_rels = [next(x for x in t.relations if x.name == rn) for rn in tc.args["nullable_relations"]]
+        exp_val = tc.args["expand"]
+        o = [f"        {n} e = build{n}(em);"]
+        o += [f'        Result r = call("GET", {B}, null, q("expand", {_js(exp_val)}, "limit", {t.pagination.max_limit}), ME);',
+              "        assertEquals(200, r.status(), r.text());",
+              f"        var hit = r.items().stream().filter(x -> Objects.equals(x.get({pkp}), {key})).findFirst().orElseThrow();"]
+        for rel in nullable_rels:
+            o.append(f"        assertNull(hit.get({_js(prop(rel.name))}), \"relazione nullable senza padre deve tornare null\");")
+        return o
     if k == "api_list_expand_bad":
         return [f'        Result r = call("GET", {B}, null, q("expand", "kybesNonEsiste"), ME);',
                 "        assertEquals(400, r.status());",
